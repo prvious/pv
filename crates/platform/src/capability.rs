@@ -53,6 +53,7 @@ pub(crate) fn require_capability_for(
                 PlatformCapability::ProcessInspection
                     | PlatformCapability::ProcessContainment
                     | PlatformCapability::DaemonIpc
+                    | PlatformCapability::DaemonRegistration
             ) =>
         {
             Ok(())

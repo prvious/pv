@@ -22,8 +22,8 @@ mod update_tests {
     use cli::{Environment, run_with_environment};
     use insta::{Settings, assert_debug_snapshot};
     use platform::{
-        HELPER_PROTOCOL_VERSION, LAUNCH_AGENT_LABEL, LaunchAgentConfig, PRIVILEGED_HELPER_VERSION,
-        PrivilegedHelperStatus,
+        DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION,
+        PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus,
     };
     use resources::{ResourceHttpClient, ResourcesError};
     use serde_json::json;
@@ -283,7 +283,7 @@ mod update_tests {
             Some(self.client.as_ref())
         }
 
-        fn bootstrap_launch_agent(
+        fn enable_daemon_registration(
             &self,
             plist_path: &Utf8Path,
         ) -> Result<(), platform::PlatformError> {
@@ -294,10 +294,10 @@ mod update_tests {
             Ok(())
         }
 
-        fn bootout_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        fn stop_daemon_registration(&self) -> Result<(), platform::PlatformError> {
             self.operations
                 .borrow_mut()
-                .push(format!("bootout {LAUNCH_AGENT_LABEL}"));
+                .push(format!("bootout {DAEMON_REGISTRATION_LABEL}"));
 
             if self.launch_agent_unloaded {
                 return Err(platform::PlatformError::LaunchAgent(
@@ -308,10 +308,10 @@ mod update_tests {
             Ok(())
         }
 
-        fn kickstart_launch_agent(&self) -> Result<(), platform::PlatformError> {
+        fn restart_daemon_registration(&self) -> Result<(), platform::PlatformError> {
             self.operations
                 .borrow_mut()
-                .push(format!("kickstart {LAUNCH_AGENT_LABEL}"));
+                .push(format!("kickstart {DAEMON_REGISTRATION_LABEL}"));
             self.record_lock_probe("kickstart");
             if let Some(path) = self.delete_on_first_kickstart.borrow_mut().take() {
                 state::fs::remove_file_if_exists(&path)
@@ -1382,9 +1382,9 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
             ]
         );
         assert_eq!(
@@ -1453,9 +1453,9 @@ mod update_tests {
                     "install helper {} sha256 {HELPER_BINARY_SHA256}",
                     paths.app_release_helper("0.3.0")
                 ),
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
             ]
         );
         assert_eq!(
@@ -1719,9 +1719,9 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
             ]
         );
 
@@ -1757,9 +1757,9 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
             ]
         );
 
@@ -1798,9 +1798,9 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
                 "kickstart update lock held".to_string(),
                 "kickstart jobs lock held".to_string(),
                 "exec update lock free".to_string(),
@@ -1840,8 +1840,8 @@ mod update_tests {
 
         let output = run_pv(&["update"], &environment)?;
         let requests = daemon.join()?;
-        let plist = state::fs::read_to_string(&launch_agent_path(&paths))?;
-        let parsed = LaunchAgentConfig::parse(&plist);
+        let plist = state::fs::read_to_string(&daemon_registration_path(&paths))?;
+        let parsed = DaemonRegistrationConfig::parse(&plist);
 
         assert_eq!(
             requests,
@@ -1861,7 +1861,7 @@ mod update_tests {
         assert!(environment.operations().is_empty());
         assert_eq!(
             parsed,
-            Some(LaunchAgentConfig::new(
+            Some(DaemonRegistrationConfig::new(
                 paths.active_pv_binary(),
                 paths.logs().join("launchd.out.log"),
                 paths.logs().join("launchd.err.log"),
@@ -2207,12 +2207,12 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
             ]
         );
         assert_eq!(
@@ -2271,9 +2271,9 @@ mod update_tests {
         assert_eq!(
             environment.operations(),
             vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+                format!("bootstrap {}", daemon_registration_path(&paths)),
+                format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
             ]
         );
         assert_eq!(
@@ -3342,29 +3342,29 @@ mod update_tests {
     }
 
     fn write_launch_agent(paths: &PvPaths, program_path: &Utf8Path) -> anyhow::Result<()> {
-        let config = LaunchAgentConfig::new(
+        let config = DaemonRegistrationConfig::new(
             program_path.to_path_buf(),
             paths.logs().join("launchd.out.log"),
             paths.logs().join("launchd.err.log"),
         );
-        state::fs::write_sensitive_file(&launch_agent_path(paths), &config.render()?)?;
+        state::fs::write_sensitive_file(&daemon_registration_path(paths), &config.render()?)?;
 
         Ok(())
     }
 
     fn write_conflicting_launch_agent(paths: &PvPaths) -> anyhow::Result<()> {
-        let config = LaunchAgentConfig::new(
+        let config = DaemonRegistrationConfig::new(
             paths.active_pv_binary(),
             paths.logs().join("launchd.out.log"),
             paths.logs().join("launchd.err.log"),
         );
         let content = config.render()?.replace("<!-- Managed by PV -->\n", "");
-        state::fs::write_sensitive_file(&launch_agent_path(paths), &content)?;
+        state::fs::write_sensitive_file(&daemon_registration_path(paths), &content)?;
 
         Ok(())
     }
 
-    fn launch_agent_path(paths: &PvPaths) -> camino::Utf8PathBuf {
+    fn daemon_registration_path(paths: &PvPaths) -> camino::Utf8PathBuf {
         paths
             .home()
             .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")

@@ -115,9 +115,10 @@ warns after 60 seconds, terminates a wedged test after 120 seconds, and allows
 with intentionally longer limits.
 
 CI records each test run and uploads it as a `nextest-run-<runner>` artifact
-holding every test's duration and output. CI pins nextest 0.9.146 because the
-recording format is experimental, so use the same version locally. To see where
-time goes, download a recording and open its trace in
+holding every test's duration and output. Native Linux daemon registration
+tests have a separate `nextest-system-run-<runner>` artifact. CI pins nextest
+0.9.146 because the recording format is experimental, so use the same version
+locally. To see where time goes, download a recording and open its trace in
 [Perfetto](https://ui.perfetto.dev):
 
 ```shell
@@ -263,6 +264,18 @@ These build and test; publication remains a separate owner action.
 To add a supported distribution/CPU pair, update the acceptance matrix and
 `release/linux-supported-distributions.txt`, then pass every resource smoke
 and the system acceptance journey on that pair before listing it in DESIGN.md.
+
+The daemon-registration system test requires a disposable user's real user
+manager and refuses an existing PV home, unit file, or loaded service. Build PV
+and the daemon examples first, then run as that user with its session-bus
+environment intact:
+
+```shell
+cargo build --locked -p pv -p daemon --examples --bins
+PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_PV="$PWD/target/debug/pv" \
+  cargo nextest run --profile ci --locked -p cli -p daemon --run-ignored only \
+  -E 'test(/^linux_daemon_registration_system::/)'
+```
 
 ## Crate structure
 

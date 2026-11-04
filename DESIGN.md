@@ -237,6 +237,8 @@ PV installs the LaunchAgent plist at `~/Library/LaunchAgents/com.prvious.pv.daem
 
 The LaunchAgent plist sets `StandardOutPath` and `StandardErrorPath` to PV-owned files under `~/.pv/logs/`, such as `launchd.out.log` and `launchd.err.log`, so daemon startup failures are diagnosable before structured daemon logging starts.
 
+On Linux, `pv-daemon.service` lives at `$XDG_CONFIG_HOME/systemd/user/pv-daemon.service`, defaulting to `~/.config/systemd/user/pv-daemon.service`. It starts with `default.target`, restarts after crashes, and uses `KillMode=process` so monitors survive daemon restarts; PV does not enable linger. PV manages it through the user's session bus, checks the selected fragment's PV marker, and waits for the exact systemd job result within 10 seconds for stop or 15 seconds for restart.
+
 If a LaunchAgent with PV's expected label already exists but is not PV-owned, `pv daemon:enable` and `pv setup` fail safely and report the conflict instead of overwriting it.
 
 The daemon runs as the logged-in user, owns reconciliation, and manages PV child processes. macOS starts it after login and restarts it after crashes.
@@ -296,9 +298,9 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 `pv setup` is the friendly first-time bootstrap path and includes daemon registration. `pv daemon:*` commands remain available as lower-level lifecycle and troubleshooting commands.
 
-`pv daemon:enable` registers the LaunchAgent, starts the daemon immediately, waits up to 15 seconds for the Unix socket and daemon health, enqueues reconciliation, and exits non-zero if the daemon does not become healthy. It does not wait for the triggered reconciliation to finish.
+`pv daemon:enable` registers the daemon for the current user, starts it immediately, waits up to 15 seconds for the Unix socket and daemon health, enqueues reconciliation, and exits non-zero if the daemon does not become healthy. It does not wait for the triggered reconciliation to finish.
 
-`pv daemon:disable` unloads the LaunchAgent and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the LaunchAgent file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
+`pv daemon:disable` stops the registered daemon and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the registration file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
 
 `pv daemon:disable` does not remove DNS resolver config, `pf` rules, or CA trust. Those integrations are managed by `pv dns:*`, `pv ports:*`, `pv ca:*`, `pv setup`, and `pv uninstall`.
 
