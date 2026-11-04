@@ -277,6 +277,14 @@ PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_PV="$PWD/target/debug/pv" \
   -E 'test(/^linux_daemon_registration_system::/)'
 ```
 
+The helper lifecycle test needs a fresh disposable systemd machine and a
+non-root account with passwordless sudo. Build `pv-helper`, then run:
+
+```shell
+PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_HELPER="$PWD/target/debug/pv-helper" \
+  cargo nextest run --profile ci --locked -p cli --run-ignored only -E 'test(/^linux_helper_system::/)'
+```
+
 ## Crate structure
 
 Rust does not allow circular dependencies between crates. To visualize the crate hierarchy, install

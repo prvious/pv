@@ -1171,6 +1171,10 @@ mod update_tests {
             .to_path_buf();
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
             .with_helper_promotion_failure(release_helper_parent);
+        environment
+            .helper_install_cleanup_warnings
+            .borrow_mut()
+            .push_back(Some("forward helper cleanup failed".to_string()));
 
         let output = run_pv(&["update"], &environment)?;
 
@@ -1200,6 +1204,16 @@ mod update_tests {
             state::fs::read_dir_paths(paths.downloads())?
                 .iter()
                 .all(|path| !path.file_name().unwrap_or("").contains("helper-rollback"))
+        );
+        assert!(
+            environment
+                .helper_install_cleanup_warnings
+                .borrow()
+                .is_empty()
+        );
+        assert_update_snapshot(
+            "helper_only_promotion_failure_reports_forward_cleanup_warning",
+            output.stderr,
         );
 
         Ok(())
@@ -1424,6 +1438,10 @@ mod update_tests {
                 .with_text(&manifest)
                 .with_download(APP_BINARY),
         );
+        environment
+            .helper_install_cleanup_warnings
+            .borrow_mut()
+            .push_back(Some("forward helper cleanup failed".to_string()));
 
         let output = run_pv(&["update"], &environment)?;
         let daemon_requests = daemon.join()?;
@@ -1469,6 +1487,16 @@ mod update_tests {
             "Privileged helper: updated to 2.1.0 (protocol {})",
             HELPER_PROTOCOL_VERSION + 1
         )));
+        assert!(
+            environment
+                .helper_install_cleanup_warnings
+                .borrow()
+                .is_empty()
+        );
+        assert_update_snapshot(
+            "update_reports_forward_helper_cleanup_warning_once",
+            output.stderr,
+        );
 
         Ok(())
     }
@@ -1494,8 +1522,11 @@ mod update_tests {
             ScriptedClient::new()
                 .with_text(&manifest)
                 .with_download(APP_BINARY),
-        )
-        .with_helper_rollback_cleanup_warning("helper transaction cleanup failed");
+        );
+        environment
+            .helper_install_cleanup_warnings
+            .borrow_mut()
+            .push_back(Some("helper transaction cleanup failed".to_string()));
 
         let mut stdout = Vec::new();
         let exit_code = run_with_environment(
@@ -1514,6 +1545,13 @@ mod update_tests {
                 paths.active_pv_binary().as_std_path().to_path_buf(),
                 vec!["internal:update-managed-resources".to_string()]
             )]
+        );
+
+        assert!(
+            environment
+                .helper_install_cleanup_warnings
+                .borrow()
+                .is_empty()
         );
 
         Ok(())
@@ -2579,6 +2617,10 @@ mod update_tests {
                 .with_download(APP_BINARY),
         )
         .with_helper_restore_error("restoring the registered helper failed");
+        environment
+            .helper_install_cleanup_warnings
+            .borrow_mut()
+            .push_back(Some("forward helper cleanup failed".to_string()));
 
         let output = run_pv(&["update"], &environment)?;
         let _daemon_requests = daemon.join()?;
@@ -2596,6 +2638,12 @@ mod update_tests {
         assert_eq!(
             state::fs::read_to_string(&rollback_candidates[0])?.as_bytes(),
             HELPER_BINARY
+        );
+        assert!(
+            environment
+                .helper_install_cleanup_warnings
+                .borrow()
+                .is_empty()
         );
         assert_update_snapshot(
             "update_retains_helper_candidate_when_restoring_helper_during_app_rollback_fails",
