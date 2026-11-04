@@ -1,0 +1,24 @@
+---
+source: crates/cli/tests/it/linux_dns.rs
+expression: "(first, retry)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Deleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test\nSystem resolver config already absent: /etc/systemd/system/pv-dns.service\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Prepared DNS resolver config already absent: <tempdir>/home/.pv/config/resolver/test\nSystem resolver config already absent: /etc/systemd/system/pv-dns.service\n",
+        stderr: "",
+    },
+)

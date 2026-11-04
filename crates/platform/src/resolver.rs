@@ -1,4 +1,5 @@
 use std::io;
+use std::net::Ipv4Addr;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use serde::{Deserialize, Serialize};
@@ -7,10 +8,27 @@ use crate::PlatformError;
 #[cfg(target_os = "macos")]
 use crate::command::run_system_command;
 
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub(crate) use linux::{
+    DNS_INSPECTION_TIMEOUT, DNS_MUTATION_TIMEOUT, apply_resolver_config_privileged,
+    remove_resolver_config_privileged,
+};
+#[cfg(target_os = "linux")]
+pub use linux::{start_resolver_link, stop_resolver_link};
+
+#[cfg(target_os = "linux")]
+pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/systemd/system/pv-dns.service";
+#[cfg(not(target_os = "linux"))]
 pub const SYSTEM_RESOLVER_TEST_PATH: &str = "/etc/resolver/test";
 const PV_MARKER: &str = "# Managed by PV";
-const PREPARED_MARKER: &str = "# Source: PV prepared resolver config for /etc/resolver/test";
-const LOOPBACK_NAMESERVER: &str = "nameserver 127.0.0.1";
+const PREPARED_MARKER: &str = "# Source: PV prepared resolver configuration";
+/// Fixed DNS listener address; DNS A answers remain `127.0.0.1` on every platform.
+#[cfg(target_os = "linux")]
+pub const DNS_LISTEN_ADDRESS: Ipv4Addr = Ipv4Addr::new(127, 0, 0, 2);
+#[cfg(not(target_os = "linux"))]
+pub const DNS_LISTEN_ADDRESS: Ipv4Addr = Ipv4Addr::LOCALHOST;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ResolverConfig {
@@ -47,7 +65,8 @@ impl ResolverConfig {
 
     pub fn render(&self) -> String {
         format!(
-            "{PV_MARKER}\n{PREPARED_MARKER}\n{LOOPBACK_NAMESERVER}\nport {}\n",
+            "{PV_MARKER}\n{PREPARED_MARKER}\nnameserver {}\nport {}\n",
+            Ipv4Addr::LOCALHOST,
             self.port
         )
     }
@@ -56,6 +75,7 @@ impl ResolverConfig {
         let mut port = None;
         let mut has_nameserver = false;
         let mut active_line_count = 0;
+        let nameserver = format!("nameserver {}", Ipv4Addr::LOCALHOST);
 
         for line in content.lines().map(str::trim) {
             if line.is_empty() || line.starts_with('#') {
@@ -65,7 +85,7 @@ impl ResolverConfig {
             active_line_count += 1;
 
             if line.starts_with("nameserver ") {
-                if line != LOOPBACK_NAMESERVER || has_nameserver {
+                if line != nameserver || has_nameserver {
                     return None;
                 }
                 has_nameserver = true;
@@ -91,6 +111,11 @@ pub fn inspect_resolver_file(
     path: &Utf8Path,
     expected: Option<&ResolverConfig>,
 ) -> ResolverFileState {
+    #[cfg(target_os = "linux")]
+    if path == Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH) {
+        return linux::inspect(expected);
+    }
+
     let content = match state::fs::read_to_string(path) {
         Ok(content) => content,
         Err(state::StateError::Filesystem { source, .. })
