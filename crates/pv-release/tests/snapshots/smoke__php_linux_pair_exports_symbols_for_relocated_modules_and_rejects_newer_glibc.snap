@@ -1,0 +1,45 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: results
+---
+[
+    (
+        false,
+        [
+            Array [
+                Object {
+                    "load_kind": String("extension"),
+                    "name": String("redis"),
+                    "path": String("lib/php/extensions/redis.so"),
+                },
+                Object {
+                    "load_kind": String("zend_extension"),
+                    "name": String("xdebug"),
+                    "path": String("lib/php/extensions/xdebug.so"),
+                },
+            ],
+            Array [
+                Object {
+                    "load_kind": String("extension"),
+                    "name": String("redis"),
+                    "path": String("lib/php/extensions/redis.so"),
+                },
+                Object {
+                    "load_kind": String("zend_extension"),
+                    "name": String("xdebug"),
+                    "path": String("lib/php/extensions/xdebug.so"),
+                },
+            ],
+        ],
+        "pwd=<out>/work/php-pair-8.4-<native-platform>/staticphp\nspc-cflags=\nspc-cxxflags=\nspc-php-extra-ldflags=-Wl,--export-dynamic\nspc-frankenphp-ldflags=-Wl,--export-dynamic\nargv=[build:php][json,mbregex][--build-shared=redis,xdebug][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:<out>/sources/php-8.4.20-source/php-source][--dl-custom-local][frankenphp:<out>/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source/frankenphp-source]\nspc-libc=glibc\nspc-target=\nspc-concurrency=2\n",
+        "archive=php-8.4.20-pv1-<native-platform>.tar.gz record=php-8.4.20-pv1-<native-platform>.json upstream=8.4.20 php=8.4.20 expected=json deployment=13.0\narchive=frankenphp-8.4.20-frankenphp1.12.3-pv1-<native-platform>.tar.gz record=frankenphp-8.4.20-frankenphp1.12.3-pv1-<native-platform>.json upstream=8.4.20-frankenphp1.12.3 php=8.4.20 expected=json deployment=13.0\n",
+        "",
+    ),
+    (
+        true,
+        [],
+        "pwd=<out>/work/php-pair-8.4-<native-platform>/staticphp\nspc-cflags=\nspc-cxxflags=\nspc-php-extra-ldflags=-Wl,--export-dynamic\nspc-frankenphp-ldflags=-Wl,--export-dynamic\nargv=[build:php][json,mbregex][--build-shared=redis,xdebug][--with-libs=freetype,libjpeg,libavif,libwebp][--build-cli][--build-frankenphp][--enable-zts][--with-config-file-path=/var/empty/com.prvious.pv/php][--with-config-file-scan-dir=/var/empty/com.prvious.pv/php/conf.d][--dl-with-php=8.4.20][--dl-retry=3][--dl-custom-local][php-src:<out>/sources/php-8.4.20-source/php-source][--dl-custom-local][frankenphp:<out>/sources/frankenphp-8.4.20-frankenphp1.12.3-pv1-source/frankenphp-source]\nspc-libc=glibc\nspc-target=\nspc-concurrency=2\n",
+        "",
+        "error: <out>/work/php-pair-8.4-<native-platform>/php-8.4.20-pv1-<native-platform>/lib/php/extensions/redis.so ELF symbol version GLIBC_2.36 is newer than GLIBC_2.35\n",
+    ),
+]
