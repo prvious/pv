@@ -35,7 +35,6 @@ need make
 need patch
 need perl
 need readlink
-need shasum
 need tar
 
 case "$PLATFORM" in
@@ -48,7 +47,7 @@ if [ -z "$PV_COMMIT" ]; then
 fi
 
 if [ -z "$BUILD_JOBS" ]; then
-  BUILD_JOBS=$(sysctl -n hw.ncpu 2>/dev/null || printf '%s\n' 2)
+  BUILD_JOBS=$(cpu_count 2>/dev/null || printf '%s\n' 2)
 fi
 
 if [ -z "$BISON_EXECUTABLE" ]; then

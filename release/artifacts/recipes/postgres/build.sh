@@ -28,7 +28,6 @@ need git
 need make
 need perl
 need readlink
-need shasum
 need sort
 need tar
 

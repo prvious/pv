@@ -39,7 +39,7 @@ fn artifact_recipes_defaults_defer_staticphp_unstable_lanes() -> Result<()> {
     assert_snapshot!(summary, @r#"
     track_default=all
     platform_default=all
-    platform_description=Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose darwin-arm64 or darwin-amd64 explicitly for one platform
+    platform_description=Artifact platform: all uses darwin-arm64 for native recipes, adds darwin-amd64 for Postgres and Caddy, and uses any for Composer; choose a platform explicitly, or all-linux for both Linux CPUs
     platform_matrices=["platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: [any]", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\",\"darwin-amd64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}", "platform: ${{ fromJSON(inputs.platform == 'all' && '[\"darwin-arm64\"]' || format('[\"{0}\"]', inputs.platform)) }}"]
     staticphp_comment_present=true
     staticphp_work_cleanup_restores_write_permission=true
@@ -91,13 +91,13 @@ fn artifact_recipes_builds_resource_lanes_in_parallel() -> Result<()> {
     );
 
     assert_snapshot!(summary, @r###"
-    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres-dependencies", "build-postgres", "build-mailpit", "build-rustfs"]
-    upload_steps=10
-    archive_upload_paths=8
-    manifest_upload_paths=8
-    record_upload_paths=8
-    recipe_track_envs=10
-    track_upload_names=9
+    jobs=["validate", "build-php", "build-caddy", "build-composer", "build-redis", "build-mysql", "build-postgres-dependencies", "build-postgres", "build-mailpit", "build-rustfs", "build-linux"]
+    upload_steps=12
+    archive_upload_paths=9
+    manifest_upload_paths=9
+    record_upload_paths=9
+    recipe_track_envs=11
+    track_upload_names=11
     staticphp_failure_logs=true
     "###);
 

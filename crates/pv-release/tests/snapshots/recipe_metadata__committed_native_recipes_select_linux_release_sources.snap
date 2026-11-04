@@ -1,0 +1,42 @@
+---
+source: crates/pv-release/tests/recipe_metadata.rs
+expression: sources
+---
+[
+    (
+        "caddy",
+        "linux-amd64",
+        "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_amd64.tar.gz",
+        "527fbf917c39189a1e3b31d34fa955601680b2d5c8055d2a87b8b9588dec7bb9",
+    ),
+    (
+        "caddy",
+        "linux-arm64",
+        "https://github.com/caddyserver/caddy/releases/download/v2.11.4/caddy_2.11.4_linux_arm64.tar.gz",
+        "52d42ae12b3462097e9868da6dfed3c9648ae12edd3b3638102312af84cb6904",
+    ),
+    (
+        "mailpit",
+        "linux-amd64",
+        "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-amd64.tar.gz",
+        "0c7f96daad083977ee49a41ada6376799b998c82f98840ef8962b95fb2230955",
+    ),
+    (
+        "mailpit",
+        "linux-arm64",
+        "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-arm64.tar.gz",
+        "fdc4b97a9047f4eed875e8b1902db0074916d66d51a27856655c1f9f7f40f150",
+    ),
+    (
+        "rustfs",
+        "linux-amd64",
+        "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-linux-x86_64-musl-v1.0.0-beta.7.zip",
+        "f13bc89efa7881a199bf286390a89c7320ee2e52d90c341affd41bc5e7ba2677",
+    ),
+    (
+        "rustfs",
+        "linux-arm64",
+        "https://github.com/rustfs/rustfs/releases/download/1.0.0-beta.7/rustfs-linux-aarch64-musl-v1.0.0-beta.7.zip",
+        "989552479bfb2cc8e1ffa3af9c95da072d082a2e7124f54a1af1b1dcb68264ce",
+    ),
+]

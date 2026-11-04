@@ -1,0 +1,81 @@
+---
+source: crates/pv-release/tests/smoke.rs
+expression: results
+---
+[
+    (
+        "valid",
+        true,
+        "",
+    ),
+    (
+        "legacy-rpath",
+        true,
+        "",
+    ),
+    (
+        "static",
+        true,
+        "",
+    ),
+    (
+        "static",
+        false,
+        "error: <tmp>/static/bin/tool ELF architecture <native-arch> does not match expected <other-arch> for <other-platform>\n",
+    ),
+    (
+        "absolute-rpath",
+        false,
+        "error: <tmp>/absolute-rpath/bin/tool ELF library search path is not ORIGIN-relative: /tmp/build/lib\n",
+    ),
+    (
+        "relative-rpath",
+        false,
+        "error: <tmp>/relative-rpath/bin/tool ELF library search path is not ORIGIN-relative: ../lib\n",
+    ),
+    (
+        "empty-entry",
+        false,
+        "error: <tmp>/empty-entry/bin/tool ELF library search path is not ORIGIN-relative: \n",
+    ),
+    (
+        "empty-rpath",
+        false,
+        "error: <tmp>/empty-rpath/bin/tool ELF library search path is not ORIGIN-relative: \n",
+    ),
+    (
+        "missing-library",
+        false,
+        "error: <tmp>/missing-library/bin/tool ELF dependency is not a system library or bundled file: libfixture.so.1\n",
+    ),
+    (
+        "directory-library",
+        false,
+        "error: <tmp>/directory-library/bin/tool ELF dependency is not a system library or bundled file: libfixture.so.1\n",
+    ),
+    (
+        "soname",
+        false,
+        "error: <tmp>/soname/lib/librenamed.so.1 ELF filename does not match SONAME libfixture.so.1\n",
+    ),
+    (
+        "newer-definition",
+        false,
+        "error: <tmp>/newer-definition/share/nested/libfixture.so.1 ELF symbol version GLIBC_2.36 is newer than GLIBC_2.35\n",
+    ),
+    (
+        "newer-requirement",
+        false,
+        "error: <tmp>/newer-requirement/bin/tool ELF symbol version GLIBC_2.36 is newer than GLIBC_2.35\n",
+    ),
+    (
+        "newer-abi",
+        false,
+        "error: <tmp>/newer-abi/bin/tool ELF symbol version GLIBC_ABI_DT_RELR requires glibc 2.36\n",
+    ),
+    (
+        "inspection-error",
+        false,
+        "error: failed to inspect file type for <tmp>/static/bin/tool\n",
+    ),
+]
