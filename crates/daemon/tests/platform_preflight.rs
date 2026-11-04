@@ -1,4 +1,4 @@
-#![cfg(not(target_os = "macos"))]
+#![cfg(not(unix))]
 
 use std::io::Write;
 use std::sync::Arc;

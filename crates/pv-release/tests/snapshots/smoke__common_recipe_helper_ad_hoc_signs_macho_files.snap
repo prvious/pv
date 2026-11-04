@@ -1,5 +1,9 @@
 ---
 source: crates/pv-release/tests/smoke.rs
-expression: "read_file(&sign_log)?.replace(tempdir.path().as_str(), \"<tmp>\")"
+expression: signed_files
 ---
-"argv=[--force][--sign][-][<tmp>/artifact/bin/mysql]\nargv=[--force][--sign][-][<tmp>/artifact/bin/mysqladmin]\nargv=[--force][--sign][-][<tmp>/artifact/lib/libmysqlclient.dylib]\n"
+[
+    "argv=[--force][--sign][-][<tmp>/artifact/bin/mysql]",
+    "argv=[--force][--sign][-][<tmp>/artifact/bin/mysqladmin]",
+    "argv=[--force][--sign][-][<tmp>/artifact/lib/libmysqlclient.dylib]",
+]

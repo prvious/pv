@@ -199,6 +199,9 @@ jobs:
         runner: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-22.04","ubuntu-26.04"]' || '["ubuntu-22.04","ubuntu-24.04","ubuntu-26.04","ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    env:
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
 
     steps:
       - name: Checkout
@@ -220,7 +223,7 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146
 
-      - name: Run portable suites and explicit unsupported boundaries
+      - name: Run Linux workspace tests
         id: tests
         run: |
           cat > "$RUNNER_TEMP/nextest-user.toml" <<'EOF'
@@ -230,7 +233,7 @@ jobs:
           [record]
           enabled = true
           EOF
-          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --all-features --locked --jobs 1 -p state -p config -p protocol -p resources -p self-update -p platform -p daemon -E 'package(state) | package(config) | package(protocol) | package(resources) | package(self-update) | package(platform) | binary(platform_preflight) | test(runtime_stop::tests::)'
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --workspace --all-features --locked
 
       - name: Export test recording
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}

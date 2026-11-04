@@ -218,7 +218,8 @@ fn redis_uninstall_reports_preserved_data_on_both_surfaces() -> anyhow::Result<(
     let plain = run_pv(&["redis:uninstall", DEFAULT_TRACK, "--force"], &environment)?;
     let mut terminal_environment =
         TestEnvironment::new(&terminal_home, &current_dir, ScriptedClient::new());
-    terminal_environment.terminal_width = Some(120);
+    // Linux temporary paths are shorter; 60 columns preserve the macOS snapshot wrapping.
+    terminal_environment.terminal_width = Some(if cfg!(target_os = "linux") { 60 } else { 120 });
     let terminal = run_pv(
         &["redis:uninstall", DEFAULT_TRACK, "--force", "--no-color"],
         &terminal_environment,

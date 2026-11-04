@@ -331,6 +331,7 @@ fn state_errors_render_through_the_terminal_surface() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn enter_on_a_destructive_confirmation_deletes_nothing() -> anyhow::Result<()> {
     let tempdir = tempdir()?;

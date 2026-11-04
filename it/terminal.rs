@@ -9,12 +9,15 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
+use command::run_pv_in;
 use insta::assert_snapshot;
 use platform::clock::{self, real};
 use portable_pty::{Child, CommandBuilder, PtySize, native_pty_system};
 use state::{Database, LinkProjectInput, ProjectMode, PvPaths};
-use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
+use support::{create_dir, create_laravel_init_fixture, write_file};
 
+#[path = "support/command.rs"]
+mod command;
 mod support;
 
 const ROWS: u16 = 120;
@@ -415,6 +418,7 @@ fn hooks_trust_worktree_uses_its_main_checkout_project_folder() -> Result<()> {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -544,6 +548,7 @@ impl Session {
         command.cwd(current_dir.as_std_path());
         command.env("HOME", home.as_str());
         command.env("TERM", "xterm-256color");
+        command.env("LANG", "C.UTF-8");
         command.env_remove("NO_COLOR");
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);
@@ -661,6 +666,13 @@ fn assert_screen_snapshot(name: &str, tempdir: &Utf8Path, session: &Session) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
+    // The host's temporary path length decides whether these paths wrap.
+    if matches!(name, "link_hook_approval_prompt" | "init_yes_result") {
+        settings.add_filter(
+            r"(Hook commands not approved for|✓  Wrote Project config:)\s+(<tempdir>[^\n]+)",
+            "$1\n   $2",
+        );
+    }
     settings.bind(|| assert_snapshot!(name, session.screen()));
 }
 

@@ -17,7 +17,9 @@ use platform::clock::{self, Deadline, Limit};
 use platform::loopback_tcp_port_available;
 use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
 #[cfg(target_os = "macos")]
-use rustix::process::{Pid, Signal, kill_process_group, test_kill_process_group};
+use rustix::process::test_kill_process_group;
+#[cfg(unix)]
+use rustix::process::{Pid, Signal, kill_process_group};
 use sha2::{Digest, Sha256};
 use state::{
     Database, ManagedResourceDesiredState, ManagedResourceTrackRecord, PortOwner,
@@ -65,7 +67,7 @@ const CONFIG_VALIDATION_CLEANUP_TIMEOUT: Limit =
 /// How long the fallback reaper waits for a stopped validator's processes to exit.
 const CONFIG_VALIDATION_REAP_TIMEOUT: Limit =
     Limit::new("config validation reap", Duration::from_secs(1));
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; done\nkill -KILL 0\n";
 /// How long a Gateway or worker gets to become ready after it starts. A first launch of a newly
 /// installed binary can be slow while macOS scans it.
@@ -2143,7 +2145,7 @@ async fn kill_and_wait_validation_child(
     combine_validation_cleanup_results(kill_result, wait_result)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn spawn_validation_process_group_anchor(
     fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
 ) -> Result<(Option<i32>, Option<tokio::process::Child>), DaemonError> {
@@ -2205,7 +2207,7 @@ fn spawn_validation_process_group_anchor(
     Ok((Some(group_pid), anchor))
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn spawn_validation_process_group_anchor(
     _fallback_reaper: &mpsc::Sender<ValidationProcessReap>,
 ) -> Result<(Option<i32>, Option<tokio::process::Child>), DaemonError> {
@@ -2234,7 +2236,7 @@ async fn run_validation_command(
     command_process.envs(private_environment);
     let fallback_reaper = start_validation_process_reaper()?;
     let (group_pid, group_anchor) = spawn_validation_process_group_anchor(&fallback_reaper)?;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     if let Some(group_pid) = group_pid {
         command_process.process_group(group_pid);
     }
@@ -2441,7 +2443,7 @@ where
     Ok(content)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn signal_validation_process_group(pid: Option<i32>) -> Result<(), DaemonError> {
     let process_group = validation_process_group(pid).ok_or_else(|| {
         io::Error::new(
@@ -2455,12 +2457,12 @@ fn signal_validation_process_group(pid: Option<i32>) -> Result<(), DaemonError> 
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn signal_validation_process_group(_pid: Option<i32>) -> Result<(), DaemonError> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn validation_process_group(pid: Option<i32>) -> Option<Pid> {
     pid.and_then(Pid::from_raw)
 }
@@ -2479,7 +2481,7 @@ async fn wait_for_validation_process_group_exit(pid: Option<i32>) -> Result<(), 
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn validation_process_group_exists(pid: Option<i32>) -> Result<bool, DaemonError> {
     let process_group = validation_process_group(pid).ok_or_else(|| {
         io::Error::new(
@@ -2487,6 +2489,11 @@ fn validation_process_group_exists(pid: Option<i32>) -> Result<bool, DaemonError
             "validation process id must be positive",
         )
     })?;
+    #[cfg(target_os = "linux")]
+    return Ok(platform::process_group_has_live_members(
+        u32::try_from(process_group.as_raw_pid()).map_err(io::Error::other)?,
+    )?);
+    #[cfg(target_os = "macos")]
     match test_kill_process_group(process_group) {
         Ok(()) => Ok(true),
         Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => Ok(false),
@@ -2494,7 +2501,7 @@ fn validation_process_group_exists(pid: Option<i32>) -> Result<bool, DaemonError
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn validation_process_group_exists(_pid: Option<i32>) -> Result<bool, DaemonError> {
     Ok(false)
 }
@@ -5411,7 +5418,7 @@ fn worker_config_private_environment(
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use std::process::Stdio;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -5420,7 +5427,7 @@ mod tests {
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use insta::assert_debug_snapshot;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use platform::clock::real;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
@@ -5440,7 +5447,7 @@ mod tests {
         gateway_readiness_ports, project_config_file_name, run_validation_command,
         spawn_gateway_pf_inspection, wait_for_transaction_step,
     };
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use super::{
         RuntimeProcessCommand, spawn_validation_process_group_anchor,
         start_validation_process_reaper, wait_for_validation_process_group_exit,
@@ -5545,7 +5552,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn validation_group_anchor_stops_group_when_owner_pipe_closes() -> Result<()> {
         let fallback_reaper = start_validation_process_reaper()?;

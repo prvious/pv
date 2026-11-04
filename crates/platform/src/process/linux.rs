@@ -106,6 +106,15 @@ fn stat_is_zombie(stat: &Stat) -> bool {
     matches!(stat.state, 'Z' | 'X') && stat.num_threads == 1
 }
 
+pub(super) fn inspect_process_comm(pid: u32) -> Result<Option<String>, PlatformError> {
+    let Some(process) = open_process(pid).map_err(inspection_error)? else {
+        return Ok(None);
+    };
+    Ok(read_stat(&process)
+        .map_err(inspection_error)?
+        .map(|stat| stat.comm))
+}
+
 pub(super) fn inspect_process_identity(pid: u32) -> Result<Option<ProcessIdentity>, PlatformError> {
     inspect_identity(pid, || Ok(())).map_err(inspection_error)
 }
