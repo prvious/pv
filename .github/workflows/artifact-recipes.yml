@@ -43,7 +43,7 @@ permissions:
 jobs:
   validate:
     name: validate
-    runs-on: macos-15
+    runs-on: ${{ (inputs.platform == 'all-linux' || startsWith(inputs.platform, 'linux-')) && 'ubuntu-24.04' || 'macos-15' }}
     outputs:
       linux_matrix: ${{ steps.linux-matrix.outputs.matrix }}
 
