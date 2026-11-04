@@ -110,7 +110,7 @@ pub enum PlatformError {
     #[error("PV privileged helper authentication failed: {0}")]
     PrivilegedHelperAuthentication(String),
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[error("could not inspect process identity: {source}")]
     ProcessIdentityInspection {
         #[source]

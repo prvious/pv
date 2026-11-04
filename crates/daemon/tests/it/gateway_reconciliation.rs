@@ -3153,7 +3153,7 @@ async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_com
     )?;
     pv_fake::write_gateway_control(
         &paths.gateway_root_config(),
-        json!({"admin_response_gate": admin_response_gate.as_str()}),
+        json!({"load_response_gate": admin_response_gate.as_str()}),
     )?;
 
     let block_final_metadata_write = async {
