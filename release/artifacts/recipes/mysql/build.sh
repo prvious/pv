@@ -24,7 +24,6 @@ DEPLOYMENT_TARGET=13.0
 recipe_dir="$ROOT/release/artifacts/recipes/mysql"
 MYSQL_97_APPLECLANG_PATCH="$recipe_dir/patches/mysql-9.7.0-appleclang-parse-options.patch"
 
-need brew
 need cargo
 need cmake
 need curl
@@ -38,7 +37,16 @@ need readlink
 need tar
 
 case "$PLATFORM" in
-  darwin-arm64 | darwin-amd64) ;;
+  darwin-arm64 | darwin-amd64) need brew ;;
+  linux-amd64 | linux-arm64)
+    need cc
+    need file
+    need patchelf
+    need readelf
+    [ "$(uname -s)" = Linux ] || die "Linux MySQL artifacts require a native Linux runner"
+    [ "$(uname -m)" = "$(expected_arch_for_platform "$PLATFORM")" ] || die "MySQL runner architecture does not match $PLATFORM"
+    export LC_ALL=C
+    ;;
   *) die "unsupported MySQL artifact platform: $PLATFORM" ;;
 esac
 
@@ -51,12 +59,19 @@ if [ -z "$BUILD_JOBS" ]; then
 fi
 
 if [ -z "$BISON_EXECUTABLE" ]; then
-  BISON_PREFIX=$(brew --prefix bison 2>/dev/null || true)
-  if [ -z "$BISON_PREFIX" ] || [ ! -x "$BISON_PREFIX/bin/bison" ]; then
-    brew install bison
-    BISON_PREFIX=$(brew --prefix bison)
-  fi
-  BISON_EXECUTABLE="$BISON_PREFIX/bin/bison"
+  case "$PLATFORM" in
+    darwin-arm64 | darwin-amd64)
+      BISON_PREFIX=$(brew --prefix bison 2>/dev/null || true)
+      if [ -z "$BISON_PREFIX" ] || [ ! -x "$BISON_PREFIX/bin/bison" ]; then
+        brew install bison
+        BISON_PREFIX=$(brew --prefix bison)
+      fi
+      BISON_EXECUTABLE="$BISON_PREFIX/bin/bison"
+      ;;
+    linux-amd64 | linux-arm64)
+      BISON_EXECUTABLE=$(command -v bison) || die "Bison executable not found"
+      ;;
+  esac
 fi
 [ -x "$BISON_EXECUTABLE" ] || die "Bison executable not found: $BISON_EXECUTABLE"
 
@@ -100,8 +115,8 @@ extract_source() {
 apply_mysql_source_patches() {
   source_dir=$1
 
-  case "$PV_UPSTREAM_VERSION" in
-    9.7.0)
+  case "$PLATFORM:$PV_UPSTREAM_VERSION" in
+    darwin-*:9.7.0)
       # AppleClang 15 rejects MySQL's single-option aggregate initialization.
       patch -d "$source_dir" -p1 <"$MYSQL_97_APPLECLANG_PATCH"
       ;;
@@ -144,17 +159,42 @@ copy_install_tree() {
       mv "$tmp" "$path" || exit 1
     done
   ' sh {} +
-  rewrite_macho_install_names "$root_dir" "$install_dir" "$OPENSSL_PREFIX"
-  pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
   for binary in mysqld mysql mysqladmin; do
     [ -x "$root_dir/bin/$binary" ] || die "MySQL artifact missing bin/$binary"
-    pv_recipe_validate_macho_binary "$root_dir/bin/$binary" "$PLATFORM" "$DEPLOYMENT_TARGET"
   done
-  if [ -d "$root_dir/lib" ]; then
-    find "$root_dir/lib" -type f \( -name '*.dylib' -o -name '*.so' \) | while IFS= read -r library; do
-      pv_recipe_validate_macho_binary "$library" "$PLATFORM" "$DEPLOYMENT_TARGET"
-    done
-  fi
+  case "$PLATFORM" in
+    darwin-arm64 | darwin-amd64)
+      rewrite_macho_install_names "$root_dir" "$install_dir" "$OPENSSL_PREFIX"
+      pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
+      for binary in mysqld mysql mysqladmin; do
+        pv_recipe_validate_macho_binary "$root_dir/bin/$binary" "$PLATFORM" "$DEPLOYMENT_TARGET"
+      done
+      if [ -d "$root_dir/lib" ]; then
+        find "$root_dir/lib" -type f \( -name '*.dylib' -o -name '*.so' \) | while IFS= read -r library; do
+          pv_recipe_validate_macho_binary "$library" "$PLATFORM" "$DEPLOYMENT_TARGET"
+        done
+      fi
+      ;;
+    linux-amd64 | linux-arm64)
+      mkdir -p "$root_dir/lib"
+      libraries=$(pv_recipe_openssl_library_names_for_platform "$PLATFORM")
+      for library_name in $libraries; do
+        cp "$OPENSSL_PREFIX/lib/$library_name" "$root_dir/lib/$library_name"
+      done
+      libaio=$(cc -print-file-name=libaio.so.1) || die "failed to locate builder libaio.so.1"
+      [ -f "$libaio" ] || die "builder libaio.so.1 not found: $libaio"
+      cp "$libaio" "$root_dir/lib/libaio.so.1"
+      cp "$OPENSSL_PREFIX/LICENSE.txt" "$root_dir/OPENSSL-LICENSE"
+      cp /usr/share/doc/libaio1/copyright "$root_dir/LIBAIO-NOTICE"
+      cp /usr/share/common-licenses/LGPL-2.1 "$root_dir/LIBAIO-LICENSE"
+      if [ "$PV_TRACK" = "9.7" ]; then
+        cp "$source_dir/extra/curl/curl-8.14.1/COPYING" "$root_dir/CURL-LICENSE"
+      fi
+      cp /usr/share/doc/libtinfo6/copyright "$root_dir/NCURSES-LICENSE"
+      pv_recipe_normalize_elf_tree "$root_dir"
+      pv_recipe_validate_elf_tree "$root_dir" "$PLATFORM"
+      ;;
+  esac
   cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
   cp "$recipe_dir/NOTICE" "$root_dir/NOTICE"
 }
@@ -189,6 +229,14 @@ record_boost_source_input=false
 
 write_mysql_record() {
   set -- "$record" mysql "$PV_TRACK" "$PV_UPSTREAM_VERSION" "$PV_PV_BUILD_REVISION" "$PV_PLATFORM" "$object_key" "$archive" "$PV_SOURCE_URL" "$PV_SOURCE_SHA256" release/artifacts/recipes/mysql/build.sh "$PV_COMMIT" "$BUILD_RUN_ID" "$PV_MINIMUM_PV_VERSION"
+  case "$PLATFORM" in
+    linux-amd64 | linux-arm64)
+      set -- "$@" --license-file LICENSE --license-file OPENSSL-LICENSE --license-file LIBAIO-LICENSE --license-file NCURSES-LICENSE --notice-file NOTICE --notice-file LIBAIO-NOTICE
+      if [ "$PV_TRACK" = "9.7" ]; then
+        set -- "$@" --license-file CURL-LICENSE
+      fi
+      ;;
+  esac
   if [ "$record_openssl_source_input" = true ]; then
     set -- "$@" --source-input openssl "$OPENSSL_SOURCE_URL" "$OPENSSL_SOURCE_SHA256"
   fi
@@ -225,11 +273,9 @@ if [ "$PV_TRACK" = "8.0" ] && [ -z "$BOOST_PREFIX" ]; then
   record_boost_source_input=true
 fi
 
-export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
 set -- \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_INSTALL_PREFIX="$install_dir" \
-  -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET" \
   -DBISON_EXECUTABLE="$BISON_EXECUTABLE" \
   -DINSTALL_LAYOUT=STANDALONE \
   -DMYSQL_DATADIR="$install_dir/data" \
@@ -243,6 +289,20 @@ set -- \
   -DWITH_UNIT_TESTS=OFF \
   -DWITH_ZLIB=bundled \
   -DWITH_ZSTD=bundled
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
+    set -- "$@" -DCMAKE_OSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
+    ;;
+  linux-amd64 | linux-arm64)
+    curses_library=$(cc -print-file-name=libtinfo.a) || die "failed to locate builder libtinfo.a"
+    [ -f "$curses_library" ] || die "builder libtinfo.a not found: $curses_library"
+    set -- "$@" -DWITH_NUMA=OFF -DINSTALL_PRIV_LIBDIR=lib -DCURSES_LIBRARY="$curses_library" -DWITH_TIRPC=bundled
+    if [ "$PV_TRACK" = "9.7" ]; then
+      set -- "$@" -DWITH_CURL=bundled
+    fi
+    ;;
+esac
 if [ "$PV_TRACK" = "8.0" ]; then
   set -- "$@" -DDOWNLOAD_BOOST=0 -DWITH_BOOST="$BOOST_PREFIX"
 fi

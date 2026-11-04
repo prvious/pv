@@ -75,6 +75,14 @@ for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
       printf '%s\n' "MySQL SELECT 1 smoke returned: $select_output" >&2
       exit 43
     }
+    case "${PV_UPSTREAM_VERSION:-}:$(uname -s)" in
+      9.7.*:Linux)
+        # The static curl provider must retain both shipped telemetry modules.
+        "$mysql" --protocol=tcp --host=127.0.0.1 --port="$port" --user=root \
+          --plugin-dir="$artifact_root/lib/plugin" --telemetry-client \
+          -e "INSTALL COMPONENT 'file://component_telemetry'; UNINSTALL COMPONENT 'file://component_telemetry';"
+        ;;
+    esac
     "$mysqladmin" --protocol=tcp --host=127.0.0.1 --port="$port" --user=root shutdown
     wait "$server_pid"
     server_pid=

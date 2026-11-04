@@ -3490,8 +3490,10 @@ impl Default for PostgresBuildRecipeOptions {
 }
 
 struct MysqlBuildRecipeOptions {
+    platform: &'static str,
     track: &'static str,
     upstream_version: &'static str,
+    invalid_elf: bool,
     install_broken_plugin_symlink: bool,
     install_broken_required_symlink: bool,
 }
@@ -3499,8 +3501,10 @@ struct MysqlBuildRecipeOptions {
 impl Default for MysqlBuildRecipeOptions {
     fn default() -> Self {
         Self {
+            platform: "darwin-arm64",
             track: "8.4",
             upstream_version: "8.4.9",
+            invalid_elf: false,
             install_broken_plugin_symlink: false,
             install_broken_required_symlink: false,
         }
@@ -4299,18 +4303,31 @@ fn run_mysql_build_recipe_smoke_with_options(
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
     let boost_source_gzip = tempdir.path().join("boost-source.tar.gz");
     let boost_source_archive = tempdir.path().join("boost-source.tar.bz2");
-    let artifact_basename = format!("mysql-{}-pv1-darwin-arm64", options.upstream_version);
-    let openssl_prefix = out_dir
-        .join("work")
-        .join(&artifact_basename)
-        .join("openssl-3.5.7");
+    let linux = options.platform.starts_with("linux-");
+    let artifact_basename = format!(
+        "mysql-{}-pv1-{}",
+        options.upstream_version, options.platform
+    );
+    let openssl_prefix = if linux {
+        tempdir.path().join("openssl")
+    } else {
+        out_dir
+            .join("work")
+            .join(&artifact_basename)
+            .join("openssl-3.5.7")
+    };
     let bison_prefix = tempdir.path().join("bison");
-    let bison_executable = bison_prefix.join("bin/bison");
+    let bison_executable = if linux {
+        Utf8PathBuf::from("/usr/bin/bison")
+    } else {
+        bison_prefix.join("bin/bison")
+    };
     let curl_log = tempdir.path().join("curl.log");
     let cmake_log = tempdir.path().join("cmake.log");
     let openssl_build_log = tempdir.path().join("openssl-build.log");
     let validate_log = tempdir.path().join("validate.log");
     let codesign_log = tempdir.path().join("codesign.log");
+    let record_arguments_log = tempdir.path().join("record-arguments.log");
 
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "mysql-source")?;
@@ -4333,33 +4350,68 @@ fn run_mysql_build_recipe_smoke_with_options(
         command_output_debug(&compressed)
     );
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
-    write_fake_brew(&fake_bin.join("brew"))?;
-    write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
-    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
-    write_fake_lipo(&fake_bin.join("lipo"))?;
-    write_fake_otool(&fake_bin.join("otool"))?;
-    write_fake_macho_file(&fake_bin.join("file"))?;
-    write_fake_codesign(&fake_bin.join("codesign"))?;
-    write_fake_mysql_make(&fake_bin.join("make"))?;
-    write_fake_openssl_perl(&fake_bin.join("perl"))?;
-    write_fake_cpu_tools(&fake_bin)?;
+    if linux {
+        let output = StdCommand::new("/bin/sh")
+            .args([
+                "-ec",
+                r#"mkdir -p "$PV_TEST_OPENSSL_PREFIX/include/openssl" "$PV_TEST_OPENSSL_PREFIX/lib"
+printf '%s\n' 'fixture header' > "$PV_TEST_OPENSSL_PREFIX/include/openssl/ssl.h"
+printf '%s\n' 'fixture license' > "$PV_TEST_OPENSSL_PREFIX/LICENSE.txt"
+printf '%s\n' 'int crypto_fixture(void) { return 1; }' > crypto.c
+printf '%s\n' 'int crypto_fixture(void); int ssl_fixture(void) { return crypto_fixture(); }' > ssl.c
+cc -shared -fPIC crypto.c -Wl,-soname,libcrypto.so.3 -o "$PV_TEST_OPENSSL_PREFIX/lib/libcrypto.so.3"
+cc -shared -fPIC ssl.c -L"$PV_TEST_OPENSSL_PREFIX/lib" -l:libcrypto.so.3 -Wl,-soname,libssl.so.3 '-Wl,-rpath,$ORIGIN' -o "$PV_TEST_OPENSSL_PREFIX/lib/libssl.so.3"
+"#,
+            ])
+            .current_dir(tempdir.path())
+            .env("PV_TEST_OPENSSL_PREFIX", &openssl_prefix)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "MySQL OpenSSL fixture compilation failed: {}",
+            command_output_debug(&output)
+        );
+    } else {
+        write_fake_brew(&fake_bin.join("brew"))?;
+        write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
+        write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+        write_fake_lipo(&fake_bin.join("lipo"))?;
+        write_fake_otool(&fake_bin.join("otool"))?;
+        write_fake_macho_file(&fake_bin.join("file"))?;
+        write_fake_codesign(&fake_bin.join("codesign"))?;
+        write_fake_mysql_make(&fake_bin.join("make"))?;
+        write_fake_openssl_perl(&fake_bin.join("perl"))?;
+        write_fake_cpu_tools(&fake_bin)?;
+    }
     write_file(&curl_log, "")?;
     write_file(&cmake_log, "")?;
     write_file(&openssl_build_log, "")?;
     write_file(&validate_log, "")?;
     write_file(&codesign_log, "")?;
+    write_file(&record_arguments_log, "")?;
 
     let build_script = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../release/artifacts/recipes/mysql/build.sh");
-    let output = StdCommand::new(build_script)
+    let mut command = StdCommand::new(build_script);
+    if linux {
+        command
+            .env("PV_MYSQL_OPENSSL_PREFIX", &openssl_prefix)
+            .env_remove("PV_MYSQL_BISON_EXECUTABLE");
+    }
+    let output = command
         .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
         .env("PV_ARTIFACT_OUT_DIR", &out_dir)
         .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
-        .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+        .env("PV_RECIPE_PLATFORM", options.platform)
         .env("PV_RECIPE_TRACK", options.track)
+        .env("PV_BUILD_JOBS", "1")
+        .env(
+            "PV_TEST_MYSQL_INVALID_ELF",
+            if options.invalid_elf { "1" } else { "" },
+        )
         .env("PV_TEST_CMAKE_LOG", &cmake_log)
         .env("PV_TEST_CODESIGN_LOG", &codesign_log)
         .env("PV_TEST_CURL_LOG", &curl_log)
@@ -4410,6 +4462,7 @@ fn run_mysql_build_recipe_smoke_with_options(
         .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
         .env("PV_TEST_UPSTREAM_VERSION", options.upstream_version)
         .env("PV_TEST_VALIDATE_LOG", &validate_log)
+        .env("PV_TEST_RECORD_ARGUMENTS_LOG", &record_arguments_log)
         .output()?;
 
     let artifact_version = format!("{}-pv1", options.upstream_version);
@@ -4418,8 +4471,60 @@ fn run_mysql_build_recipe_smoke_with_options(
         .join("mysql")
         .join(options.track)
         .join(&artifact_version)
-        .join("darwin-arm64")
+        .join(options.platform)
         .join(format!("{artifact_basename}.json"));
+    let archive_exists = path_exists(&archive);
+    if linux && archive_exists {
+        let relocated = tempdir.path().join("relocated");
+        create_dir_all(&relocated)?;
+        let extraction = StdCommand::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&relocated)
+            .output()?;
+        assert!(
+            extraction.status.success(),
+            "{}",
+            command_output_debug(&extraction)
+        );
+        for (prefix, hidden) in [
+            (out_dir.join("work"), tempdir.path().join("hidden-build")),
+            (
+                openssl_prefix.clone(),
+                tempdir.path().join("hidden-openssl"),
+            ),
+        ] {
+            let hidden_output = StdCommand::new("mv").arg(prefix).arg(hidden).output()?;
+            assert!(
+                hidden_output.status.success(),
+                "hiding build prefix failed: {}",
+                command_output_debug(&hidden_output)
+            );
+        }
+        let root = relocated.join(&artifact_basename);
+        for library in [
+            "libaio.so.1",
+            "libssl.so.3",
+            "libcrypto.so.3",
+            "libmysqlclient.so.24",
+            "libprivate_fixture.so.1",
+        ] {
+            let path = root.join("lib").join(library);
+            assert!(path.is_file() && !path.is_symlink());
+        }
+        for relative in ["bin/mysqld", "lib/plugin/nested-probe"] {
+            let relocated_output = StdCommand::new(root.join(relative))
+                .env_remove("LD_LIBRARY_PATH")
+                .env_remove("LD_PRELOAD")
+                .output()?;
+            assert!(
+                relocated_output.status.success(),
+                "relocated {relative} failed: {}",
+                command_output_debug(&relocated_output)
+            );
+        }
+    }
 
     Ok(MysqlBuildRecipeRun {
         output,
@@ -4429,7 +4534,7 @@ fn run_mysql_build_recipe_smoke_with_options(
         openssl_build_log: read_file(&openssl_build_log)?,
         openssl_prefix: openssl_prefix.to_string(),
         validate_log: read_file(&validate_log)?,
-        archive_exists: path_exists(&archive),
+        archive_exists,
     })
 }
 
