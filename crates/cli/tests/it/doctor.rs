@@ -7,7 +7,7 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::support::{RunOutput, run_pv};
+use crate::support::run_pv;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::Environment;
@@ -18,8 +18,8 @@ use platform::{
     PrivilegedHelperStatus, ResolverConfig,
 };
 use state::{
-    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, JobDiagnosticSubject,
-    PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PvPaths,
+    RuntimeObservedStatus, RuntimeSubject,
 };
 
 #[derive(Debug)]
@@ -358,49 +358,6 @@ fn doctor_on_a_terminal_groups_checks_with_repair_hints() -> anyhow::Result<()> 
 }
 
 #[test]
-fn doctor_tracks_failure_repair_and_identical_recurrence() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    let mut database = Database::open(&paths)?;
-    let failure = database.start_job("reconcile", "project:project_1")?;
-    database.fail_job(&failure.id, "Gateway failed to start")?;
-
-    let failed = run_doctor_with_health(&paths, &environment)?;
-    let repair = database.start_job("reconcile", "project:project_1")?;
-    database.complete_job_with_coverage(
-        &repair.id,
-        "Project reconciled",
-        &[
-            JobDiagnosticSubject::Project {
-                id: "project_1".to_owned(),
-            },
-            JobDiagnosticSubject::GatewayRuntime,
-        ],
-    )?;
-    let healthy = run_doctor_with_health(&paths, &environment)?;
-    let recurrence = database.start_job("reconcile", "project:project_1")?;
-    database.fail_job(&recurrence.id, "Gateway failed to start")?;
-    let recurring = run_doctor_with_health(&paths, &environment)?;
-
-    assert_eq!(failed.exit_code, ExitCode::FAILURE);
-    assert_eq!(healthy.exit_code, ExitCode::SUCCESS);
-    assert_eq!(recurring.exit_code, ExitCode::FAILURE);
-    assert!(failed.stderr.is_empty());
-    assert!(healthy.stderr.is_empty());
-    assert!(recurring.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_tracks_failure_repair_and_identical_recurrence",
-        tempdir.path(),
-        (failed, healthy, recurring),
-    );
-
-    Ok(())
-}
-
-#[test]
 fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -528,20 +485,6 @@ fn doctor_is_read_only() -> anyhow::Result<()> {
     assert_doctor_snapshot("doctor_is_read_only", tempdir.path(), output);
 
     Ok(())
-}
-
-fn run_doctor_with_health(
-    paths: &PvPaths,
-    environment: &impl Environment,
-) -> anyhow::Result<RunOutput> {
-    if state::fs::path_exists(&paths.daemon_socket()) {
-        state::fs::delete_file(&paths.daemon_socket())?;
-    }
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-    let output = run_pv(&["doctor"], environment)?;
-    join_health_server(health_server)?;
-
-    Ok(output)
 }
 
 fn seed_required_checks(

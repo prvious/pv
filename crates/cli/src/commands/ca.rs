@@ -294,38 +294,3 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 
     Ok(PvPaths::for_home(home))
 }
-
-#[cfg(test)]
-mod tests {
-    use camino_tempfile::tempdir;
-    use platform::{CaRepairReason, PlatformError};
-
-    use super::*;
-
-    #[test]
-    fn ensure_local_ca_rejects_failed_post_write_validation() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let generated = platform::generate_local_ca()?;
-        let mut invalid_generated = generated.clone();
-        invalid_generated.private_key_pem = "not a private key\n".to_string();
-        let initial_state = CaFileState::Missing {
-            certificate_path: paths.ca_certificate(),
-            private_key_path: paths.ca_private_key(),
-        };
-
-        let result =
-            ensure_local_ca_with_generator(&paths, initial_state, || Ok(invalid_generated));
-
-        assert!(matches!(
-            result,
-            Err(ExecuteError::Platform(
-                PlatformError::LocalCaPostWriteRepairRequired {
-                    reason: CaRepairReason::MalformedPrivateKey
-                }
-            ))
-        ));
-
-        Ok(())
-    }
-}

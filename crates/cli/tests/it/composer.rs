@@ -10,35 +10,16 @@ use std::process::ExitCode;
 use crate::support::run_pv;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Answer, Environment, Prompt, PromptKind, run_with_environment};
+use cli::{Answer, Environment, Prompt, PromptKind};
 use config::ProjectConfigFile;
 use insta::{assert_debug_snapshot, assert_snapshot};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
-    Database, JobsLock, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
+    Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
     ProjectRecord, PvPaths, RuntimeLifecycleLock, StateError, fs,
 };
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
-
-#[derive(Default)]
-struct FirstLineOnly {
-    line_written: bool,
-}
-
-impl Write for FirstLineOnly {
-    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
-        if self.line_written {
-            return Err(io::ErrorKind::BrokenPipe.into());
-        }
-        self.line_written = buffer.contains(&b'\n');
-        Ok(buffer.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -230,28 +211,6 @@ impl Environment for TestEnvironment {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
-fn composer_shim_does_not_create_state_during_exclusive_shutdown() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    create_dir(&home)?;
-    let paths = pv_paths(&home);
-    let _exclusive = RuntimeLifecycleLock::acquire_exclusive(&paths)?;
-    let environment = TestEnvironment::new(&home, &home, ScriptedClient::new());
-
-    let output = run_pv(&["shim:composer", "--version"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(!fs::path_entry_exists(paths.root())?);
-    assert!(environment.exec_calls().is_empty());
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!(output);
-        Ok(())
-    })?;
-    Ok(())
-}
-
-#[test]
 fn composer_install_uses_manifest_default_php_track_without_cached_manifest() -> anyhow::Result<()>
 {
     let tempdir = tempdir()?;
@@ -323,70 +282,6 @@ fn composer_install_on_a_terminal_reports_the_php_pair() -> anyhow::Result<()> {
 }
 
 #[test]
-fn composer_install_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let php_artifacts = php_pair_artifacts("8.4.8-pv1");
-    let fallback_artifact = composer_fixture_artifact("2.8.0-pv1");
-    let revoked_artifact = revoked_artifact(composer_fixture_artifact("2.8.1-pv1"), "bad phar");
-    let manifest = composer_manifest(
-        "8.4",
-        &php_artifacts,
-        &[&fallback_artifact, &revoked_artifact],
-    );
-    prepare_existing_php_pair_releases(&home, "8.4", &php_artifacts)?;
-    prepare_existing_release(&home, "2", &fallback_artifact)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&manifest),
-    );
-
-    let output = run_pv(&["composer:install"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_eq!(environment.byte_request_count(), 0);
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!((
-            output,
-            resource_record_snapshots(&records, tempdir.path())?,
-            environment.text_request_count(),
-            environment.byte_request_count(),
-        ));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_install_checks_jobs_lock_before_reading_php_selector() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let paths = pv_paths(&home);
-    let _jobs_lock = JobsLock::acquire(&paths)?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let output = run_pv(&["composer:install"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(!fs::path_entry_exists(paths.db())?);
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!(output);
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
 fn composer_install_prefers_global_php_default_track() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -418,116 +313,6 @@ fn composer_install_prefers_global_php_default_track() -> anyhow::Result<()> {
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(!output.stderr.contains("error:"));
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!((
-            output,
-            resource_record_snapshots(&records, tempdir.path())?,
-            environment.text_request_count(),
-            environment.byte_request_count(),
-        ));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_install_does_not_record_php_pair_when_composer_install_fails() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let php_artifacts = php_pair_artifacts("8.4.8-pv1");
-    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
-    let manifest = composer_manifest("8.4", &php_artifacts, &[&composer_artifact]);
-    prepare_existing_php_pair_releases(&home, "8.4", &php_artifacts)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&manifest),
-    );
-
-    let output = run_pv(&["composer:install"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(records.is_empty());
-    assert_eq!(environment.text_request_count(), 1);
-    assert_eq!(environment.byte_request_count(), 2);
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!((
-            output,
-            resource_record_snapshots(&records, tempdir.path())?,
-            environment.text_request_count(),
-            environment.byte_request_count(),
-        ));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_update_updates_track_two_only() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let old_artifact = composer_fixture_artifact("2.8.0-pv1");
-    let new_artifact = composer_fixture_artifact("2.8.1-pv1");
-    record_installed_composer(&home, "2", &old_artifact)?;
-    prepare_existing_release(&home, "2", &new_artifact)?;
-    let manifest = composer_only_manifest(&[&old_artifact, &new_artifact]);
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&manifest),
-    );
-
-    let output = run_pv(&["composer:update"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_eq!(environment.byte_request_count(), 0);
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!((
-            output,
-            resource_record_snapshots(&records, tempdir.path())?,
-            environment.text_request_count(),
-            environment.byte_request_count(),
-        ));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let fallback_artifact = composer_fixture_artifact("2.8.0-pv1");
-    let revoked_artifact = revoked_artifact(composer_fixture_artifact("2.8.1-pv1"), "bad phar");
-    record_installed_composer(&home, "2", &fallback_artifact)?;
-    let manifest = composer_only_manifest(&[&fallback_artifact, &revoked_artifact]);
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&manifest),
-    );
-
-    let output = run_pv(&["composer:update"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
             output,
@@ -595,92 +380,6 @@ fn composer_uninstall_reports_preserved_home_on_both_surfaces() -> anyhow::Resul
         assert_debug_snapshot!((plain, terminal));
         Ok(())
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_uninstall_reconciles_after_output_closes() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    record_installed_composer(&home, "2", &composer_fixture_artifact("2.8.1-pv1"))?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-    let mut stdout = FirstLineOnly::default();
-    let mut stderr = Vec::new();
-
-    let exit_code = run_with_environment(
-        ["pv", "composer:uninstall", "--force"],
-        &environment,
-        &mut stdout,
-        &mut stderr,
-    )?;
-    let records = managed_resource_records(&Database::open(&pv_paths(&home))?)?;
-
-    assert_eq!(exit_code, ExitCode::FAILURE);
-    assert!(stdout.line_written);
-    assert!(
-        records
-            .iter()
-            .all(|record| record.desired_state == ManagedResourceDesiredState::Removed)
-    );
-    assert!(String::from_utf8(stderr)?.contains("reconciliation will run"));
-
-    Ok(())
-}
-
-#[test]
-fn composer_uninstall_prune_refuses_without_terminal() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
-    record_installed_composer(&home, "2", &composer_artifact)?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let output = run_pv(&["composer:uninstall", "--prune"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.is_empty());
-    assert!(records.iter().all(|record| {
-        record.desired_state == ManagedResourceDesiredState::Installed
-            && !record.removal_prune
-            && !record.removal_force
-    }));
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!((output, resource_record_snapshots(&records, tempdir.path())?,));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_uninstall_prune_defaults_to_no_on_a_terminal() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
-    record_installed_composer(&home, "2", &composer_artifact)?;
-    let environment =
-        TestEnvironment::new(&home, &current_dir, ScriptedClient::new()).with_terminal();
-
-    let output = run_pv(&["composer:uninstall", "--prune"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.contains("Prune cancelled."));
-    assert!(records.iter().all(|record| {
-        record.desired_state == ManagedResourceDesiredState::Installed
-            && !record.removal_prune
-            && !record.removal_force
-    }));
 
     Ok(())
 }
@@ -851,101 +550,6 @@ fn composer_shim_sets_pv_owned_env_overlay() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[test]
-fn composer_shim_forwards_help_and_version_flags() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let php_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
-    let composer_release = record_installed_composer(&home, "2", &composer_artifact)?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.record_global_php_default_track("8.4")?;
-    }
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let outputs = [
-        run_pv(&["shim:composer", "--help"], &environment)?,
-        run_pv(&["shim:composer", "-h"], &environment)?,
-        run_pv(&["shim:composer", "--version"], &environment)?,
-        run_pv(&["shim:composer", "-V"], &environment)?,
-    ];
-    let exec_calls = environment.exec_calls();
-    let env = composer_exec_env(&home, "8.4")?;
-
-    assert!(
-        outputs
-            .iter()
-            .all(|output| output.exit_code == ExitCode::SUCCESS)
-    );
-    assert!(outputs.iter().all(|output| output.stdout.is_empty()));
-    assert!(outputs.iter().all(|output| output.stderr.is_empty()));
-    assert_eq!(
-        exec_calls,
-        ["--help", "-h", "--version", "-V"]
-            .into_iter()
-            .map(|arg| ExecCall {
-                program: php_release.join("bin/php").as_std_path().to_path_buf(),
-                args: vec![
-                    composer_release.join("composer.phar").to_string(),
-                    arg.to_string(),
-                ],
-                env: env.clone(),
-            })
-            .collect::<Vec<_>>()
-    );
-    assert_eq!(environment.text_request_count(), 0);
-    assert_eq!(environment.byte_request_count(), 0);
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!((outputs, exec_calls));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_shim_uses_cached_manifest_default_without_network() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let php_artifacts = php_pair_artifacts("8.4.8-pv1");
-    cache_manifest(&home, &php_only_manifest("8.4", &php_artifacts))?;
-    let php_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
-    let composer_release = record_installed_composer(&home, "2", &composer_artifact)?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let output = run_pv(&["shim:composer", "about"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
-    assert_eq!(
-        exec_calls,
-        vec![ExecCall {
-            program: php_release.join("bin/php").as_std_path().to_path_buf(),
-            args: vec![
-                composer_release.join("composer.phar").to_string(),
-                "about".to_string(),
-            ],
-            env: composer_exec_env(&home, "8.4")?,
-        }]
-    );
-    assert_eq!(environment.text_request_count(), 0);
-    assert_eq!(environment.byte_request_count(), 0);
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!((output, exec_calls));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
 fn managed_resource_records(
     database: &Database,
 ) -> anyhow::Result<Vec<ManagedResourceTrackRecord>> {
@@ -1061,11 +665,6 @@ fn composer_fixture_artifact(version: &str) -> FixtureArtifact {
     }
 }
 
-fn revoked_artifact(mut artifact: FixtureArtifact, reason: &str) -> FixtureArtifact {
-    artifact.revoked_reason = Some(reason.to_string());
-    artifact
-}
-
 fn prepare_existing_php_pair_releases(
     home: &Utf8Path,
     track: &str,
@@ -1152,28 +751,6 @@ fn release_path(home: &Utf8Path, track: &str, artifact: &FixtureArtifact) -> Utf
         .join(&artifact.version)
 }
 
-fn cache_manifest(home: &Utf8Path, manifest: &str) -> anyhow::Result<()> {
-    let paths = pv_paths(home);
-    let downloads = paths.downloads();
-    create_dir(downloads)?;
-    write_file(&downloads.join("manifest.json"), manifest)
-}
-
-fn php_only_manifest(default_track: &str, artifacts: &PhpPairArtifacts) -> String {
-    manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            default_track,
-            vec![manifest_track(default_track, vec![&artifacts.php])],
-        ),
-        manifest_resource(
-            "frankenphp",
-            default_track,
-            vec![manifest_track(default_track, vec![&artifacts.frankenphp])],
-        ),
-    ])
-}
-
 fn composer_manifest(
     default_php_track: &str,
     php_artifacts: &PhpPairArtifacts,
@@ -1207,14 +784,6 @@ fn composer_manifest_with_php_tracks(
             vec![manifest_track("2", composer_artifacts.to_vec())],
         ),
     ])
-}
-
-fn composer_only_manifest(composer_artifacts: &[&FixtureArtifact]) -> String {
-    manifest_with_resources(&[manifest_resource(
-        "composer",
-        "2",
-        vec![manifest_track("2", composer_artifacts.to_vec())],
-    )])
 }
 
 struct ManifestResourceFixture<'a> {

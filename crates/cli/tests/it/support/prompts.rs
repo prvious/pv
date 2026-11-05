@@ -10,8 +10,6 @@ pub(crate) enum Step {
     /// Press Enter on the shown default.
     Accept,
     Answer(Answer),
-    /// Press Escape or Ctrl-C.
-    Cancel,
 }
 
 /// Answers keyboard prompts from a script and records what was asked, so
@@ -44,7 +42,6 @@ impl ScriptedPrompts {
             let answer = match step {
                 Step::Accept => default_answer(prompt),
                 Step::Answer(answer) => answer,
-                Step::Cancel => Answer::Cancelled,
             };
             if let (PromptKind::Text { default, validator }, Answer::Text(text)) =
                 (&prompt.kind, &answer)

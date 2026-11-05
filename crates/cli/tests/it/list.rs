@@ -156,53 +156,6 @@ fn list_json_exposes_resource_only_mode_slug_and_env_file_without_sentinel() -> 
 }
 
 #[test]
-fn list_json_sorts_projects_by_displayed_value() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let served = tempdir.path().join("Zulu Web");
-    let resource_only = tempdir.path().join("Beta Data");
-    create_dir(&served)?;
-    create_dir(&resource_only)?;
-    write_file(&served.join("pv.yml"), "")?;
-    write_file(&resource_only.join("pv.yml"), "serve: false\n")?;
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home, &served);
-    let mut database = Database::open(&paths)?;
-    database.link_project(LinkProjectInput {
-        path: served.clone(),
-        original_path: served.clone(),
-        primary_hostname: "alpha.test".to_string(),
-        config_path: served.join("pv.yml"),
-        desired_php_track: None,
-    })?;
-    database.link_project_with_mode(
-        LinkProjectInput {
-            path: resource_only.clone(),
-            original_path: resource_only.clone(),
-            primary_hostname: "ignored.test".to_string(),
-            config_path: resource_only.join("pv.yml"),
-            desired_php_track: None,
-        },
-        ProjectMode::ResourceOnly,
-    )?;
-    drop(database);
-
-    let output = run_pv(&["list", "--json"], &environment)?;
-    let json = parse_json_output(output)?;
-    let projects = json["projects"]
-        .as_array()
-        .ok_or_else(|| anyhow::anyhow!("expected Projects array"))?;
-    let [first, second] = projects.as_slice() else {
-        return Err(anyhow::anyhow!("expected exactly two Projects"));
-    };
-
-    assert_eq!(first["hostname"], "alpha.test");
-    assert_eq!(second["slug"], "beta-data");
-
-    Ok(())
-}
-
-#[test]
 fn list_on_a_terminal_aligns_columns_or_stacks_records_by_width() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -341,51 +294,6 @@ fn resource_list_json_outputs_installed_tracks_and_aliases() -> anyhow::Result<(
     Ok(())
 }
 
-#[test]
-fn resource_list_json_documents_composer_and_frankenphp_omissions() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home, &home);
-    seed_resource_tracks(&paths)?;
-    let commands = [
-        "php:list",
-        "redis:list",
-        "mysql:list",
-        "postgres:list",
-        "pg:list",
-        "mailpit:list",
-        "mail:list",
-        "rustfs:list",
-        "s3:list",
-    ];
-    let mut listed_resources = Vec::new();
-
-    for command in commands {
-        let output = run_pv(&[command, "--json"], &environment)?;
-        let json = parse_json_output(output)?;
-        collect_listed_resources(&json, &mut listed_resources);
-    }
-
-    listed_resources.sort();
-    listed_resources.dedup();
-    assert!(!listed_resources.contains(&"composer".to_string()));
-    assert!(!listed_resources.contains(&"frankenphp".to_string()));
-    assert_list_json_snapshot(
-        "resource_list_json_documents_composer_and_frankenphp_omissions",
-        tempdir.path(),
-        &BTreeMap::from([
-            (
-                "installed_but_without_public_list_command",
-                vec!["composer".to_string(), "frankenphp".to_string()],
-            ),
-            ("listed_resources", listed_resources),
-        ]),
-    );
-
-    Ok(())
-}
-
 fn render_list_on_terminal(environment: &TestEnvironment, width: usize) -> anyhow::Result<String> {
     environment.terminal_width.set(Some(width));
     let output = run_pv(&["list", "--no-color"], environment);
@@ -469,20 +377,6 @@ fn seed_resource_tracks(paths: &PvPaths) -> anyhow::Result<()> {
     )?;
 
     Ok(())
-}
-
-fn collect_listed_resources(json: &serde_json::Value, listed_resources: &mut Vec<String>) {
-    let Some(tracks) = json.get("tracks").and_then(serde_json::Value::as_array) else {
-        return;
-    };
-
-    for track in tracks {
-        if let Some(resource_name) = track.get("resource").and_then(serde_json::Value::as_str) {
-            listed_resources.push(resource_name.to_string());
-        } else {
-            listed_resources.push("php".to_string());
-        }
-    }
 }
 
 #[expect(

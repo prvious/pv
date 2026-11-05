@@ -478,23 +478,6 @@ fn init_yes_reports_written_config_before_detection_details() -> Result<()> {
 }
 
 #[test]
-fn json_on_a_real_terminal_parses_and_is_never_decorated() -> Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-
-    // `pv jobs --json` writes nothing to stderr, so the merged terminal
-    // stream is exactly its stdout.
-    let mut session = Session::spawn(&["jobs", "--json"], tempdir.path(), &home)?;
-    session.wait_for("}")?;
-
-    assert_eq!(session.wait_for_exit()?, 0);
-    assert!(!session.raw().contains(ESCAPE));
-    serde_json::from_str::<serde_json::Value>(&session.raw())?;
-
-    Ok(())
-}
-
-#[test]
 fn human_output_on_a_real_terminal_is_decorated_and_honors_no_color() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

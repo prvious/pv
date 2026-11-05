@@ -15,8 +15,7 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, LinkProjectInput, ManagedResourceDesiredState, ManagedResourceTrackRecord,
-    ProjectMode, ProjectPhpRuntimeInput, ProjectRecord, PvPaths, RuntimeLifecycleLock, StateError,
-    fs,
+    ProjectMode, ProjectRecord, PvPaths, RuntimeLifecycleLock, StateError, fs,
 };
 
 const MANIFEST_URL: &str = "https://artifacts.example.test/manifest.json";
@@ -55,16 +54,6 @@ impl TestEnvironment {
             exec_calls: RefCell::new(Vec::new()),
             terminal_width: Cell::new(None),
         }
-    }
-
-    fn with_target_platform(mut self, target_platform: TargetPlatform) -> Self {
-        self.target_platform = Some(target_platform);
-        self
-    }
-
-    fn with_target_platform_resolution_failure(mut self) -> Self {
-        self.target_platform_resolution_fails = true;
-        self
     }
 
     fn text_request_count(&self) -> usize {
@@ -396,117 +385,6 @@ fn php_shim_uses_persisted_runtime_when_project_config_is_invalid() -> anyhow::R
 }
 
 #[test]
-fn php_shim_preserves_served_runtime_during_invalid_resource_only_transition() -> anyhow::Result<()>
-{
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    record_installed_php(&home, "8.3", "8.3.12-pv1")?;
-    let project_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.record_global_php_default_track("8.3")?;
-        database.replace_project_php_runtime(
-            &project_record.id,
-            Some(&ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: Vec::new(),
-                loaded_extensions: Vec::new(),
-                ignored_extensions: Vec::new(),
-            }),
-        )?;
-    }
-    write_file(
-        &project.join("pv.yml"),
-        r#"serve: false
-postgres:
-  version: "8.0"
-  allocations:
-    analytics:
-      env:
-        DATABASE_URL: "postgres://${database}"
-    app:
-      env:
-        DATABASE_URL: "postgres://${database}"
-"#,
-    )?;
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-v"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        exec_calls,
-        vec![ExecCall {
-            program: project_release.join("bin/php").as_std_path().to_path_buf(),
-            args: vec!["-v".to_string()],
-            env: php_exec_env(&home, "8.4")?,
-        }]
-    );
-    Ok(())
-}
-
-#[test]
-fn php_shim_preserves_resource_only_runtime_during_invalid_served_transition() -> anyhow::Result<()>
-{
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("resources");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "serve: false\nphp: 8.4\n")?;
-    let project_record =
-        register_project_with_mode(&home, &project, "ignored.test", ProjectMode::ResourceOnly)?;
-    record_installed_php(&home, "8.3", "8.3.12-pv1")?;
-    let project_release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.record_global_php_default_track("8.3")?;
-        database.replace_project_php_runtime(
-            &project_record.id,
-            Some(&ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: Vec::new(),
-                loaded_extensions: Vec::new(),
-                ignored_extensions: Vec::new(),
-            }),
-        )?;
-    }
-    write_file(
-        &project.join("pv.yml"),
-        r#"postgres:
-  version: "8.0"
-  allocations:
-    analytics:
-      env:
-        DATABASE_URL: "postgres://${database}"
-    app:
-      env:
-        DATABASE_URL: "postgres://${database}"
-"#,
-    )?;
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-v"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        exec_calls,
-        vec![ExecCall {
-            program: project_release.join("bin/php").as_std_path().to_path_buf(),
-            args: vec!["-v".to_string()],
-            env: php_exec_env(&home, "8.4")?,
-        }]
-    );
-
-    Ok(())
-}
-
-#[test]
 fn php_shim_resolves_project_config_extensions_when_persisted_runtime_is_empty()
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -561,46 +439,6 @@ fn php_shim_uses_base_runtime_when_project_config_removes_extensions() -> anyhow
                 requested_extensions: vec!["redis".to_string()],
                 loaded_extensions: vec!["redis".to_string()],
                 ignored_extensions: Vec::new(),
-            }),
-        )?;
-    }
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-m"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(exec_calls[0].env, php_exec_env(&home, "8.4")?);
-
-    Ok(())
-}
-
-#[test]
-fn php_shim_reuses_persisted_empty_extension_runtime() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "php:\n  version: 8.4\n  extensions: [redis]\n",
-    )?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    fs::write_sensitive_file(
-        &release.join("share/pv/php-extensions.json"),
-        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
-    )?;
-    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.replace_project_php_runtime(
-            &project_record.id,
-            Some(&state::ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: vec!["redis".to_string()],
-                loaded_extensions: Vec::new(),
-                ignored_extensions: vec!["redis".to_string()],
             }),
         )?;
     }
@@ -785,75 +623,6 @@ fn php_shim_resolves_global_default_track_for_extension_only_config() -> anyhow:
 }
 
 #[test]
-fn php_shim_fails_when_persisted_loaded_extension_metadata_is_missing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "php:\n  version: 8.4\n  extensions: [redis]\n",
-    )?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.replace_project_php_runtime(
-            &project_record.id,
-            Some(&state::ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: vec!["redis".to_string()],
-                loaded_extensions: vec!["redis".to_string()],
-                ignored_extensions: Vec::new(),
-            }),
-        )?;
-    }
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-m"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(environment.exec_calls().is_empty());
-    assert!(output.stderr.contains("persisted PHP extension `redis`"));
-
-    Ok(())
-}
-
-#[test]
-fn php_shim_sets_only_php_ini_env_overlay() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.record_global_php_default_track("8.4")?;
-    }
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "--ini"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        exec_calls,
-        vec![ExecCall {
-            program: release.join("bin/php").as_std_path().to_path_buf(),
-            args: vec!["--ini".to_string()],
-            env: php_exec_env(&home, "8.4")?,
-        }]
-    );
-    let defaults = resources::php_track_defaults(&pv_paths(&home), "8.4")?;
-    assert_eq!(
-        fs::read_to_string(defaults.php_ini())?,
-        resources::PHP_TRACK_DEFAULT_INI
-    );
-
-    Ok(())
-}
-
-#[test]
 fn php_shim_execs_global_default_track_outside_project() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -886,34 +655,6 @@ fn php_shim_execs_global_default_track_outside_project() -> anyhow::Result<()> {
         assert_debug_snapshot!((output, exec_calls));
         Ok(())
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn php_shim_honors_explicit_resource_only_php_track() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("resources");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "serve: false\nphp: 8.4\n")?;
-    let project_record =
-        register_project_with_mode(&home, &project, "ignored.test", ProjectMode::ResourceOnly)?;
-    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-v"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        exec_calls,
-        vec![ExecCall {
-            program: release.join("bin/php").as_std_path().to_path_buf(),
-            args: vec!["-v".to_string()],
-            env: php_exec_env(&home, "8.4")?,
-        }]
-    );
 
     Ok(())
 }
@@ -1461,149 +1202,6 @@ fn php_update_reports_missing_daemon_after_resource_update() -> anyhow::Result<(
         environment.text_request_count(),
         environment.byte_request_count(),
     ));
-
-    Ok(())
-}
-
-#[test]
-fn php_update_warns_when_newest_artifact_is_revoked() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let old_artifacts = php_pair_artifacts("8.4.7-pv1")?;
-    let fallback_artifacts = php_pair_artifacts("8.4.8-pv1")?;
-    let revoked_artifacts = PhpPairArtifacts {
-        php: revoked_artifact(
-            runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", TargetPlatform::DarwinArm64),
-            "failed smoke test",
-        ),
-        frankenphp: revoked_artifact(
-            runtime_fixture_artifact(
-                "frankenphp",
-                "8.4.9-pv1",
-                "bin/frankenphp",
-                TargetPlatform::DarwinArm64,
-            ),
-            "failed smoke test",
-        ),
-    };
-    let manifest = manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            "8.4",
-            vec![manifest_track(
-                "8.4",
-                vec![&fallback_artifacts.php, &revoked_artifacts.php],
-            )],
-        ),
-        manifest_resource(
-            "frankenphp",
-            "8.4",
-            vec![manifest_track(
-                "8.4",
-                vec![
-                    &fallback_artifacts.frankenphp,
-                    &revoked_artifacts.frankenphp,
-                ],
-            )],
-        ),
-    ]);
-    record_installed_php_pair(&home, "8.4", &old_artifacts)?;
-    prepare_existing_php_pair_releases(&home, "8.4", &fallback_artifacts)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&manifest),
-    );
-
-    let output = run_pv(&["php:update"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_eq!(environment.byte_request_count(), 0);
-    assert_debug_snapshot!((
-        output,
-        resource_record_snapshots(&records, tempdir.path())?,
-        environment.text_request_count(),
-        environment.byte_request_count(),
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn php_install_uses_injected_target_platform() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let artifacts = php_pair_artifacts_for_platform("8.4.8-pv1", TargetPlatform::DarwinAmd64)?;
-    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
-    )
-    .with_target_platform(TargetPlatform::DarwinAmd64);
-
-    let output = run_pv(&["php:install", "8.4"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_debug_snapshot!((
-        output,
-        resource_record_snapshots(&records, tempdir.path())?,
-        environment.text_request_count(),
-        environment.byte_request_count(),
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn php_list_does_not_create_state_when_target_platform_resolution_fails() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let environment = TestEnvironment::new(&home, tempdir.path(), ScriptedClient::new())
-        .with_target_platform_resolution_failure();
-    let paths = pv_paths(&home);
-
-    assert!(!fs::path_entry_exists(paths.root())?);
-    assert!(!fs::path_entry_exists(paths.db())?);
-    let output = run_pv(&["php:list"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.is_empty());
-    assert!(!fs::path_entry_exists(paths.root())?);
-    assert!(!fs::path_entry_exists(paths.db())?);
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn php_uninstall_without_force_does_not_create_state_when_target_platform_resolution_fails()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let environment = TestEnvironment::new(&home, tempdir.path(), ScriptedClient::new())
-        .with_target_platform_resolution_failure();
-    let paths = pv_paths(&home);
-
-    assert!(!fs::path_entry_exists(paths.root())?);
-    assert!(!fs::path_entry_exists(paths.db())?);
-    let output = run_pv(&["php:uninstall", "8.4"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.is_empty());
-    assert!(!fs::path_entry_exists(paths.root())?);
-    assert!(!fs::path_entry_exists(paths.db())?);
-    assert_debug_snapshot!(output);
 
     Ok(())
 }

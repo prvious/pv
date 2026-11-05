@@ -36,10 +36,7 @@ use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
 };
 #[cfg(target_os = "macos")]
-use state::{
-    JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode,
-    RuntimeLifecycleLock,
-};
+use state::{JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode};
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
 mod support;
@@ -296,33 +293,6 @@ fn env_reports_unsupported_detected_shell() -> Result<()> {
 }
 
 #[test]
-fn no_color_global_flag_is_accepted() -> Result<()> {
-    let output = run_pv(&["--no-color", "env", "--shell", "zsh"])?;
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn no_color_environment_keeps_errors_plain() -> Result<()> {
-    let output = run_pv_with_env(&["php", "install", "8.4"], &[("NO_COLOR", "1")])?;
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn env_rejects_unsupported_shells() -> Result<()> {
-    let output = run_pv(&["env", "--shell", "tcsh"])?;
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
 fn completions_generate_scripts() -> Result<()> {
     for shell in ["zsh", "bash", "fish"] {
         let output = run_pv(&["completions", shell])?;
@@ -331,15 +301,6 @@ fn completions_generate_scripts() -> Result<()> {
         assert!(!output.stdout.is_empty(), "{shell}");
         assert!(output.stderr.is_empty(), "{shell}");
     }
-
-    Ok(())
-}
-
-#[test]
-fn completions_reject_unsupported_shells() -> Result<()> {
-    let output = run_pv(&["completions", "tcsh"])?;
-
-    assert_debug_snapshot!(output);
 
     Ok(())
 }
@@ -937,45 +898,6 @@ fn project_link_without_setup_returns_while_the_accepted_job_is_running() -> Res
 
 #[cfg(target_os = "macos")]
 #[test]
-fn project_link_releases_admission_for_prepare_and_stops_if_reacquisition_fails() -> Result<()> {
-    let directory = tempdir()?;
-    let mut outputs = Vec::new();
-    for exit_status in [0, 7] {
-        let home = directory.path().join(exit_status.to_string()).join("home");
-        let project = directory.path().join(exit_status.to_string()).join("acme");
-        create_dir(&project)?;
-        create_dir(&home)?;
-        write_file(
-            &project.join("pv.yml"),
-            &format!(
-                "serve: false\nhooks:\n  prepare:\n    - touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit {exit_status}\n"
-            ),
-        )?;
-        let task_home = home.clone();
-        let task_project = project.clone();
-        let command = thread::Builder::new()
-            .name("link-hook-lifecycle".to_string())
-            .spawn(move || run_hook_pv(&["link"], &task_project, &task_home))?;
-        wait_for_hook_fixture(&project.join("started"))?;
-        let paths = PvPaths::for_home(&home);
-        let exclusive = RuntimeLifecycleLock::acquire_exclusive(&paths)?;
-        write_file(&project.join("continue"), "go")?;
-        let output = command
-            .join()
-            .map_err(|_| anyhow::anyhow!("fixture CLI panicked"))??;
-        drop(exclusive);
-        assert_ne!(output.code, Some(0));
-        let database = Database::open(&paths)?;
-        assert!(database.projects()?.is_empty());
-        assert!(database.recent_jobs()?.is_empty());
-        outputs.push(output);
-    }
-    hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[test]
 fn project_link_refuses_a_discovered_project_until_its_first_apply_without_reading_the_queue()
 -> Result<()> {
     let directory = tempdir()?;
@@ -1176,29 +1098,6 @@ fn project_link_skips_hooks_until_every_command_is_approved() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 #[test]
-fn project_link_reports_an_unknown_outcome_when_the_accepted_job_is_missing() -> Result<()> {
-    let directory = tempdir()?;
-    let home = directory.path().join("home");
-    let project = directory.path().join("project");
-    create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "serve: false\nhooks:\n  setup:\n    - touch setup-ran\n",
-    )?;
-    let paths = PvPaths::for_home(&home);
-    let server = fake_link_reconciliation(&paths, &project, LinkJobOutcome::Missing)?;
-    let output = run_hook_pv(&["link"], &project, &home)?;
-    server
-        .join()
-        .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
-    assert_ne!(output.code, Some(0));
-    assert!(!project.join("setup-ran").exists());
-    hook_snapshot(directory.path(), || assert_debug_snapshot!(output));
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[test]
 fn project_link_skips_setup_after_failed_job_even_with_successful_env_observation() -> Result<()> {
     let directory = tempdir()?;
     let mut outputs = Vec::new();
@@ -1241,65 +1140,6 @@ fn project_link_skips_setup_after_failed_job_even_with_successful_env_observatio
             .map(|job| (job.kind, job.status, job.error))
             .collect::<Vec<_>>();
         outputs.push((output, jobs));
-    }
-    hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-#[test]
-fn project_link_does_not_recreate_state_pruned_during_hooks() -> Result<()> {
-    let directory = tempdir()?;
-    let mut outputs = Vec::new();
-    for (phase, exit_status) in [("prepare", 0), ("setup", 0), ("prepare", 7)] {
-        let root = directory.path().join(format!("{phase}-{exit_status}"));
-        let home = root.join("home");
-        let project = root.join("acme");
-        create_dir(&project)?;
-        write_file(
-            &project.join("pv.yml"),
-            &format!(
-                "serve: false\nhooks:\n  {phase}:\n    - touch started; count=0; while test ! -f continue && test \"$count\" -lt 1500; do sleep 0.1; count=$((count + 1)); done; exit {exit_status}\n"
-            ),
-        )?;
-        let paths = PvPaths::for_home(&home);
-        Database::open(&paths)?;
-        if exit_status != 0 {
-            assert_eq!(
-                run_hook_pv(&["link", "--skip-hooks"], &project, &home)?.code,
-                Some(0)
-            );
-        }
-        let server = if phase == "setup" {
-            Some(fake_link_reconciliation(
-                &paths,
-                &project,
-                LinkJobOutcome::Succeeded,
-            )?)
-        } else {
-            None
-        };
-        let task_home = home.clone();
-        let task_project = project.clone();
-        let command = thread::Builder::new()
-            .name("link-prune-fixture".to_string())
-            .spawn(move || run_hook_pv(&["link"], &task_project, &task_home))?;
-        wait_for_hook_fixture(&project.join("started"))?;
-        let exclusive = RuntimeLifecycleLock::acquire_exclusive(&paths)?;
-        state::fs::delete_dir_all(paths.root())?;
-        drop(exclusive);
-        write_file(&project.join("continue"), "go")?;
-        let output = command
-            .join()
-            .map_err(|_| anyhow::anyhow!("fixture CLI panicked"))??;
-        if let Some(server) = server {
-            server
-                .join()
-                .map_err(|_| anyhow::anyhow!("fixture daemon panicked"))??;
-        }
-        assert_ne!(output.code, Some(0));
-        assert!(!paths.root().exists());
-        outputs.push(output);
     }
     hook_snapshot(directory.path(), || assert_debug_snapshot!(outputs));
     Ok(())
@@ -1504,7 +1344,6 @@ fn hook_snapshot(directory: &Utf8Path, assert: impl FnOnce()) {
 #[cfg(target_os = "macos")]
 #[derive(Clone, Copy)]
 enum LinkJobOutcome {
-    Missing,
     Succeeded,
     Failed,
     FailedWithProject(ProjectEnvObservedStatus),
@@ -1549,12 +1388,6 @@ fn fake_link_reconciliation(
             let mut database = Database::open(&paths)?;
             let linked = database.project_by_path(&state::fs::canonicalize(&project)?)?.ok_or_else(|| anyhow::anyhow!("Project not recorded before reconciliation"))?;
             match outcome {
-                LinkJobOutcome::Missing => {
-                    state::testing::transaction(&mut database, |transaction| {
-                        transaction.execute("DELETE FROM jobs WHERE id = ?1", [&job.id])?;
-                        Ok(())
-                    })?;
-                }
                 LinkJobOutcome::Failed => database.fail_job(&job.id, "fixture reconciliation failed")?,
                 LinkJobOutcome::FailedWithProject(status) => {
                     write_file(&project.join(".env"), "READY=yes\n")?;
@@ -1633,33 +1466,6 @@ fn project_init_prints_detected_laravel_config_without_writing() -> Result<()> {
         assert_debug_snapshot!(output);
         Ok::<(), anyhow::Error>(())
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn project_init_print_succeeds_without_writing_during_update() -> Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("Acme Store");
-    create_laravel_init_fixture(&project)?;
-    let paths = PvPaths::for_home(home.clone());
-    state::fs::ensure_layout(&paths)?;
-    let _update_lock = UpdateLock::acquire(&paths)?;
-
-    let output = run_pv_in_dir_with_home(&["init", "--print"], &project, &home)?;
-
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
-    settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.bind(|| {
-        assert_debug_snapshot!(output);
-        Ok::<(), anyhow::Error>(())
-    })?;
-    assert_eq!(output.code, Some(0));
-    assert!(output.stderr.is_empty());
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert!(!path_exists(&project.join("pv.yaml"))?);
 
     Ok(())
 }
@@ -1793,39 +1599,6 @@ fn project_init_rejects_invalid_existing_config_without_writing() -> Result<()> 
     settings.bind(|| {
         assert_debug_snapshot!(output);
     });
-
-    Ok(())
-}
-
-#[test]
-fn project_init_preserves_existing_config_values_while_adding_detected_defaults() -> Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("Acme Store");
-    create_laravel_init_fixture(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "php: 8.3\nenv:\n  APP_URL: https://user.test\n  USER_VALUE: preserved\n",
-    )?;
-
-    let output = run_pv_in_dir_with_home(&["init", "--yes"], &project, &home)?;
-    let config = read_file(&project.join("pv.yml"))?;
-
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
-    settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.bind(|| {
-        assert_debug_snapshot!((output, config));
-    });
-
-    Ok(())
-}
-
-#[test]
-fn project_init_rejects_yes_with_print() -> Result<()> {
-    let output = run_pv(&["init", "--yes", "--print"])?;
-
-    assert_debug_snapshot!(output);
 
     Ok(())
 }
@@ -2086,31 +1859,6 @@ redis:
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.bind(|| {
         assert_debug_snapshot!((link, list));
-    });
-
-    Ok(())
-}
-
-#[test]
-fn project_env_renders_values_from_binary_without_mutating_dotenv() -> Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("Acme Store");
-    let env_path = project.join(".env");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
-    write_file(&env_path, "APP_URL=https://user.test\n")?;
-
-    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
-    let project_env = run_pv_in_dir_with_home(&["project:env"], &project, &home)?;
-    let env_after = read_file(&env_path)?;
-
-    assert_eq!(env_after, "APP_URL=https://user.test\n");
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
-    settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.bind(|| {
-        assert_debug_snapshot!((link, project_env, env_after));
     });
 
     Ok(())

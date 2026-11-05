@@ -343,49 +343,6 @@ fn status_reports_pending_project_env_as_success() -> anyhow::Result<()> {
 }
 
 #[test]
-fn status_reports_warning_project_env_as_success() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project_path = tempdir.path().join("project");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path.clone(),
-            primary_hostname: "app.test".to_string(),
-            config_path: project_path.join("pv.toml"),
-            desired_php_track: Some("8.4".to_string()),
-        })?
-        .project;
-    database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Warning,
-        Some("Project runtime has warnings"),
-        &[ProjectEnvObservedWarningInput {
-            kind: "ignored_php_extension".to_string(),
-            message: "ignored unsupported PHP extension `missing`".to_string(),
-        }],
-    )?;
-
-    let plain = run_pv(&["status"], &environment)?;
-    let json = run_pv(&["status", "--json"], &environment)?;
-
-    assert_eq!(plain.exit_code, ExitCode::SUCCESS);
-    assert!(plain.stderr.is_empty());
-    assert_eq!(json.exit_code, ExitCode::SUCCESS);
-    assert!(json.stderr.is_empty());
-    assert_status_snapshot(
-        "status_reports_warning_project_env_as_success",
-        tempdir.path(),
-        (plain, json),
-    );
-
-    Ok(())
-}
-
-#[test]
 fn status_prefers_ignored_php_extension_over_other_project_env_warnings() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

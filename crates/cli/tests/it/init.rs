@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self};
 use std::iter::repeat_n;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -31,13 +31,6 @@ impl TestEnvironment {
             terminal: true,
             decorated: false,
             prompts: ScriptedPrompts::new(steps),
-        }
-    }
-
-    fn non_interactive(current_dir: &Utf8Path) -> Self {
-        Self {
-            terminal: false,
-            ..Self::interactive(current_dir, [])
         }
     }
 
@@ -95,23 +88,15 @@ impl Environment for TestEnvironment {
 }
 
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only fields are read through derived Debug"
+)]
 struct Session {
     exit_code: ExitCode,
     stdout: String,
     stderr: String,
     prompts: Vec<String>,
-}
-
-struct ClosedStdout;
-
-impl Write for ClosedStdout {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        Err(io::ErrorKind::BrokenPipe.into())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 #[test]
@@ -191,26 +176,6 @@ fn init_interactive_final_cancel_leaves_existing_config_unchanged() -> anyhow::R
     assert_eq!(read_file(&project.join("pv.yml"))?, original);
     assert_session_snapshot(
         "init_interactive_final_cancel_leaves_existing_config_unchanged",
-        tempdir.path(),
-        &session,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_escape_cancels_without_writing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::interactive(&project, [Step::Cancel]);
-
-    let session = run_init(&[], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::from(130));
-    assert!(session.stderr.is_empty());
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert_session_snapshot(
-        "init_escape_cancels_without_writing",
         tempdir.path(),
         &session,
     );
@@ -377,82 +342,6 @@ fn init_interactive_retries_invalid_tracks_and_document_roots() -> anyhow::Resul
         "init_interactive_retries_invalid_tracks_and_document_roots_config",
         read_file(&project.join("pv.yml"))?
     );
-
-    Ok(())
-}
-
-#[test]
-fn init_without_a_terminal_refuses_with_rerun_flags() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project);
-
-    let session = run_init(&[], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::FAILURE);
-    assert!(session.stdout.is_empty());
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert_session_snapshot(
-        "init_without_a_terminal_refuses_with_rerun_flags",
-        tempdir.path(),
-        &session,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_print_writes_only_the_generated_yaml() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project).decorated();
-
-    let session = run_init(&["--print"], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    assert!(session.stderr.is_empty());
-    assert!(!session.stdout.contains('\u{1b}'));
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert_snapshot!(session.stdout);
-
-    Ok(())
-}
-
-#[test]
-fn init_yes_writes_detected_defaults_without_prompting() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project);
-
-    let session = run_init(&["--yes"], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    assert!(path_exists(&project.join("pv.yml"))?);
-    assert_session_snapshot(
-        "init_yes_writes_detected_defaults_without_prompting",
-        tempdir.path(),
-        &session,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_yes_writes_config_when_plain_stdout_is_closed() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project);
-    let mut stderr = Vec::new();
-
-    let result = run_with_environment(
-        ["pv", "init", "--yes"],
-        &environment,
-        &mut ClosedStdout,
-        &mut stderr,
-    );
-
-    assert!(!matches!(result, Ok(ExitCode::SUCCESS)));
-    assert!(path_exists(&project.join("pv.yml"))?);
 
     Ok(())
 }

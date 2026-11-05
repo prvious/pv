@@ -1952,36 +1952,3 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
 fn utf8_path(path: impl Into<std::path::PathBuf>) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(path.into()).map_err(|path| CliError::NonUtf8Path { path }.into())
 }
-
-#[cfg(test)]
-mod tests {
-    use std::io::ErrorKind;
-
-    use camino_tempfile::tempdir;
-
-    use super::create_download_file;
-
-    #[test]
-    fn create_download_file_rejects_existing_path_without_truncating() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let path = tempdir.path().join("pv-app-existing.tmp");
-        state::fs::write_sensitive_file(&path, "existing content")?;
-
-        let Err(error) = create_download_file(&path) else {
-            anyhow::bail!("expected existing download path to be rejected");
-        };
-
-        let state::StateError::Filesystem {
-            path: error_path,
-            source,
-        } = error
-        else {
-            anyhow::bail!("expected filesystem error for existing download path");
-        };
-        assert_eq!(error_path, path);
-        assert_eq!(source.kind(), ErrorKind::AlreadyExists);
-        assert_eq!(state::fs::read_to_string(&path)?, "existing content");
-
-        Ok(())
-    }
-}

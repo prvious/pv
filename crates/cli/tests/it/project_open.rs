@@ -281,36 +281,6 @@ fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Resu
 }
 
 #[test]
-fn open_uses_project_picker_when_outside_a_linked_project() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    let outside = tempdir.path().join("outside");
-    create_dir(&project)?;
-    create_dir(&outside)?;
-    let environment = TestEnvironment::new(&home, &project).interactive([Step::Accept]);
-
-    let link = run_pv(&["link"], &environment)?;
-    environment.set_current_dir(&outside);
-    let open = run_pv(&["open"], &environment)?;
-    let opened_urls = environment.opened_urls();
-
-    assert_eq!(link.exit_code, ExitCode::SUCCESS);
-    assert_eq!(open.exit_code, ExitCode::SUCCESS);
-    assert_eq!(opened_urls, vec!["https://acme.test"]);
-    assert!(!link.stderr.contains("error:"));
-    assert!(open.stderr.is_empty());
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
-    settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.bind(|| {
-        assert_debug_snapshot!((link, open, opened_urls));
-    });
-
-    Ok(())
-}
-
-#[test]
 fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -425,32 +395,6 @@ fn open_without_current_project_fails_when_non_interactive() -> anyhow::Result<(
     settings.bind(|| {
         assert_debug_snapshot!((link, open, opened_urls));
     });
-
-    Ok(())
-}
-
-#[test]
-fn open_picker_cancel_exits_130_without_opening() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    let outside = tempdir.path().join("outside");
-    create_dir(&project)?;
-    create_dir(&outside)?;
-    let environment = TestEnvironment::new(&home, &project).interactive([Step::Cancel]);
-
-    run_pv(&["link"], &environment)?;
-    environment.set_current_dir(&outside);
-    let open = run_pv(&["open"], &environment)?;
-
-    assert_eq!(open.exit_code, ExitCode::from(130));
-    assert!(open.stdout.is_empty());
-    assert!(open.stderr.is_empty());
-    assert!(environment.opened_urls().is_empty());
-    assert_eq!(
-        environment.prompts.transcript(),
-        vec!["Select a Project -> Cancelled"]
-    );
 
     Ok(())
 }

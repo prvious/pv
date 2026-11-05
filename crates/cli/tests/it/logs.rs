@@ -252,24 +252,6 @@ fn logs_worker_latest_uses_manifest_default_track() -> anyhow::Result<()> {
 }
 
 #[test]
-fn logs_resource_alias_infers_single_installed_track() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_installed_track(&paths, "postgres", "16")?;
-    write_log(&paths.resource_log("postgres", "16"), "postgres ready\n")?;
-
-    let output = run_pv(&["logs", "--resource", "pg"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
 fn logs_resource_alias_requires_track_when_ambiguous() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

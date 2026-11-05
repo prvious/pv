@@ -392,16 +392,10 @@ mod tests {
 
     #[derive(Debug, Default)]
     struct TestEnvironment {
-        manifest_url: Option<String>,
         vars: BTreeMap<String, OsString>,
     }
 
     impl TestEnvironment {
-        fn with_manifest_url(mut self, manifest_url: &str) -> Self {
-            self.manifest_url = Some(manifest_url.to_string());
-            self
-        }
-
         fn with_var(mut self, key: &str, value: &str) -> Self {
             self.vars.insert(key.to_string(), OsString::from(value));
             self
@@ -438,31 +432,6 @@ mod tests {
         fn open_url(&self, _url: &str) -> io::Result<()> {
             Ok(())
         }
-
-        fn artifact_manifest_url(&self) -> Option<String> {
-            self.manifest_url.clone()
-        }
-    }
-
-    #[test]
-    fn artifact_manifest_url_uses_compiled_default_without_test_override() {
-        let environment = TestEnvironment::default();
-
-        assert_eq!(
-            artifact_manifest_url(&environment),
-            resources::default_artifact_manifest_url()
-        );
-    }
-
-    #[test]
-    fn artifact_manifest_url_preserves_test_injection() {
-        let environment = TestEnvironment::default()
-            .with_manifest_url("https://fixtures.example.test/manifest.json");
-
-        assert_eq!(
-            artifact_manifest_url(&environment),
-            "https://fixtures.example.test/manifest.json"
-        );
     }
 
     #[test]

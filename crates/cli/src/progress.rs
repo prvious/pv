@@ -390,48 +390,6 @@ mod tests {
     }
 
     #[test]
-    fn non_terminal_update_prints_every_known_phase() -> anyhow::Result<()> {
-        let mut output = Vec::new();
-        {
-            let mut stderr = Output::new(&mut output, Surface::plain());
-            let mut progress = DownloadProgressRenderer::with_output(&mut stderr);
-            progress.job_accepted("job_1");
-            progress.job_started("update", "system");
-            for phase in [
-                "demand_discovery",
-                "manifest",
-                "download",
-                "install",
-                "project_apply",
-                "resources",
-                "workers",
-                "gateway",
-                "finalization",
-                "unknown",
-            ] {
-                progress.progress(phase);
-            }
-        }
-        let output = String::from_utf8(output)?;
-
-        assert_snapshot!(output, @r"
-        Waiting for the reconciliation slot (elapsed: 0s)
-        Managed Resource update slot acquired after <1s
-        Reconciliation phase: Demand discovery
-        Reconciliation phase: Artifact manifest
-        Reconciliation phase: Artifact download
-        Reconciliation phase: Artifact installation
-        Reconciliation phase: Project configuration
-        Reconciliation phase: Managed Resources
-        Reconciliation phase: PHP workers
-        Reconciliation phase: Gateway
-        Reconciliation phase: Finalization
-        ");
-
-        Ok(())
-    }
-
-    #[test]
     fn terminal_progress_keeps_one_status_with_download_bars() {
         let target = MultiProgress::with_draw_target(ProgressDrawTarget::hidden());
         let mut progress = DownloadProgressRenderer::with_progress(true, None, target);

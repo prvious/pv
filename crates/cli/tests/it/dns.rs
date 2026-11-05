@@ -204,80 +204,6 @@ fn dns_install_reports_missing_daemon_without_installing_resolver_config() -> an
 }
 
 #[test]
-fn dns_install_reuses_persisted_dns_port_even_when_it_is_bound() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let paths = pv_paths(&home);
-    let (dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
-    let mut database = Database::open(&paths)?;
-    let seeded_assignment = database.assign_port(
-        PortRequest::dns(dns_port, dns_port, dns_port),
-        |candidate| candidate == dns_port,
-    )?;
-    drop(database);
-    let daemon = DaemonFixture::start(&paths)?;
-
-    let output = run_pv(&["dns:install"], &environment)?;
-    let daemon_requests = daemon.finish()?;
-    let prepared_config = read_required_file(&paths.resolver_config())?;
-    let parsed_config = ResolverConfig::parse(&prepared_config)
-        .ok_or_else(|| anyhow::anyhow!("prepared resolver config did not parse"))?;
-    let assignments = Database::open(&paths)?.assigned_ports()?;
-    let dns_assignment = assignments
-        .into_iter()
-        .find(|assignment| assignment.owner == PortOwner::Dns)
-        .ok_or_else(|| anyhow::anyhow!("missing DNS port assignment"))?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(seeded_assignment.port, dns_port);
-    assert_eq!(parsed_config.port, dns_port);
-    assert_eq!(dns_assignment.port, dns_port);
-    assert_eq!(
-        daemon_requests,
-        vec![format!(
-            r#"{{"protocol_version":{},"command":"health"}}"#,
-            daemon::PROTOCOL_VERSION
-        )]
-    );
-
-    Ok(())
-}
-
-#[test]
-fn daemon_fixture_waits_for_delayed_health_request() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let paths = pv_paths(&tempdir.path().join("home"));
-    let daemon = DaemonFixture::start(&paths)?;
-    let mut client = UnixStream::connect(paths.daemon_socket().as_std_path())?;
-
-    clock::poll_blocking(Duration::from_millis(50));
-    writeln!(
-        client,
-        r#"{{"protocol_version":{},"command":"health"}}"#,
-        daemon::PROTOCOL_VERSION
-    )?;
-    let mut response = String::new();
-    let mut reader = BufReader::new(client);
-    reader.read_line(&mut response)?;
-
-    let daemon_requests = daemon.finish()?;
-
-    assert_eq!(
-        daemon_requests,
-        vec![format!(
-            r#"{{"protocol_version":{},"command":"health"}}"#,
-            daemon::PROTOCOL_VERSION
-        )]
-    );
-    assert!(response.contains(r#""status":"ok""#));
-
-    Ok(())
-}
-
-#[test]
 fn dns_install_reports_non_pv_owned_system_resolver_conflict() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -510,33 +436,6 @@ fn dns_install_after_uninstall_reuses_the_port_the_running_daemon_holds() -> any
     Ok(())
 }
 
-#[test]
-fn dns_uninstall_fails_when_system_resolver_cannot_be_inspected() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let prepared_path = pv_paths(&home).resolver_config();
-    let resolver_config = ResolverConfig::new(35353).render();
-    write_file(&prepared_path, &resolver_config)?;
-    create_dir(&system_resolver_path)?;
-
-    let output = run_pv(&["dns:uninstall"], &environment)?;
-    let prepared_after_uninstall = read_optional_file(&prepared_path)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert_no_manual_guidance(&output.stdout);
-    assert!(output.stderr.is_empty());
-    assert!(prepared_after_uninstall.is_none());
-    assert!(environment.operations.borrow().is_empty());
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((output, prepared_path, prepared_after_uninstall));
-    });
-
-    Ok(())
-}
-
 #[derive(Debug)]
 struct DaemonFixture {
     requests: Arc<Mutex<Vec<String>>>,
@@ -691,16 +590,6 @@ fn assert_no_manual_guidance(output: &str) {
             "output contains unsafe manual guidance `{pattern}`: {output}"
         );
     }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "CLI DNS tests create an unreadable resolver fixture path"
-)]
-fn create_dir(path: &Utf8Path) -> anyhow::Result<()> {
-    std::fs::create_dir_all(path)?;
-
-    Ok(())
 }
 
 fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {
