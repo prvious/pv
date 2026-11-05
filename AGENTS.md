@@ -11,6 +11,9 @@
 - If skipping tests, state the reason briefly.
 - PREFER integration tests, e.g., at `it/...` over unit tests
 - PREFER `insta` snapshots following patterns in nearby tests over substring assertions
+- NEVER test the text of workflows, scripts, docs or help output; test behavior, or let the tool that owns the file (actionlint, shellcheck) check it. The one top-level `pv --help` snapshot is the exception
+- AVOID adding a test because of a review comment; add one only for a failure with a real trigger, and PREFER a new row in an existing table test
+- NEVER add `#[cfg(test)]` branches or `*_for_test` entry points that fork production logic; drive the production path with `pv-fake` and the test clock
 - AVOID using `panic!`, `unreachable!`, `.unwrap()`, unsafe code, and clippy rule ignores
 - PREFER patterns like `if let` to handle fallibility
 - ALWAYS write `SAFETY` comments following our usual style when writing `unsafe` code
