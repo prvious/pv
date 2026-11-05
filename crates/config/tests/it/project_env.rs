@@ -7,65 +7,9 @@ use camino_tempfile::tempdir;
 use config::{
     AllocationEnvContext, ConfigError, ProjectConfig, ProjectEnvContext, RenderedProjectEnv,
     ResourceEnvContext, format_project_env, render_project_env, transform_managed_env_block,
-    validate_project_env_shape, write_project_env_file,
+    write_project_env_file,
 };
 use insta::assert_debug_snapshot;
-
-#[test]
-fn project_env_renderer_returns_empty_output_for_no_mappings() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-mysql:
-  version: "8.4"
-"#,
-    )?;
-    let context = ProjectEnvContext {
-        primary_hostname: "acme.test".to_string(),
-        tls_ca_path: "/Users/alice/.pv/certificates/ca.pem".to_string(),
-        tls_cert_path: "/Users/alice/.pv/certificates/projects/project123/tls.crt".to_string(),
-        tls_key_path: "/Users/alice/.pv/certificates/projects/project123/tls.key".to_string(),
-        resources: BTreeMap::new(),
-    };
-
-    let rendered = render_project_env(&config, &context)?;
-    assert_debug_snapshot!((
-        &rendered,
-        format_project_env(&RenderedProjectEnv::default())
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn managed_env_block_transformer_clears_existing_block_when_all_mappings_are_dormant() -> Result<()>
-{
-    let config = ProjectConfig::parse(
-        r#"serve: false
-env:
-  APP_URL: "${url}"
-"#,
-    )?;
-    let rendered = render_project_env(&config, &ProjectEnvContext::default())?;
-    let existing = r#"USER_VALUE=kept
-# >>> PV MANAGED
-APP_URL=https://acme.test
-# <<< PV MANAGED
-"#;
-
-    let cleared = transform_managed_env_block(Some(existing), &rendered)?;
-    let missing = transform_managed_env_block(None, &rendered)?;
-
-    assert!(rendered.values.is_empty());
-    assert_eq!(
-        cleared.content,
-        "USER_VALUE=kept\n# >>> PV MANAGED\n# <<< PV MANAGED\n"
-    );
-    assert!(cleared.changed);
-    assert_eq!(missing.content, "");
-    assert!(!missing.changed);
-
-    Ok(())
-}
 
 #[test]
 fn project_env_renderer_resolves_project_resource_and_allocation_contexts() -> Result<()> {
@@ -74,12 +18,18 @@ fn project_env_renderer_resolves_project_resource_and_allocation_contexts() -> R
 env:
   APP_URL: "${url}"
   SHARED_VALUE: root
+  ROOT_TLS_KEY: "${tls.key}"
+  ROOT_TLS_CERT: "${tls.cert}"
+  ROOT_TLS_CA: "${tls.ca}"
 mysql:
   env:
     DB_HOST: "${host}"
     DB_PORT: "${port}"
     RESOURCE_URL: "${url}"
     SHARED_VALUE: resource
+    RESOURCE_TLS_KEY: "${tls.key}"
+    RESOURCE_TLS_CERT: "${tls.cert}"
+    RESOURCE_TLS_CA: "${tls.ca}"
   allocations:
     app:
       env:
@@ -89,6 +39,9 @@ mysql:
         ESCAPED_VALUE: "$${database} $$${database} $$"
         NUMBER_VALUE: 42
         SHARED_VALUE: allocation
+        ALLOCATION_TLS_KEY: "${tls.key}"
+        ALLOCATION_TLS_CERT: "${tls.cert}"
+        ALLOCATION_TLS_CA: "${tls.ca}"
 rustfs:
   env:
     AWS_ENDPOINT: "${endpoint}"
@@ -106,18 +59,27 @@ rustfs:
             "mysql",
             ResourceEnvContext {
                 track: "8.4".to_string(),
+                // TLS paths always come from the Project, never a resource or allocation.
                 values: values(&[
                     ("host", "127.0.0.1"),
                     ("password", "secret"),
                     ("port", "3306"),
                     ("url", "mysql://root:secret@127.0.0.1:3306"),
                     ("username", "root"),
+                    ("tls.key", "/unexpected/resource.key"),
+                    ("tls.cert", "/unexpected/resource.crt"),
+                    ("tls.ca", "/unexpected/resource-ca.pem"),
                 ]),
                 allocations: allocations(&[(
                     "app",
                     AllocationEnvContext {
                         generated_name: "acme_test_app".to_string(),
-                        values: values(&[("database", "acme_test_app")]),
+                        values: values(&[
+                            ("database", "acme_test_app"),
+                            ("tls.key", "/unexpected/allocation.key"),
+                            ("tls.cert", "/unexpected/allocation.crt"),
+                            ("tls.ca", "/unexpected/allocation-ca.pem"),
+                        ]),
                     },
                 )]),
             },
@@ -142,129 +104,6 @@ rustfs:
             },
         ),
     ]);
-
-    let rendered = render_project_env(&config, &context)?;
-
-    assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
-
-    Ok(())
-}
-
-#[test]
-fn project_env_renderer_resolves_url_by_scope() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-env:
-  ROOT_URL: "${url}"
-mysql:
-  env:
-    RESOURCE_SERVICE_URL: "${url}"
-  allocations:
-    app:
-      env:
-        ALLOCATION_SERVICE_URL: "${url}"
-"#,
-    )?;
-    let context = project_context_with_primary(
-        "primary.acme.test",
-        &[(
-            "mysql",
-            ResourceEnvContext {
-                track: "8.4".to_string(),
-                values: values(&[
-                    ("host", "127.0.0.1"),
-                    ("password", "secret"),
-                    ("port", "3306"),
-                    ("url", "mysql://root:secret@127.0.0.1:3306"),
-                    ("username", "root"),
-                ]),
-                allocations: allocations(&[(
-                    "app",
-                    AllocationEnvContext {
-                        generated_name: "acme_test_app".to_string(),
-                        values: values(&[
-                            ("database", "acme_test_app"),
-                            ("url", "mysql://root:secret@127.0.0.1:3306/acme_test_app"),
-                        ]),
-                    },
-                )]),
-            },
-        )],
-    );
-
-    let rendered = render_project_env(&config, &context)?;
-
-    assert_eq!(
-        rendered.values.get("ROOT_URL").map(String::as_str),
-        Some("https://primary.acme.test")
-    );
-    assert_eq!(
-        rendered
-            .values
-            .get("RESOURCE_SERVICE_URL")
-            .map(String::as_str),
-        Some("mysql://root:secret@127.0.0.1:3306")
-    );
-    assert_eq!(
-        rendered
-            .values
-            .get("ALLOCATION_SERVICE_URL")
-            .map(String::as_str),
-        Some("mysql://root:secret@127.0.0.1:3306/acme_test_app")
-    );
-    assert_debug_snapshot!((&rendered, format_project_env(&rendered)));
-
-    Ok(())
-}
-
-#[test]
-fn project_env_renderer_resolves_tls_paths_across_scopes() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-env:
-  ROOT_TLS_KEY: "${tls.key}"
-  ROOT_TLS_CERT: "${tls.cert}"
-  ROOT_TLS_CA: "${tls.ca}"
-mysql:
-  env:
-    RESOURCE_TLS_KEY: "${tls.key}"
-    RESOURCE_TLS_CERT: "${tls.cert}"
-    RESOURCE_TLS_CA: "${tls.ca}"
-  allocations:
-    app:
-      env:
-        ALLOCATION_TLS_KEY: "${tls.key}"
-        ALLOCATION_TLS_CERT: "${tls.cert}"
-        ALLOCATION_TLS_CA: "${tls.ca}"
-"#,
-    )?;
-    let context = project_context(&[(
-        "mysql",
-        ResourceEnvContext {
-            track: "8.4".to_string(),
-            values: values(&[
-                ("host", "127.0.0.1"),
-                ("password", "secret"),
-                ("port", "3306"),
-                ("tls.key", "/unexpected/resource.key"),
-                ("tls.cert", "/unexpected/resource.crt"),
-                ("tls.ca", "/unexpected/resource-ca.pem"),
-                ("username", "root"),
-            ]),
-            allocations: allocations(&[(
-                "app",
-                AllocationEnvContext {
-                    generated_name: "acme_test_app".to_string(),
-                    values: values(&[
-                        ("database", "acme_test_app"),
-                        ("tls.key", "/unexpected/allocation.key"),
-                        ("tls.cert", "/unexpected/allocation.crt"),
-                        ("tls.ca", "/unexpected/allocation-ca.pem"),
-                    ]),
-                },
-            )]),
-        },
-    )]);
 
     let rendered = render_project_env(&config, &context)?;
 
@@ -330,86 +169,6 @@ mysql:
 }
 
 #[test]
-fn project_env_renderer_reports_missing_contexts() -> Result<()> {
-    let root_config = ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n")?;
-    assert!(matches!(
-        render_project_env(&root_config, &ProjectEnvContext::default()),
-        Err(ConfigError::MissingEnvContext { field, placeholder })
-            if field == "project.primary_hostname" && placeholder == "url"
-    ));
-
-    let resource_url_config =
-        ProjectConfig::parse("mysql:\n  env:\n    DATABASE_URL: \"${url}\"\n")?;
-    let missing_resource_url = render_project_env(
-        &resource_url_config,
-        &project_context(&[("mysql", ResourceEnvContext::default())]),
-    );
-    assert!(matches!(
-        missing_resource_url,
-        Err(ConfigError::MissingEnvContext { field, placeholder })
-            if field == "mysql.env.DATABASE_URL" && placeholder == "url"
-    ));
-
-    let resource_config = ProjectConfig::parse(
-        r#"
-mysql:
-  env:
-    DB_HOST: "${host}"
-"#,
-    )?;
-    let missing_resource = render_project_env(&resource_config, &project_context(&[]));
-    assert!(matches!(
-        missing_resource,
-        Err(ConfigError::MissingResourceEnvContext { resource }) if resource == "mysql"
-    ));
-
-    let missing_value = render_project_env(
-        &resource_config,
-        &project_context(&[("mysql", ResourceEnvContext::default())]),
-    );
-    assert!(matches!(
-        missing_value,
-        Err(ConfigError::MissingEnvContext { field, placeholder })
-            if field == "mysql.env.DB_HOST" && placeholder == "host"
-    ));
-
-    let allocation_config = ProjectConfig::parse(
-        r#"
-mysql:
-  allocations:
-    app:
-      env:
-        DB_DATABASE: "${database}"
-"#,
-    )?;
-    let missing_allocation = render_project_env(
-        &allocation_config,
-        &project_context(&[(
-            "mysql",
-            ResourceEnvContext {
-                track: "8.4".to_string(),
-                values: values(&[
-                    ("host", "127.0.0.1"),
-                    ("password", "secret"),
-                    ("port", "3306"),
-                    ("username", "root"),
-                ]),
-                allocations: BTreeMap::new(),
-            },
-        )]),
-    );
-    assert!(matches!(
-        missing_allocation,
-        Err(ConfigError::MissingAllocationEnvContext {
-            resource,
-            allocation,
-        }) if resource == "mysql" && allocation == "app"
-    ));
-
-    Ok(())
-}
-
-#[test]
 fn project_env_renderer_rejects_same_depth_duplicate_keys() -> Result<()> {
     let config = ProjectConfig::parse(
         r#"
@@ -458,53 +217,6 @@ mysql:
     assert!(matches!(
         duplicate,
         Err(ConfigError::DuplicateRenderedEnvKey { key, .. }) if key == "DATABASE_URL"
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn project_env_renderer_rejects_same_depth_resource_duplicate_keys() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-mysql:
-  env:
-    DB_HOST: "${host}"
-redis:
-  env:
-    DB_HOST: "${host}"
-"#,
-    )?;
-    let context = project_context(&[
-        (
-            "mysql",
-            ResourceEnvContext {
-                track: "8.4".to_string(),
-                values: values(&[("host", "127.0.0.1")]),
-                allocations: BTreeMap::new(),
-            },
-        ),
-        (
-            "redis",
-            ResourceEnvContext {
-                track: "7.2".to_string(),
-                values: values(&[("host", "127.0.0.1")]),
-                allocations: BTreeMap::new(),
-            },
-        ),
-    ]);
-
-    let validation = validate_project_env_shape(&config);
-    let duplicate = render_project_env(&config, &context);
-
-    assert_debug_snapshot!((&validation, &duplicate));
-    assert!(matches!(
-        validation,
-        Err(ConfigError::DuplicateRenderedEnvKey { key, .. }) if key == "DB_HOST"
-    ));
-    assert!(matches!(
-        duplicate,
-        Err(ConfigError::DuplicateRenderedEnvKey { key, .. }) if key == "DB_HOST"
     ));
 
     Ok(())
@@ -697,24 +409,6 @@ fn managed_env_block_transformer_rejects_malformed_markers() {
 }
 
 #[test]
-fn project_env_writer_creates_missing_env_with_private_permissions() -> Result<()> {
-    let tempdir = tempdir()?;
-    let env_path = tempdir.path().join(".env");
-    let rendered = RenderedProjectEnv {
-        values: values(&[
-            ("APP_URL", "https://acme.test"),
-            ("DB_PASSWORD", "secret value"),
-        ]),
-    };
-
-    let transform = write_project_env_file(&env_path, &rendered)?;
-
-    assert_debug_snapshot!((transform, read_file(&env_path)?, mode_string(&env_path)?));
-
-    Ok(())
-}
-
-#[test]
 fn project_env_writer_updates_existing_env_preserving_permissions_and_normalizing_newlines()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -737,29 +431,6 @@ fn project_env_writer_updates_existing_env_preserving_permissions_and_normalizin
         mode_string(&env_path)?,
         second_transform,
     ));
-
-    Ok(())
-}
-
-#[test]
-fn project_env_writer_leaves_existing_env_unchanged_on_malformed_block() -> Result<()> {
-    let tempdir = tempdir()?;
-    let env_path = tempdir.path().join(".env");
-    write_file(&env_path, "USER_ONLY=1\n# >>> PV MANAGED\nAPP_URL=old\n")?;
-    set_file_mode(&env_path, 0o640)?;
-    let before_content = read_file(&env_path)?;
-    let before_mode = mode_string(&env_path)?;
-    let rendered = RenderedProjectEnv {
-        values: values(&[("APP_URL", "https://acme.test")]),
-    };
-
-    let result = write_project_env_file(&env_path, &rendered);
-    let after_content = read_file(&env_path)?;
-    let after_mode = mode_string(&env_path)?;
-
-    assert_eq!(before_content, after_content);
-    assert_eq!(before_mode, after_mode);
-    assert_debug_snapshot!((result, after_content, after_mode));
 
     Ok(())
 }

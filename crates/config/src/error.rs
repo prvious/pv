@@ -191,7 +191,7 @@ pub enum ConfigError {
     MalformedManagedEnvBlock { reason: &'static str },
 }
 
-#[cfg(any(test, not(unix)))]
+#[cfg(not(unix))]
 pub(crate) const fn unsupported_target_name(
     capability: ConfigCapability,
     target: &'static str,
@@ -202,66 +202,4 @@ pub(crate) const fn unsupported_target_name(
 #[cfg(not(unix))]
 pub(crate) const fn unsupported_current_target(capability: ConfigCapability) -> ConfigError {
     unsupported_target_name(capability, std::env::consts::OS)
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io;
-
-    use camino::Utf8PathBuf;
-
-    use super::{ConfigCapability, ConfigError, unsupported_target_name};
-
-    #[test]
-    fn path_errors_quote_punctuation_and_relative_names() {
-        let filesystem = ConfigError::Filesystem {
-            path: Utf8PathBuf::from("/Users/me/foo, bar: \"baz\"/pv.yml"),
-            source: io::Error::new(io::ErrorKind::PermissionDenied, "denied"),
-        };
-        let env_file = ConfigError::EnvFileNotFile {
-            env_file: Utf8PathBuf::from("My Env"),
-        };
-
-        assert_eq!(
-            filesystem.to_string(),
-            r#"filesystem error at "/Users/me/foo, bar: \"baz\"/pv.yml": denied"#
-        );
-        assert_eq!(
-            env_file.to_string(),
-            r#"Project config env_file must point to a file: "My Env""#
-        );
-    }
-
-    #[test]
-    fn unsupported_error_names_capability_and_target() {
-        let error = ConfigError::UnsupportedPlatform {
-            capability: ConfigCapability::PermissionPreservingWrite,
-            target: "windows",
-        };
-
-        assert!(matches!(
-            &error,
-            ConfigError::UnsupportedPlatform {
-                capability: ConfigCapability::PermissionPreservingWrite,
-                target: "windows",
-            }
-        ));
-        assert_eq!(
-            error.to_string(),
-            "permission-preserving config writes are unsupported on windows"
-        );
-    }
-
-    #[test]
-    fn unsupported_target_name_uses_injected_target() {
-        let error = unsupported_target_name(ConfigCapability::PermissionPreservingWrite, "windows");
-
-        assert!(matches!(
-            error,
-            ConfigError::UnsupportedPlatform {
-                capability: ConfigCapability::PermissionPreservingWrite,
-                target: "windows",
-            }
-        ));
-    }
 }

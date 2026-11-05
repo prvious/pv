@@ -1,0 +1,108 @@
+---
+source: crates/config/tests/it/project_config.rs
+expression: rejected
+---
+[
+    (
+        "serve: disabled\n",
+        Err(
+            "Project config field `serve` must be a boolean, found string",
+        ),
+    ),
+    (
+        "env_file: false\n",
+        Err(
+            "Project config field `env_file` must be a string, found boolean",
+        ),
+    ),
+    (
+        "env_file: /tmp/acme.env\n",
+        Err(
+            "Project config env_file must be relative to the Project root: \"/tmp/acme.env\"",
+        ),
+    ),
+    (
+        "env_file: config/../../acme.env\n",
+        Err(
+            "Project config env_file escapes the Project root: \"config/../../acme.env\"",
+        ),
+    ),
+    (
+        "serve: false\nroot: /tmp/public\n",
+        Err(
+            "Project config root must be relative to the Project root: \"/tmp/public\"",
+        ),
+    ),
+    (
+        "serve: false\nroot: public/../../outside\n",
+        Err(
+            "Project config root escapes the Project root: \"public/../../outside\"",
+        ),
+    ),
+    (
+        "root: ../outside\n",
+        Err(
+            "Project config root escapes the Project root: \"../outside\"",
+        ),
+    ),
+    (
+        "root: true\n",
+        Err(
+            "Project config field `root` must be a string, found boolean",
+        ),
+    ),
+    (
+        "php: false\n",
+        Err(
+            "Project config field `php` must be a string or number, found boolean",
+        ),
+    ),
+    (
+        "php: ../8.4\n",
+        Err(
+            "invalid Project config PHP track `../8.4`: invalid track `../8.4`",
+        ),
+    ),
+    (
+        "php:\n  extensions: redis\n",
+        Err(
+            "Project config field `php.extensions` must be a sequence, found string",
+        ),
+    ),
+    (
+        "php:\n  extensions: null\n",
+        Err(
+            "Project config field `php.extensions` must be a sequence, found null",
+        ),
+    ),
+    (
+        "php:\n  extensions:\n",
+        Err(
+            "Project config field `php.extensions` must be a sequence, found null",
+        ),
+    ),
+    (
+        "php:\n  extensions:\n    - true\n",
+        Err(
+            "Project config field `php.extensions` must be a string, found boolean",
+        ),
+    ),
+    (
+        "mysql:\n  version: true\n",
+        Err(
+            "Project config field `mysql.version` must be a string or number, found boolean",
+        ),
+    ),
+    (
+        "mysql:\n  version: ../8.4\n",
+        Err(
+            "invalid Project config resource `mysql` version `../8.4`: invalid track `../8.4`",
+        ),
+    ),
+    (
+        "postgres:\n  version: \"16\"\npg:\n  version: latest\n",
+        Err(
+            "duplicate Project config resource `postgres`",
+        ),
+    ),
+]

@@ -1,0 +1,66 @@
+---
+source: crates/config/tests/it/project_config.rs
+expression: rejected
+---
+[
+    (
+        "env:\n  APP_URL: \"${missing_value}\"\n",
+        Err(
+            "unknown Project config env placeholder `missing_value` in `env.APP_URL`",
+        ),
+    ),
+    (
+        "env:\n  APP_URL: \"${ProjectUrl}\"\n",
+        Err(
+            "invalid Project config env placeholder `ProjectUrl` in `env.APP_URL`: placeholder names must use lowercase snake_case",
+        ),
+    ),
+    (
+        "env:\n  TLS_PATH: \"${tls_ca}\"\n",
+        Err(
+            "unknown Project config env placeholder `tls_ca` in `env.TLS_PATH`",
+        ),
+    ),
+    (
+        "env:\n  TLS_PATH: \"${tls_cert}\"\n",
+        Err(
+            "unknown Project config env placeholder `tls_cert` in `env.TLS_PATH`",
+        ),
+    ),
+    (
+        "env:\n  TLS_PATH: \"${tls_key}\"\n",
+        Err(
+            "unknown Project config env placeholder `tls_key` in `env.TLS_PATH`",
+        ),
+    ),
+    (
+        "env:\n  TLS_PATH: \"${tls.other}\"\n",
+        Err(
+            "invalid Project config env placeholder `tls.other` in `env.TLS_PATH`: placeholder names must use lowercase snake_case",
+        ),
+    ),
+    (
+        "env:\n  DB_DATABASE: \"${database}\"\n",
+        Err(
+            "unknown Project config env placeholder `database` in `env.DB_DATABASE`",
+        ),
+    ),
+    (
+        "mysql:\n  env:\n    DB_DATABASE: \"${database}\"\n",
+        Err(
+            "unknown Project config env placeholder `database` in `mysql.env.DB_DATABASE`",
+        ),
+    ),
+    (
+        "mysql:\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
+        Err(
+            "unknown Project config env placeholder `smtp_host` in `mysql.env.MAIL_HOST`",
+        ),
+    ),
+    (
+        "redis:\n  allocations:\n    app:\n      env:\n        S3_BUCKET: \"${bucket}\"\n",
+        Err(
+            "unknown Project config env placeholder `bucket` in `redis.allocations.app.env.S3_BUCKET`",
+        ),
+    ),
+]

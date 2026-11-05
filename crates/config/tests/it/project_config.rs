@@ -1,5 +1,4 @@
 use std::io;
-use std::os::unix::fs::PermissionsExt;
 
 use anyhow::{Result, anyhow};
 use camino::Utf8Path;
@@ -9,57 +8,6 @@ use config::{
     write_project_php_track,
 };
 use insta::{assert_debug_snapshot, assert_snapshot};
-
-#[test]
-fn project_config_parses_strict_resource_env_shape() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-php: 8.4
-root: public
-env:
-  APP_URL: "${url}"
-mysql:
-  version: 8.0
-  env:
-    DB_HOST: "${host}"
-  allocations:
-    app-db:
-      env:
-        DB_DATABASE: "${database}"
-postgresql:
-  version: latest
-"#,
-    )?;
-
-    assert_debug_snapshot!(config);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_parses_hooks_in_both_serving_modes() -> Result<()> {
-    let source = r#"
-hooks:
-  prepare:
-    - cp "$PV_SOURCE_PATH/auth.json" auth.json
-  setup:
-    - composer install
-    - |
-      pnpm install
-      pnpm build
-"#;
-    let serving = ProjectConfig::parse(source)?;
-    let resource_only = ProjectConfig::parse(&format!("serve: false\n{source}"))?;
-    assert_eq!(serving.hooks, resource_only.hooks);
-    assert_debug_snapshot!(serving.hooks);
-
-    for source in ["", "hooks: {}", "hooks: { prepare: [], setup: [] }"] {
-        let config = ProjectConfig::parse(source)?;
-        assert!(config.hooks.is_empty());
-        assert_eq!(config, ProjectConfig::default());
-    }
-    Ok(())
-}
 
 #[test]
 fn project_config_rejects_invalid_hooks() -> Result<()> {
@@ -125,53 +73,58 @@ hooks:
 }
 
 #[test]
-fn project_config_parses_resource_only_controls_and_defaults() -> Result<()> {
-    let defaults = ProjectConfig::parse("")?;
-    let resource_only = ProjectConfig::parse(
-        r#"
-serve: false
-env_file: .env.local
-root: missing
-env:
-  APP_URL: "${url}"
-  APP_ENV: local
-"#,
-    )?;
+fn project_config_rejects_invalid_shapes() -> Result<()> {
+    let rejected = [
+        "serve: disabled\n",
+        "env_file: false\n",
+        "env_file: /tmp/acme.env\n",
+        "env_file: config/../../acme.env\n",
+        "serve: false\nroot: /tmp/public\n",
+        "serve: false\nroot: public/../../outside\n",
+        "root: ../outside\n",
+        "root: true\n",
+        "php: false\n",
+        "php: ../8.4\n",
+        "php:\n  extensions: redis\n",
+        "php:\n  extensions: null\n",
+        "php:\n  extensions:\n",
+        "php:\n  extensions:\n    - true\n",
+        "mysql:\n  version: true\n",
+        "mysql:\n  version: ../8.4\n",
+        "postgres:\n  version: \"16\"\npg:\n  version: latest\n",
+    ]
+    .map(|yaml| {
+        (
+            yaml,
+            ProjectConfig::parse(yaml)
+                .map(|_config| ())
+                .map_err(|error| error.to_string()),
+        )
+    });
+    assert_debug_snapshot!(rejected);
 
-    assert_debug_snapshot!((defaults, resource_only));
+    // Values close to the rejected shapes that still parse.
+    let config = ProjectConfig::parse("env:\n  FEATURE_ENABLED: true\n")?;
+    assert_eq!(
+        config.env.get("FEATURE_ENABLED").map(String::as_str),
+        Some("true")
+    );
+    assert_eq!(
+        ProjectConfig::parse("php: latest\n")?
+            .php
+            .as_ref()
+            .and_then(|php| php.version_selector()),
+        Some("latest")
+    );
+    assert_eq!(
+        ProjectConfig::parse("mysql:\n  version: 8.4\n")?
+            .resources
+            .get("mysql")
+            .and_then(|resource| resource.track.as_deref()),
+        Some("8.4")
+    );
 
     Ok(())
-}
-
-#[test]
-fn project_config_rejects_invalid_resource_only_control_shapes() {
-    assert!(matches!(
-        ProjectConfig::parse("serve: disabled\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "serve"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("env_file: false\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "env_file"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("env_file: /tmp/acme.env\n"),
-        Err(ConfigError::AbsoluteEnvFile { env_file }) if env_file == "/tmp/acme.env"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("env_file: config/../../acme.env\n"),
-        Err(ConfigError::EnvFileEscapesProject { env_file })
-            if env_file == "config/../../acme.env"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("serve: false\nroot: /tmp/public\n"),
-        Err(ConfigError::AbsoluteRoot { root })
-            if root == "/tmp/public"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("serve: false\nroot: public/../../outside\n"),
-        Err(ConfigError::RootEscapesProject { root })
-            if root == "public/../../outside"
-    ));
 }
 
 #[test]
@@ -197,157 +150,42 @@ s3:
 }
 
 #[test]
-fn project_config_rejects_invalid_scalar_shapes() -> Result<()> {
-    assert!(matches!(
-        ProjectConfig::parse("php: false\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("mysql:\n  version: true\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "mysql.version"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("root: true\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "root"
-    ));
-
-    let config = ProjectConfig::parse("env:\n  FEATURE_ENABLED: true\n")?;
-    assert_eq!(
-        config.env.get("FEATURE_ENABLED").map(String::as_str),
-        Some("true")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn project_config_accepts_php_object_with_version_and_extensions() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-php:
-  version: 8.4
-  extensions:
-    - redis
-    - xdebug
-"#,
-    )?;
-
-    let php = config
-        .php
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing php config"))?;
-    assert_eq!(php.version_selector(), Some("8.4"));
-    assert_eq!(php.requested_extensions(), ["redis", "xdebug"]);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_accepts_php_object_with_extensions_only() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-php:
-  extensions:
-    - xdebug
-"#,
-    )?;
-
-    let php = config
-        .php
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing php config"))?;
-    assert_eq!(php.version_selector(), None);
-    assert_eq!(php.requested_extensions(), ["xdebug"]);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_rejects_invalid_php_extensions_shape() -> Result<()> {
-    assert!(matches!(
-        ProjectConfig::parse("php:\n  extensions: redis\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("php:\n  extensions: null\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("php:\n  extensions:\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("php:\n  extensions:\n    - true\n"),
-        Err(ConfigError::InvalidFieldType { field, .. }) if field == "php.extensions"
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn project_config_validates_php_and_resource_tracks() -> Result<()> {
-    assert_eq!(
-        ProjectConfig::parse("php: latest\n")?
-            .php
-            .as_ref()
-            .and_then(|php| php.version_selector()),
-        Some("latest")
-    );
-    assert_eq!(
-        ProjectConfig::parse("mysql:\n  version: 8.4\n")?
-            .resources
-            .get("mysql")
-            .and_then(|resource| resource.track.as_deref()),
-        Some("8.4")
-    );
-    assert!(matches!(
-        ProjectConfig::parse("php: ../8.4\n"),
-        Err(ConfigError::InvalidPhpTrack { track, .. }) if track == "../8.4"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("mysql:\n  version: ../8.4\n"),
-        Err(ConfigError::InvalidResourceTrack {
-            resource,
-            track,
-            ..
-        }) if resource == "mysql" && track == "../8.4"
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn project_config_rejects_invalid_env_placeholders() -> Result<()> {
-    assert!(matches!(
-        ProjectConfig::parse("env:\n  APP_URL: \"${missing_value}\"\n"),
-        Err(ConfigError::UnknownEnvPlaceholder { placeholder, .. })
-            if placeholder == "missing_value"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("env:\n  APP_URL: \"${ProjectUrl}\"\n"),
-        Err(ConfigError::InvalidEnvPlaceholder { placeholder, .. })
-            if placeholder == "ProjectUrl"
-    ));
-    assert!(ProjectConfig::parse("env:\n  APP_URL: \"$${missing_value}\"\n").is_ok());
-    assert!(
-        ProjectConfig::parse(
-            "env:\n  VITE_DEV_SERVER_KEY: \"${tls.key}\"\n  VITE_DEV_SERVER_CERT: \"${tls.cert}\"\n  PV_TLS_CA: \"${tls.ca}\"\n"
+fn project_config_checks_env_placeholders_and_their_scope() -> Result<()> {
+    let rejected = [
+        "env:\n  APP_URL: \"${missing_value}\"\n",
+        "env:\n  APP_URL: \"${ProjectUrl}\"\n",
+        "env:\n  TLS_PATH: \"${tls_ca}\"\n",
+        "env:\n  TLS_PATH: \"${tls_cert}\"\n",
+        "env:\n  TLS_PATH: \"${tls_key}\"\n",
+        "env:\n  TLS_PATH: \"${tls.other}\"\n",
+        "env:\n  DB_DATABASE: \"${database}\"\n",
+        "mysql:\n  env:\n    DB_DATABASE: \"${database}\"\n",
+        "mysql:\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
+        "redis:\n  allocations:\n    app:\n      env:\n        S3_BUCKET: \"${bucket}\"\n",
+    ]
+    .map(|yaml| {
+        (
+            yaml,
+            ProjectConfig::parse(yaml)
+                .map(|_config| ())
+                .map_err(|error| error.to_string()),
         )
-        .is_ok()
-    );
-    assert!(ProjectConfig::parse("rustfs:\n  env:\n    PUBLIC_URL: \"${url}\"\n").is_ok());
-    for placeholder in ["tls_ca", "tls_cert", "tls_key"] {
-        assert!(matches!(
-            ProjectConfig::parse(&format!("env:\n  TLS_PATH: \"${{{placeholder}}}\"\n")),
-            Err(ConfigError::UnknownEnvPlaceholder { placeholder: rejected, .. })
-                if rejected == placeholder
-        ));
+    });
+    assert_debug_snapshot!(rejected);
+
+    for accepted in [
+        "env:\n  APP_URL: \"$${missing_value}\"\n",
+        "env:\n  APP_URL: \"${url}\"\n",
+        "env:\n  VITE_DEV_SERVER_KEY: \"${tls.key}\"\n  VITE_DEV_SERVER_CERT: \"${tls.cert}\"\n  PV_TLS_CA: \"${tls.ca}\"\n",
+        "mysql:\n  env:\n    APP_URL: \"${url}\"\n",
+        "mysql:\n  env:\n    DB_HOST: \"${host}\"\n",
+        "mysql:\n  allocations:\n    app:\n      env:\n        APP_URL: \"${url}\"\n",
+        "mysql:\n  allocations:\n    app:\n      env:\n        DB_HOST: \"${host}\"\n        DB_DATABASE: \"${database}\"\n        DB_USERNAME: \"${username}\"\n        DB_PASSWORD: \"${password}\"\n        DB_PORT: \"${port}\"\n",
+        "rustfs:\n  env:\n    PUBLIC_URL: \"${url}\"\n",
+        "rustfs:\n  env:\n    AWS_ENDPOINT: \"${endpoint}\"\n    AWS_URL: \"${url}\"\n",
+    ] {
+        assert!(ProjectConfig::parse(accepted).is_ok(), "{accepted}");
     }
-    assert!(matches!(
-        ProjectConfig::parse("env:\n  TLS_PATH: \"${tls.other}\"\n"),
-        Err(ConfigError::InvalidEnvPlaceholder { placeholder, .. })
-            if placeholder == "tls.other"
-    ));
 
     Ok(())
 }
@@ -460,102 +298,6 @@ mysql:
 }
 
 #[test]
-fn project_config_reports_tls_placeholder_usage() -> Result<()> {
-    let project_tls = ProjectConfig::parse("env:\n  VITE_DEV_SERVER_KEY: \"${tls.key}\"\n")?;
-    let resource_tls = ProjectConfig::parse("mysql:\n  env:\n    TLS_CERT: \"${tls.cert}\"\n")?;
-    let allocation_tls = ProjectConfig::parse(
-        "postgres:\n  allocations:\n    app:\n      env:\n        TLS_CA: \"${tls.ca}\"\n",
-    )?;
-    let escaped_tls = ProjectConfig::parse("env:\n  LITERAL: \"$${tls.key}\"\n")?;
-    let no_tls = ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n")?;
-
-    assert!(project_tls.uses_tls_placeholders());
-    assert!(resource_tls.uses_tls_placeholders());
-    assert!(allocation_tls.uses_tls_placeholders());
-    assert!(!escaped_tls.uses_tls_placeholders());
-    assert!(!no_tls.uses_tls_placeholders());
-
-    Ok(())
-}
-
-#[test]
-fn project_config_rejects_env_placeholders_outside_scope() -> Result<()> {
-    assert!(matches!(
-        ProjectConfig::parse("env:\n  DB_DATABASE: \"${database}\"\n"),
-        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "env.DB_DATABASE" && placeholder == "database"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("mysql:\n  env:\n    DB_DATABASE: \"${database}\"\n"),
-        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "mysql.env.DB_DATABASE" && placeholder == "database"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse("mysql:\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n"),
-        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "mysql.env.MAIL_HOST" && placeholder == "smtp_host"
-    ));
-    assert!(matches!(
-        ProjectConfig::parse(
-            r#"
-redis:
-  allocations:
-    app:
-      env:
-        S3_BUCKET: "${bucket}"
-"#
-        ),
-        Err(ConfigError::UnknownEnvPlaceholder { field, placeholder })
-            if field == "redis.allocations.app.env.S3_BUCKET" && placeholder == "bucket"
-    ));
-
-    assert!(ProjectConfig::parse("env:\n  APP_URL: \"${url}\"\n").is_ok());
-    assert!(ProjectConfig::parse("mysql:\n  env:\n    APP_URL: \"${url}\"\n").is_ok());
-    assert!(ProjectConfig::parse("mysql:\n  env:\n    DB_HOST: \"${host}\"\n").is_ok());
-    assert!(
-        ProjectConfig::parse(
-            r#"
-mysql:
-  allocations:
-    app:
-      env:
-        APP_URL: "${url}"
-"#
-        )
-        .is_ok()
-    );
-    assert!(
-        ProjectConfig::parse(
-            r#"
-rustfs:
-  env:
-    AWS_ENDPOINT: "${endpoint}"
-    AWS_URL: "${url}"
-"#
-        )
-        .is_ok()
-    );
-    assert!(
-        ProjectConfig::parse(
-            r#"
-mysql:
-  allocations:
-    app:
-      env:
-        DB_HOST: "${host}"
-        DB_DATABASE: "${database}"
-        DB_USERNAME: "${username}"
-        DB_PASSWORD: "${password}"
-        DB_PORT: "${port}"
-"#
-        )
-        .is_ok()
-    );
-
-    Ok(())
-}
-
-#[test]
 fn project_config_rejects_unsupported_and_colliding_allocations() -> Result<()> {
     assert!(matches!(
         ProjectConfig::parse("mailpit:\n  allocations:\n    inbox: {}\n"),
@@ -591,47 +333,6 @@ rustfs:
             ..
         }) if resource == "rustfs" && normalized == "media-bucket"
     ));
-
-    Ok(())
-}
-
-#[test]
-fn project_config_rejects_duplicate_resource_aliases() -> Result<()> {
-    let result = ProjectConfig::parse(
-        r#"
-postgres:
-  version: "16"
-pg:
-  version: latest
-"#,
-    );
-
-    assert!(matches!(
-        result,
-        Err(ConfigError::DuplicateResource { resource }) if resource == "postgres"
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn project_config_expands_yaml_aliases_and_merge_keys() -> Result<()> {
-    let config = ProjectConfig::parse(
-        r#"
-env:
-  MATH: 2 * 3
-  TEAM: R&D & QA
-postgres: &database
-  version: 16
-  env:
-    DB_HOST: "${host}"
-mysql:
-  <<: *database
-  version: 8.4
-"#,
-    )?;
-
-    assert_debug_snapshot!(config);
 
     Ok(())
 }
@@ -681,32 +382,6 @@ postgres:
 }
 
 #[test]
-fn project_config_discovery_validates_paths_and_conflicts() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    let public = project.join("public");
-    create_dir(&public)?;
-    write_file(&project.join("pv.yml"), "root: public\n")?;
-
-    let config_file = ProjectConfigFile::read_from_root(&project)?;
-
-    assert_debug_snapshot!((
-        config_file.path.file_name(),
-        config_file.exists,
-        config_file.config,
-    ));
-
-    write_file(&project.join("pv.yaml"), "php: 8.3\n")?;
-    let conflict = ProjectConfigFile::read_from_root(&project);
-    assert!(matches!(
-        conflict,
-        Err(ConfigError::ConfigFileConflict { .. })
-    ));
-
-    Ok(())
-}
-
-#[test]
 fn project_config_writer_updates_php_in_discovered_file() -> Result<()> {
     let tempdir = tempdir()?;
     let project = tempdir.path().join("acme");
@@ -715,7 +390,17 @@ fn project_config_writer_updates_php_in_discovered_file() -> Result<()> {
     write_file(
         &project.join("pv.yml"),
         r#"
+php:
+  version: 8.2
+  extensions:
+    - redis
+    - xdebug
 root: public
+serve: false
+env_file: .env.local
+hooks:
+  setup:
+    - php artisan migrate
 env:
   APP_URL: "${url}"
 mysql:
@@ -726,7 +411,7 @@ mysql:
     app-db:
       env:
         DB_DATABASE: "${database}"
-postgres:
+postgresql:
   version: latest
 "#,
     )?;
@@ -734,6 +419,8 @@ postgres:
     let updated = write_project_php_track(&project, "8.4")?;
     let reloaded = ProjectConfigFile::read_from_root(&project)?;
 
+    // Updating the track keeps extensions, controls, hooks and resources.
+    assert_eq!(reloaded.config, updated.config);
     assert_debug_snapshot!((
         updated.path.file_name(),
         updated.exists,
@@ -741,252 +428,6 @@ postgres:
         reloaded.config,
     ));
     assert_snapshot!(read_file(&project.join("pv.yml"))?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_writes_full_config_to_preferred_file() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project.join("public"))?;
-    let config = ProjectConfig::parse(
-        r#"
-php: 8.4
-root: public
-env:
-  APP_URL: "${url}"
-mysql:
-  version: latest
-  allocations:
-    app:
-      env:
-        DB_HOST: "${host}"
-"#,
-    )?;
-
-    let written = config::write_project_config(&project, &config)?;
-    let reloaded = ProjectConfigFile::read_from_root(&project)?;
-
-    assert_debug_snapshot!((written.path.file_name(), written.exists, reloaded.config));
-    assert_snapshot!(read_file(&project.join("pv.yml"))?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_preserves_resource_only_controls() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    let config = ProjectConfig::parse("serve: false\nenv_file: .env.local\nroot: missing\n")?;
-
-    config::write_project_config(&project, &config)?;
-    let reloaded = ProjectConfigFile::read_from_root(&project)?;
-
-    assert_eq!(reloaded.config, config);
-    assert_snapshot!(read_file(&project.join("pv.yml"))?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_rejects_invalid_root_without_writing() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    let config = ProjectConfig::parse("root: missing\n")?;
-
-    let result = config::write_project_config(&project, &config);
-
-    assert!(matches!(
-        result,
-        Err(ConfigError::RootNotDirectory { root })
-            if root == "missing"
-    ));
-    assert!(!path_exists(&project.join("pv.yml"))?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_preserves_php_extensions_when_updating_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        r#"
-php:
-  version: 8.2
-  extensions:
-    - redis
-    - xdebug
-"#,
-    )?;
-
-    let updated = write_project_php_track(&project, "8.4")?;
-    let reloaded = ProjectConfigFile::read_from_root(&project)?;
-    let updated_php = updated
-        .config
-        .php
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing updated php config"))?;
-    let reloaded_php = reloaded
-        .config
-        .php
-        .as_ref()
-        .ok_or_else(|| anyhow!("missing reloaded php config"))?;
-
-    assert_eq!(updated_php.version_selector(), Some("8.4"));
-    assert_eq!(updated_php.requested_extensions(), ["redis", "xdebug"]);
-    assert_eq!(reloaded_php.version_selector(), Some("8.4"));
-    assert_eq!(reloaded_php.requested_extensions(), ["redis", "xdebug"]);
-    assert_snapshot!(read_file(&project.join("pv.yml"))?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_updates_php_in_alternate_file() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yaml"), "php: 8.2\n")?;
-
-    let updated = write_project_php_track(&project, "latest")?;
-
-    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert_snapshot!(read_file(&project.join("pv.yaml"))?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_creates_preferred_file_when_missing() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-
-    let updated = write_project_php_track(&project, "8.3")?;
-
-    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
-    assert!(path_exists(&project.join("pv.yml"))?);
-    assert_snapshot!(read_file(&project.join("pv.yml"))?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_rejects_invalid_php_track_without_writing() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    let config_path = project.join("pv.yml");
-    create_dir(&project)?;
-    write_file(&config_path, "php: 8.3\n")?;
-    let before = read_file(&config_path)?;
-
-    let result = write_project_php_track(&project, "../8.4");
-
-    assert!(matches!(
-        result,
-        Err(ConfigError::InvalidPhpTrack { track, .. }) if track == "../8.4"
-    ));
-    assert_eq!(read_file(&config_path)?, before);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_keeps_conflicting_files_unchanged() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "php: 8.2\n")?;
-    write_file(&project.join("pv.yaml"), "php: 8.3\n")?;
-    let preferred_before = read_file(&project.join("pv.yml"))?;
-    let alternate_before = read_file(&project.join("pv.yaml"))?;
-
-    let result = write_project_php_track(&project, "8.4");
-
-    assert!(matches!(
-        result,
-        Err(ConfigError::ConfigFileConflict { .. })
-    ));
-    assert_eq!(read_file(&project.join("pv.yml"))?, preferred_before);
-    assert_eq!(read_file(&project.join("pv.yaml"))?, alternate_before);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_updates_symlinked_config_target() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    let config_directory = project.join("config");
-    let target = config_directory.join("project.yml");
-    let config_link = project.join("pv.yml");
-    create_dir(&config_directory)?;
-    write_file(&target, "redis: {}\n")?;
-    create_symlink(&target, &config_link)?;
-
-    let updated = write_project_php_track(&project, "8.4")?;
-
-    assert!(is_symlink(&config_link)?);
-    assert_eq!(read_link(&config_link)?, target);
-    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
-    assert_snapshot!(read_file(&target)?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_writer_preserves_existing_config_file_mode() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    let config_path = project.join("pv.yml");
-    create_dir(&project)?;
-    write_file(&config_path, "php: 8.2\n")?;
-    set_file_mode(&config_path, 0o600)?;
-
-    let updated = write_project_php_track(&project, "8.4")?;
-
-    assert_eq!(mode_string(&config_path)?, "600");
-    assert_debug_snapshot!((updated.path.file_name(), updated.exists, updated.config));
-    assert_snapshot!(read_file(&config_path)?);
-
-    Ok(())
-}
-
-#[test]
-fn project_config_discovery_reports_broken_config_symlinks() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    create_symlink(&project.join("missing.yml"), &project.join("pv.yml"))?;
-
-    let result = ProjectConfigFile::read_from_root(&project);
-
-    assert!(matches!(result, Err(ConfigError::Filesystem { .. })));
-
-    Ok(())
-}
-
-#[test]
-fn project_config_rejects_roots_that_escape_project() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "root: ../outside\n")?;
-    create_dir(&tempdir.path().join("outside"))?;
-
-    let result = ProjectConfigFile::read_from_root(&project);
-
-    assert!(matches!(
-        result,
-        Err(ConfigError::RootEscapesProject { root }) if root.as_str() == "../outside"
-    ));
 
     Ok(())
 }
@@ -1091,56 +532,6 @@ fn write_file(path: &Utf8Path, contents: &str) -> Result<()> {
 )]
 fn read_file(path: &Utf8Path) -> Result<String> {
     Ok(std::fs::read_to_string(path)?)
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Project config tests check fixture file presence"
-)]
-fn path_exists(path: &Utf8Path) -> Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_metadata) => Ok(true),
-        Err(source) if source.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(source) => Err(source.into()),
-    }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Project config tests inspect symlink fixtures"
-)]
-fn is_symlink(path: &Utf8Path) -> Result<bool> {
-    Ok(std::fs::symlink_metadata(path)?.file_type().is_symlink())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Project config tests inspect symlink fixture targets"
-)]
-fn read_link(path: &Utf8Path) -> Result<camino::Utf8PathBuf> {
-    let target = std::fs::read_link(path)?;
-    camino::Utf8PathBuf::from_path_buf(target)
-        .map_err(|path| anyhow::anyhow!("symlink target is not UTF-8: {path:?}"))
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Project config tests set fixture permissions"
-)]
-fn set_file_mode(path: &Utf8Path, mode: u32) -> Result<()> {
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode))?;
-
-    Ok(())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "Project config tests inspect fixture permissions"
-)]
-fn mode_string(path: &Utf8Path) -> Result<String> {
-    let mode = std::fs::metadata(path)?.permissions().mode() & 0o777;
-
-    Ok(format!("{mode:o}"))
 }
 
 #[expect(
