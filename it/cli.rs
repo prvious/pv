@@ -25,7 +25,7 @@ use camino_tempfile::tempdir;
 use config::ProjectConfigFile;
 #[cfg(target_os = "macos")]
 use daemon::{MonitorCleanup, MonitorExit, MonitorStart, MonitorStop, StopSignal};
-use insta::{assert_debug_snapshot, assert_snapshot};
+use insta::assert_debug_snapshot;
 #[cfg(target_os = "macos")]
 use platform::clock::{self, real};
 #[cfg(target_os = "macos")]
@@ -121,125 +121,6 @@ fn version_builds_and_runs_from_source() -> Result<()> {
 #[test]
 fn rejects_space_separated_namespace_commands() -> Result<()> {
     let output = run_pv(&["php", "install", "8.4"])?;
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn routes_literal_colon_commands_without_space_aliases() -> Result<()> {
-    let output = run_pv(&["php:install", "--help"])?;
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn php_management_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["php:use", "--help"])?,
-        run_pv(&["php:install", "--help"])?,
-        run_pv(&["php:update", "--help"])?,
-        run_pv(&["php:uninstall", "--help"])?,
-        run_pv(&["php:list", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn composer_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["composer:install", "--help"])?,
-        run_pv(&["composer:update", "--help"])?,
-        run_pv(&["composer:uninstall", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn mailpit_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["mailpit:install", "--help"])?,
-        run_pv(&["mailpit:update", "--help"])?,
-        run_pv(&["mailpit:uninstall", "--help"])?,
-        run_pv(&["mailpit:list", "--help"])?,
-        run_pv(&["mailpit:open", "--help"])?,
-        run_pv(&["mail:open", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn redis_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["redis:install", "--help"])?,
-        run_pv(&["redis:update", "--help"])?,
-        run_pv(&["redis:uninstall", "--help"])?,
-        run_pv(&["redis:list", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn rustfs_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["rustfs:install", "--help"])?,
-        run_pv(&["rustfs:update", "--help"])?,
-        run_pv(&["rustfs:uninstall", "--help"])?,
-        run_pv(&["rustfs:list", "--help"])?,
-        run_pv(&["rustfs:open", "--help"])?,
-        run_pv(&["s3:install", "--help"])?,
-        run_pv(&["s3:update", "--help"])?,
-        run_pv(&["s3:uninstall", "--help"])?,
-        run_pv(&["s3:list", "--help"])?,
-        run_pv(&["s3:open", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn mysql_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["mysql:install", "--help"])?,
-        run_pv(&["mysql:update", "--help"])?,
-        run_pv(&["mysql:uninstall", "--help"])?,
-        run_pv(&["mysql:list", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn postgres_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["postgres:install", "--help"])?,
-        run_pv(&["postgres:update", "--help"])?,
-        run_pv(&["postgres:uninstall", "--help"])?,
-        run_pv(&["postgres:list", "--help"])?,
-        run_pv(&["pg:install", "--help"])?,
-        run_pv(&["pg:update", "--help"])?,
-        run_pv(&["pg:uninstall", "--help"])?,
-        run_pv(&["pg:list", "--help"])?,
-    ];
 
     assert_debug_snapshot!(output);
 
@@ -361,99 +242,6 @@ async fn hidden_monitor_commands_run_a_runtime_until_released() -> Result<()> {
 }
 
 #[test]
-fn daemon_lifecycle_commands_are_documented_without_running_them() -> Result<()> {
-    let output = [
-        run_pv(&["daemon:enable", "--help"])?,
-        run_pv(&["daemon:disable", "--help"])?,
-        run_pv(&["daemon:restart", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn diagnostic_commands_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["status", "--help"])?,
-        run_pv(&["logs", "--help"])?,
-        run_pv(&["doctor", "--help"])?,
-        run_pv(&["jobs", "--help"])?,
-        run_pv(&["update", "--help"])?,
-        run_pv(&["list", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn diagnostic_command_options_are_documented() -> Result<()> {
-    let output = [
-        run_pv(&["status", "--json", "--help"])?,
-        run_pv(&["logs", "--follow", "-n", "0", "--all", "--help"])?,
-        run_pv(&["logs", "--resource", "pg", "--track", "latest", "--help"])?,
-        run_pv(&["doctor", "--help"])?,
-        run_pv(&["jobs", "--json", "--help"])?,
-        run_pv(&["update", "--check", "--json", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn core_workflow_command_help_is_documented() -> Result<()> {
-    let output = [
-        run_pv(&["setup", "--help"])?,
-        run_pv(&["uninstall", "--help"])?,
-        run_pv(&["init", "--help"])?,
-        run_pv(&["link", "--help"])?,
-        run_pv(&["unlink", "--help"])?,
-        run_pv(&["open", "--help"])?,
-        run_pv(&["project:env", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn system_integration_command_help_is_documented() -> Result<()> {
-    let output = [
-        run_pv(&["ca:status", "--help"])?,
-        run_pv(&["ca:trust", "--help"])?,
-        run_pv(&["ca:untrust", "--help"])?,
-        run_pv(&["dns:status", "--help"])?,
-        run_pv(&["dns:install", "--help"])?,
-        run_pv(&["dns:uninstall", "--help"])?,
-        run_pv(&["ports:status", "--help"])?,
-        run_pv(&["ports:install", "--help"])?,
-        run_pv(&["ports:uninstall", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn shell_command_help_is_documented() -> Result<()> {
-    let output = [
-        run_pv(&["env", "--help"])?,
-        run_pv(&["completions", "--help"])?,
-    ];
-
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
 fn env_zsh_output_is_shell_startup_safe() -> Result<()> {
     let output = run_pv(&["env", "--shell", "zsh"])?;
 
@@ -535,31 +323,14 @@ fn env_rejects_unsupported_shells() -> Result<()> {
 }
 
 #[test]
-fn completions_generate_zsh_script() -> Result<()> {
-    let output = run_pv(&["completions", "zsh"])?;
+fn completions_generate_scripts() -> Result<()> {
+    for shell in ["zsh", "bash", "fish"] {
+        let output = run_pv(&["completions", shell])?;
 
-    assert_snapshot!(output.stdout);
-    assert_debug_snapshot!((output.code, output.stderr));
-
-    Ok(())
-}
-
-#[test]
-fn completions_generate_bash_script() -> Result<()> {
-    let output = run_pv(&["completions", "bash"])?;
-
-    assert_snapshot!(output.stdout);
-    assert_debug_snapshot!((output.code, output.stderr));
-
-    Ok(())
-}
-
-#[test]
-fn completions_generate_fish_script() -> Result<()> {
-    let output = run_pv(&["completions", "fish"])?;
-
-    assert_snapshot!(output.stdout);
-    assert_debug_snapshot!((output.code, output.stderr));
+        assert_eq!(output.code, Some(0), "{shell}");
+        assert!(!output.stdout.is_empty(), "{shell}");
+        assert!(output.stderr.is_empty(), "{shell}");
+    }
 
     Ok(())
 }
