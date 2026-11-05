@@ -116,38 +116,26 @@ fn init_edit_path_moves_toggles_validates_and_declines() -> Result<()> {
 }
 
 #[test]
-fn init_escape_cancels_restores_the_cursor_and_exits_130() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let mut session = Session::spawn(&["init"], &project, tempdir.path())?;
+fn init_escape_and_ctrl_c_cancel_restore_the_cursor_and_exit_130() -> Result<()> {
+    for (key, name) in [
+        (ESCAPE, "init_escape_cancelled"),
+        (CTRL_C, "init_ctrl_c_cancelled"),
+    ] {
+        let tempdir = tempdir()?;
+        let project = laravel_project(tempdir.path())?;
+        let mut session = Session::spawn(&["init"], &project, tempdir.path())?;
 
-    session.wait_for(SELECT_HINT)?;
-    session.press(ESCAPE)?;
-    session.wait_for("Cancelled.")?;
-    let exit_code = session.wait_for_exit()?;
+        session.wait_for(SELECT_HINT)?;
+        session.press(key)?;
+        session.wait_for("Cancelled.")?;
+        let exit_code = session.wait_for_exit()?;
 
-    assert_eq!(exit_code, 130);
-    assert!(session.cursor_visible());
-    assert!(!project.join("pv.yml").exists());
-    assert!(!session.contents().contains("panicked"));
-    assert_screen_snapshot("init_escape_cancelled", tempdir.path(), &session);
-
-    Ok(())
-}
-
-#[test]
-fn init_ctrl_c_cancels_like_escape() -> Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let mut session = Session::spawn(&["init"], &project, tempdir.path())?;
-
-    session.wait_for(SELECT_HINT)?;
-    session.press(CTRL_C)?;
-    session.wait_for("Cancelled.")?;
-    let exit_code = session.wait_for_exit()?;
-
-    assert_eq!(exit_code, 130);
-    assert!(session.cursor_visible());
+        assert_eq!(exit_code, 130, "{name}");
+        assert!(session.cursor_visible(), "{name}");
+        assert!(!project.join("pv.yml").exists(), "{name}");
+        assert!(!session.contents().contains("panicked"), "{name}");
+        assert_screen_snapshot(name, tempdir.path(), &session);
+    }
 
     Ok(())
 }

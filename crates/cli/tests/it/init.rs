@@ -16,11 +16,10 @@ use prompts::{ScriptedPrompts, Step};
 /// Chooses Edit at "Use these selections?".
 const EDIT: Step = Step::Answer(Answer::Selected(2));
 
+/// Prompts on a terminal while stdout stays plain.
 #[derive(Debug)]
 struct TestEnvironment {
     current_dir: PathBuf,
-    terminal: bool,
-    decorated: bool,
     prompts: ScriptedPrompts,
 }
 
@@ -28,16 +27,8 @@ impl TestEnvironment {
     fn interactive(current_dir: &Utf8Path, steps: impl IntoIterator<Item = Step>) -> Self {
         Self {
             current_dir: current_dir.as_std_path().to_path_buf(),
-            terminal: true,
-            decorated: false,
             prompts: ScriptedPrompts::new(steps),
         }
-    }
-
-    /// Stdout is an 80-column terminal, so rows render decorated.
-    fn decorated(mut self) -> Self {
-        self.decorated = true;
-        self
     }
 }
 
@@ -63,15 +54,15 @@ impl Environment for TestEnvironment {
     }
 
     fn stdin_is_terminal(&self) -> bool {
-        self.terminal
+        true
     }
 
     fn stdout_is_terminal(&self) -> bool {
-        self.decorated
+        false
     }
 
     fn stderr_is_terminal(&self) -> bool {
-        self.terminal
+        true
     }
 
     fn terminal_width(&self) -> Option<usize> {
@@ -116,25 +107,6 @@ fn init_interactive_accepts_defaults_and_writes_config() -> anyhow::Result<()> {
     assert_snapshot!(
         "init_interactive_accepts_defaults_and_writes_config_config",
         read_file(&project.join("pv.yml"))?
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_interactive_renders_the_decorated_flow_on_a_terminal() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment =
-        TestEnvironment::interactive(&project, [Step::Accept, Step::Accept]).decorated();
-
-    let session = run_init(&["--no-color"], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    assert_session_snapshot(
-        "init_interactive_renders_the_decorated_flow_on_a_terminal",
-        tempdir.path(),
-        &session,
     );
 
     Ok(())
@@ -249,47 +221,32 @@ fn init_interactive_blank_edits_preserve_existing_defaults() -> anyhow::Result<(
 }
 
 #[test]
-fn init_interactive_explicit_allocation_edits_replace_existing_allocations() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    write_file(
-        &project.join("pv.yml"),
-        "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
-    )?;
-    let environment = TestEnvironment::interactive(&project, edit_mysql_allocations(&["app"]));
+fn init_interactive_explicit_allocation_edits_rewrite_allocations() -> anyhow::Result<()> {
+    let cases = [
+        (
+            "init_interactive_explicit_allocation_edits_replace_existing_allocations_config",
+            "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
+            "app",
+        ),
+        (
+            "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_config",
+            "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
+            "primary,app",
+        ),
+    ];
 
-    let session = run_init(&[], &environment)?;
+    for (name, existing_config, allocations) in cases {
+        let tempdir = tempdir()?;
+        let project = laravel_project(tempdir.path())?;
+        write_file(&project.join("pv.yml"), existing_config)?;
+        let environment =
+            TestEnvironment::interactive(&project, edit_mysql_allocations(&[allocations]));
 
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    let config = read_file(&project.join("pv.yml"))?;
-    assert_snapshot!(
-        "init_interactive_explicit_allocation_edits_replace_existing_allocations_config",
-        config
-    );
+        let session = run_init(&[], &environment)?;
 
-    Ok(())
-}
-
-#[test]
-fn init_interactive_explicit_allocation_edits_preserve_retained_allocation_config()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    write_file(
-        &project.join("pv.yml"),
-        "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
-    )?;
-    let environment =
-        TestEnvironment::interactive(&project, edit_mysql_allocations(&["primary,app"]));
-
-    let session = run_init(&[], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    let config = read_file(&project.join("pv.yml"))?;
-    assert_snapshot!(
-        "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_config",
-        config
-    );
+        assert_eq!(session.exit_code, ExitCode::SUCCESS, "{name}");
+        assert_snapshot!(name, read_file(&project.join("pv.yml"))?);
+    }
 
     Ok(())
 }

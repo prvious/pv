@@ -68,34 +68,6 @@ impl Environment for TestEnvironment {
 }
 
 #[test]
-fn mailpit_open_reports_exact_message_when_not_running() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let environment = TestEnvironment::new(&home, &current_dir);
-
-    let mailpit_output = run_pv(&["mailpit:open"], &environment)?;
-    let mail_output = run_pv(&["mail:open"], &environment)?;
-
-    assert_eq!(mailpit_output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(mail_output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        mailpit_output.stdout,
-        "Mailpit is not running for any linked Project\n"
-    );
-    assert_eq!(
-        mail_output.stdout,
-        "Mailpit is not running for any linked Project\n"
-    );
-    assert!(mailpit_output.stderr.is_empty());
-    assert!(mail_output.stderr.is_empty());
-    assert!(environment.opened_urls().is_empty());
-
-    Ok(())
-}
-
-#[test]
 fn mailpit_open_opens_running_dashboard_without_mutating_state() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");

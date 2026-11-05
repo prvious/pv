@@ -250,54 +250,6 @@ fn doctor_accepts_helper_only_version_from_active_release_metadata() -> anyhow::
 }
 
 #[test]
-fn doctor_reports_missing_helper_and_continues_other_checks() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    environment.set_helper_missing();
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("[fail] Privileged helper"));
-    assert!(output.stdout.contains("[pass] Artifact manifest cache"));
-    assert_doctor_snapshot(
-        "doctor_reports_missing_helper_and_continues_other_checks",
-        tempdir.path(),
-        output,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn doctor_reports_cross_account_helper_recovery() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    environment.set_helper_authentication_error();
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert_doctor_snapshot(
-        "doctor_reports_cross_account_helper_recovery",
-        tempdir.path(),
-        output,
-    );
-
-    Ok(())
-}
-
-#[test]
 fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -380,73 +332,62 @@ fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
 }
 
 #[test]
-fn doctor_fails_when_system_resolver_is_missing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    delete_optional_file(&environment.resolver_path_utf8()?)?;
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
+fn doctor_fails_one_check_and_continues_the_others() -> anyhow::Result<()> {
+    type BreakCheck = fn(&TestEnvironment) -> anyhow::Result<()>;
+    let cases: [(&'static str, BreakCheck); 5] = [
+        (
+            "doctor_fails_when_system_resolver_is_missing",
+            |environment| delete_optional_file(&environment.resolver_path_utf8()?),
+        ),
+        (
+            "doctor_fails_when_active_pf_redirects_are_missing",
+            |environment| {
+                *environment.active_pf_config.borrow_mut() = None;
+                Ok(())
+            },
+        ),
+        (
+            "doctor_fails_when_system_ca_trust_is_missing",
+            |environment| {
+                environment.trusted_certificates.borrow_mut().clear();
+                Ok(())
+            },
+        ),
+        (
+            "doctor_reports_missing_helper_and_continues_other_checks",
+            |environment| {
+                environment.set_helper_missing();
+                Ok(())
+            },
+        ),
+        (
+            "doctor_reports_cross_account_helper_recovery",
+            |environment| {
+                environment.set_helper_authentication_error();
+                Ok(())
+            },
+        ),
+    ];
 
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
+    for (name, break_check) in cases {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        let environment = TestEnvironment::new(&home);
+        seed_required_checks(&paths, &environment, true)?;
+        break_check(&environment)?;
+        let health_server = spawn_health_server(&paths.daemon_socket())?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_fails_when_system_resolver_is_missing",
-        tempdir.path(),
-        output,
-    );
+        let output = run_pv(&["doctor"], &environment)?;
+        join_health_server(health_server)?;
 
-    Ok(())
-}
-
-#[test]
-fn doctor_fails_when_active_pf_redirects_are_missing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    *environment.active_pf_config.borrow_mut() = None;
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_fails_when_active_pf_redirects_are_missing",
-        tempdir.path(),
-        output,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn doctor_fails_when_system_ca_trust_is_missing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    environment.trusted_certificates.borrow_mut().clear();
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_fails_when_system_ca_trust_is_missing",
-        tempdir.path(),
-        output,
-    );
+        assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+        assert!(
+            output.stdout.contains("[pass] Artifact manifest cache"),
+            "{name}"
+        );
+        assert_doctor_snapshot(name, tempdir.path(), output);
+    }
 
     Ok(())
 }

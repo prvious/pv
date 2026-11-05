@@ -1,8 +1,17 @@
 ---
 source: crates/cli/tests/it/logs.rs
-expression: "(supervisor_only, split)"
+expression: "(combined, supervisor_only, split)"
 ---
 (
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "gateway two\n",
+        stderr: "",
+    },
     RunOutput {
         exit_code: ExitCode(
             unix_exit_status(

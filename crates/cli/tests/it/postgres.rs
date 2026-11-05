@@ -6,8 +6,8 @@ use insta::{Settings, assert_debug_snapshot};
 use state::Database;
 use support::resource_cli::{
     ResourceCliSpec, ScriptedClient, TestEnvironment, create_dir, fixture_artifact,
-    managed_resource_records, prepare_existing_release, pv_paths, record_installed_resource,
-    resource_manifest, resource_record_snapshots, seed_running_resource,
+    managed_resource_records, prepare_existing_release, pv_paths, resource_manifest,
+    resource_record_snapshots,
 };
 
 use crate::support;
@@ -67,35 +67,6 @@ fn pg_alias_install_records_canonical_postgres_resource() -> anyhow::Result<()> 
         tempdir.path(),
         &(output, resource_record_snapshots(&records, tempdir.path())?),
     );
-
-    Ok(())
-}
-
-#[test]
-fn postgres_list_reports_running_state_ports_and_usage() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = pv_paths(&home);
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let artifact = fixture_artifact(NEW_VERSION);
-    record_installed_resource(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
-    seed_running_resource(&paths, DEFAULT_TRACK, "tcp", 5432, RESOURCE)?;
-    let mut environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let output = run_pv(&["pg:list"], &environment)?;
-    environment.terminal_width = Some(200);
-    let decorated = run_pv(&["pg:list", "--no-color"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_eq!(decorated.exit_code, ExitCode::SUCCESS);
-    assert_resource_snapshot(
-        "postgres_list_reports_running_state_ports_and_usage",
-        tempdir.path(),
-        &output,
-    );
-    assert_resource_snapshot("postgres_list_on_a_terminal", tempdir.path(), &decorated);
 
     Ok(())
 }

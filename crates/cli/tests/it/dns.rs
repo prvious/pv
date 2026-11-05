@@ -330,9 +330,13 @@ fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyho
     let output = run_pv(&["dns:uninstall"], &environment)?;
     let prepared_after_uninstall = read_optional_file(&prepared_path)?;
     let system_after_uninstall = read_optional_file(&system_resolver_path)?;
+    let operations = environment.operations.borrow().clone();
+    // With nothing left to remove, uninstall still succeeds and keeps the port.
+    let again = run_pv(&["dns:uninstall"], &environment)?;
     let assignments = Database::open(&paths)?.assigned_ports()?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(again.exit_code, ExitCode::SUCCESS);
     assert_no_manual_guidance(&output.stdout);
     assert!(output.stderr.is_empty());
     assert!(prepared_after_uninstall.is_none());
@@ -349,36 +353,9 @@ fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyho
             prepared_after_uninstall,
             system_resolver_path,
             system_after_uninstall,
-            environment.operations.borrow().clone(),
+            operations,
         ));
     });
-
-    Ok(())
-}
-
-#[test]
-fn dns_uninstall_keeps_dns_port_when_system_resolver_config_is_absent() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let paths = pv_paths(&home);
-    let mut database = Database::open(&paths)?;
-    database.assign_port(PortRequest::dns(35353, 35353, 35353), |candidate| {
-        candidate == 35353
-    })?;
-    drop(database);
-
-    let output = run_pv(&["dns:uninstall"], &environment)?;
-    let assignments = Database::open(&paths)?.assigned_ports()?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(
-        assignments
-            .iter()
-            .any(|assignment| assignment.owner == PortOwner::Dns && assignment.port == 35353)
-    );
 
     Ok(())
 }

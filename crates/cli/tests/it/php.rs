@@ -296,43 +296,58 @@ fn php_shim_execs_resolved_project_track() -> anyhow::Result<()> {
 }
 
 #[test]
-fn php_shim_uses_project_extension_runtime_overlay() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "php:\n  version: 8.4\n  extensions: [redis]\n",
-    )?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    fs::write_sensitive_file(
-        &release.join("share/pv/php-extensions.json"),
-        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
-    )?;
-    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.replace_project_php_runtime(
-            &project_record.id,
-            Some(&state::ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: vec!["redis".to_string()],
-                loaded_extensions: vec!["redis".to_string()],
-                ignored_extensions: Vec::new(),
-            }),
+fn php_shim_runtime_follows_project_config_extensions() -> anyhow::Result<()> {
+    // (pv.yml, whether pv.db has a redis runtime, whether the shim uses it)
+    let cases = [
+        ("php:\n  version: 8.4\n  extensions: [redis]\n", true, true),
+        ("php:\n  version: 8.4\n  extensions: [redis]\n", false, true),
+        ("php:\n  version: 8.4\n", true, false),
+    ];
+
+    for (config, persisted_redis, uses_redis) in cases {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let project = tempdir.path().join("acme");
+        create_dir(&project)?;
+        write_file(&project.join("pv.yml"), config)?;
+        let project_record = register_project(&home, &project, "acme.test")?;
+        let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
+        fs::write_sensitive_file(
+            &release.join("share/pv/php-extensions.json"),
+            r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
         )?;
+        fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
+        if persisted_redis {
+            let mut database = Database::open(&pv_paths(&home))?;
+            database.replace_project_php_runtime(
+                &project_record.id,
+                Some(&state::ProjectPhpRuntimeInput {
+                    track: "8.4".to_string(),
+                    requested_extensions: vec!["redis".to_string()],
+                    loaded_extensions: vec!["redis".to_string()],
+                    ignored_extensions: Vec::new(),
+                }),
+            )?;
+        } else {
+            select_project_php_track(&home, &project_record, "8.4")?;
+        }
+        let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
+
+        let output = run_pv(&["shim:php", "-m"], &environment)?;
+        let exec_calls = environment.exec_calls();
+
+        assert_eq!(output.exit_code, ExitCode::SUCCESS, "{config}");
+        if uses_redis {
+            assert!(
+                exec_calls[0].env.iter().any(|(key, value)| {
+                    key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
+                }),
+                "{config}"
+            );
+        } else {
+            assert_eq!(exec_calls[0].env, php_exec_env(&home, "8.4")?, "{config}");
+        }
     }
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-m"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(exec_calls[0].env.iter().any(|(key, value)| {
-        key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
-    }));
 
     Ok(())
 }
@@ -380,75 +395,6 @@ fn php_shim_uses_persisted_runtime_when_project_config_is_invalid() -> anyhow::R
     assert!(exec_calls[0].env.iter().any(|(key, value)| {
         key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
     }));
-
-    Ok(())
-}
-
-#[test]
-fn php_shim_resolves_project_config_extensions_when_persisted_runtime_is_empty()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        "php:\n  version: 8.4\n  extensions: [redis]\n",
-    )?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    select_project_php_track(&home, &project_record, "8.4")?;
-    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    fs::write_sensitive_file(
-        &release.join("share/pv/php-extensions.json"),
-        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
-    )?;
-    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-m"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(exec_calls[0].env.iter().any(|(key, value)| {
-        key == "PHP_INI_SCAN_DIR" && value.contains("php-runtimes/8.4+redis/conf.d")
-    }));
-
-    Ok(())
-}
-
-#[test]
-fn php_shim_uses_base_runtime_when_project_config_removes_extensions() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "php:\n  version: 8.4\n")?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    let release = record_installed_php(&home, "8.4", "8.4.8-pv1")?;
-    fs::write_sensitive_file(
-        &release.join("share/pv/php-extensions.json"),
-        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
-    )?;
-    fs::write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
-    {
-        let mut database = Database::open(&pv_paths(&home))?;
-        database.replace_project_php_runtime(
-            &project_record.id,
-            Some(&state::ProjectPhpRuntimeInput {
-                track: "8.4".to_string(),
-                requested_extensions: vec!["redis".to_string()],
-                loaded_extensions: vec!["redis".to_string()],
-                ignored_extensions: Vec::new(),
-            }),
-        )?;
-    }
-    let environment = TestEnvironment::new(&home, &project_record.path, ScriptedClient::new());
-
-    let output = run_pv(&["shim:php", "-m"], &environment)?;
-    let exec_calls = environment.exec_calls();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(exec_calls[0].env, php_exec_env(&home, "8.4")?);
 
     Ok(())
 }
@@ -1319,7 +1265,8 @@ fn php_uninstall_refuses_manifest_default_track_inherited_by_project_without_for
 }
 
 #[test]
-fn php_uninstall_force_proceeds_for_project_selected_track() -> anyhow::Result<()> {
+fn php_uninstall_force_prune_queues_both_removal_intents_for_a_project_track() -> anyhow::Result<()>
+{
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let project = tempdir.path().join("acme");
@@ -1334,39 +1281,6 @@ fn php_uninstall_force_proceeds_for_project_selected_track() -> anyhow::Result<(
     let install = run_pv(&["php:install", "8.4"], &environment)?;
     let project_record = register_project(&home, &project, "acme.test")?;
     select_project_php_track(&home, &project_record, "8.4")?;
-
-    let uninstall = run_pv(&["php:uninstall", "8.4", "--force"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database)?;
-
-    assert_eq!(install.exit_code, ExitCode::SUCCESS);
-    assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
-    assert!(!uninstall.stderr.contains("error:"));
-    assert!(records.iter().all(|record| {
-        record.desired_state == ManagedResourceDesiredState::Removed && record.removal_force
-    }));
-    assert_debug_snapshot!((
-        uninstall,
-        resource_record_snapshots(&records, tempdir.path())?,
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn php_uninstall_force_prune_queues_both_removal_intents() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
-    prepare_existing_php_pair_releases(&home, "8.4", &artifacts)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&php_pair_manifest("8.4", &artifacts)),
-    );
-    let install = run_pv(&["php:install", "8.4"], &environment)?;
 
     environment.terminal_width.set(Some(120));
     let uninstall = run_pv(
@@ -1468,6 +1382,8 @@ fn php_list_marks_global_default_track() -> anyhow::Result<()> {
     let explicit_project_record = register_project(&home, &explicit_project, "explicit.test")?;
     let _default_project_record = register_project(&home, &default_project, "default.test")?;
     select_project_php_track(&home, &explicit_project_record, "8.4")?;
+    // Without a global default, inherited Projects use the manifest default.
+    let inherited = run_pv(&["php:list"], &environment)?;
     {
         let mut database = Database::open(&pv_paths(&home))?;
         database.record_global_php_default_track("8.4")?;
@@ -1478,37 +1394,18 @@ fn php_list_marks_global_default_track() -> anyhow::Result<()> {
     let decorated = run_pv(&["php:list", "--no-color"], &environment)?;
 
     assert_eq!(install.exit_code, ExitCode::SUCCESS);
+    assert_eq!(inherited.exit_code, ExitCode::SUCCESS);
+    assert!(inherited.stderr.is_empty());
     assert_eq!(list.exit_code, ExitCode::SUCCESS);
     assert!(list.stderr.is_empty());
     assert_eq!(decorated.exit_code, ExitCode::SUCCESS);
     with_tempdir_filters(tempdir.path(), || {
+        assert_debug_snapshot!(
+            "php_list_marks_manifest_default_track_for_inherited_projects",
+            inherited
+        );
         assert_debug_snapshot!(list);
         assert_snapshot!("php_list_on_a_terminal", decorated.stdout);
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn php_list_marks_manifest_default_track_for_inherited_projects() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let default_project = tempdir.path().join("default");
-    create_dir(&default_project)?;
-    write_file(&default_project.join("pv.yml"), "root: .\n")?;
-    let artifacts = php_pair_artifacts("8.4.8-pv1")?;
-    cache_manifest(&home, &php_pair_manifest("8.4", &artifacts))?;
-    record_installed_php_pair(&home, "8.4", &artifacts)?;
-    let _default_project_record = register_project(&home, &default_project, "default.test")?;
-    let environment = TestEnvironment::new(&home, &default_project, ScriptedClient::new());
-
-    let list = run_pv(&["php:list"], &environment)?;
-
-    assert_eq!(list.exit_code, ExitCode::SUCCESS);
-    assert!(list.stderr.is_empty());
-    with_tempdir_filters(tempdir.path(), || {
-        assert_debug_snapshot!(list);
         Ok(())
     })?;
 

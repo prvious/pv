@@ -149,29 +149,18 @@ fn logs_reports_missing_selected_source() -> anyhow::Result<()> {
 }
 
 #[test]
-fn logs_gateway_uses_combined_fallback() -> anyhow::Result<()> {
+fn logs_gateway_moves_from_combined_fallback_to_split_logs() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     write_log(&paths.gateway_log(), "gateway one\ngateway two\n")?;
 
-    let output = run_pv(&["logs", "--gateway", "-n", "1"], &environment)?;
+    let combined = run_pv(&["logs", "--gateway", "-n", "1"], &environment)?;
 
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
+    assert_eq!(combined.exit_code, ExitCode::SUCCESS);
+    assert!(combined.stderr.is_empty());
 
-    Ok(())
-}
-
-#[test]
-fn logs_gateway_exposes_supervisor_source_after_split_logs() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    write_log(&paths.gateway_log(), "legacy gateway\n")?;
     write_log(&paths.gateway_supervisor_log(), "supervisor diagnostic\n")?;
 
     let supervisor_only = run_pv(&["logs", "--gateway", "-n", "1"], &environment)?;
@@ -186,7 +175,7 @@ fn logs_gateway_exposes_supervisor_source_after_split_logs() -> anyhow::Result<(
 
     assert_eq!(split.exit_code, ExitCode::SUCCESS);
     assert!(split.stderr.is_empty());
-    assert_debug_snapshot!((supervisor_only, split));
+    assert_debug_snapshot!((combined, supervisor_only, split));
 
     Ok(())
 }

@@ -1,13 +1,24 @@
 ---
 source: crates/cli/tests/it/project_env.rs
-expression: output
+expression: "(output, json)"
 ---
-RunOutput {
-    exit_code: ExitCode(
-        unix_exit_status(
-            0,
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
         ),
-    ),
-    stdout: "APP_URL=https://acme.test\nDATABASE_URL=mysql://app:app-secret@127.0.0.1:3306/acme_test_app\nDB_DATABASE=acme_test_app\nDB_HOST=127.0.0.1\nDB_PORT=3306\nRESOURCE_URL=mysql://root:root-secret@127.0.0.1:3306\n",
-    stderr: "",
-}
+        stdout: "APP_URL=https://acme.test\nDATABASE_URL=mysql://app:app-secret@127.0.0.1:3306/acme_test_app\nDB_DATABASE=acme_test_app\nDB_HOST=127.0.0.1\nDB_PORT=3306\nRESOURCE_URL=mysql://root:root-secret@127.0.0.1:3306\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "{\"APP_URL\":\"https://acme.test\",\"DATABASE_URL\":\"mysql://app:app-secret@127.0.0.1:3306/acme_test_app\",\"DB_DATABASE\":\"acme_test_app\",\"DB_HOST\":\"127.0.0.1\",\"DB_PORT\":\"3306\",\"RESOURCE_URL\":\"mysql://root:root-secret@127.0.0.1:3306\"}\n",
+        stderr: "",
+    },
+)

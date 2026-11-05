@@ -241,16 +241,10 @@ async fn hidden_monitor_commands_run_a_runtime_until_released() -> Result<()> {
 #[test]
 fn env_zsh_output_is_shell_startup_safe() -> Result<()> {
     let output = run_pv(&["env", "--shell", "zsh"])?;
+    let bash = run_pv(&["env", "--shell", "bash"])?;
 
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn env_bash_output_matches_posix_shells() -> Result<()> {
-    let output = run_pv(&["env", "--shell", "bash"])?;
-
+    // POSIX shells share one script.
+    assert_eq!(bash.stdout, output.stdout);
     assert_debug_snapshot!(output);
 
     Ok(())

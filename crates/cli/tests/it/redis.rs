@@ -107,17 +107,21 @@ fn redis_list_reports_running_state_ports_and_usage() -> anyhow::Result<()> {
     let artifact = fixture_artifact(NEW_VERSION);
     record_installed_resource(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
     seed_running_resource(&paths, DEFAULT_TRACK, "tcp", 6379, RESOURCE)?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
+    let mut environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
 
     let output = run_pv(&["redis:list"], &environment)?;
+    environment.terminal_width = Some(200);
+    let decorated = run_pv(&["redis:list", "--no-color"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
+    assert_eq!(decorated.exit_code, ExitCode::SUCCESS);
     assert_resource_snapshot(
         "redis_list_reports_running_state_ports_and_usage",
         tempdir.path(),
         &output,
     );
+    assert_resource_snapshot("redis_list_on_a_terminal", tempdir.path(), &decorated);
 
     Ok(())
 }

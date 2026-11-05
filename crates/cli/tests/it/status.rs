@@ -269,75 +269,46 @@ fn status_reports_dns_and_ports_repair_required_as_failure() -> anyhow::Result<(
 }
 
 #[test]
-fn status_reports_project_env_failures_as_failure() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project_path = tempdir.path().join("project");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path.clone(),
-            primary_hostname: "app.test".to_string(),
-            config_path: project_path.join("pv.toml"),
-            desired_php_track: Some("8.4".to_string()),
-        })?
-        .project;
-    database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Failed,
-        Some("missing required env placeholder"),
-        &[],
-    )?;
+fn status_exit_code_follows_project_env_status() -> anyhow::Result<()> {
+    let cases = [
+        (
+            "status_reports_project_env_failures_as_failure",
+            ProjectEnvObservedStatus::Failed,
+            "missing required env placeholder",
+            ExitCode::FAILURE,
+        ),
+        (
+            "status_reports_pending_project_env_as_success",
+            ProjectEnvObservedStatus::Pending,
+            "waiting for reconciliation",
+            ExitCode::SUCCESS,
+        ),
+    ];
 
-    let output = run_pv(&["status"], &environment)?;
+    for (name, status, message, exit_code) in cases {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let project_path = tempdir.path().join("project");
+        let paths = PvPaths::for_home(home.clone());
+        let environment = TestEnvironment::new(&home);
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path.clone(),
+                primary_hostname: "app.test".to_string(),
+                config_path: project_path.join("pv.toml"),
+                desired_php_track: Some("8.4".to_string()),
+            })?
+            .project;
+        database.record_project_env_observed_snapshot(&project.id, status, Some(message), &[])?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_status_snapshot(
-        "status_reports_project_env_failures_as_failure",
-        tempdir.path(),
-        output,
-    );
+        let output = run_pv(&["status"], &environment)?;
 
-    Ok(())
-}
-
-#[test]
-fn status_reports_pending_project_env_as_success() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project_path = tempdir.path().join("project");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path.clone(),
-            primary_hostname: "app.test".to_string(),
-            config_path: project_path.join("pv.toml"),
-            desired_php_track: Some("8.4".to_string()),
-        })?
-        .project;
-    database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Pending,
-        Some("waiting for reconciliation"),
-        &[],
-    )?;
-
-    let output = run_pv(&["status"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_status_snapshot(
-        "status_reports_pending_project_env_as_success",
-        tempdir.path(),
-        output,
-    );
+        assert_eq!(output.exit_code, exit_code, "{name}");
+        assert!(output.stderr.is_empty(), "{name}");
+        assert_status_snapshot(name, tempdir.path(), output);
+    }
 
     Ok(())
 }

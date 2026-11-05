@@ -483,11 +483,23 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
 {
     let tempdir = tempdir()?;
     let fixture = Fixture::new(tempdir.path());
-    seed_online_setup_manifest(&fixture)?;
+    seed_bundled_helper_metadata(&fixture)?;
+    script_setup_manifest(&fixture)?;
     let daemon = DaemonFixture::start(&fixture.paths)?;
 
     let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
     let daemon_requests = daemon.finish()?;
+    let tracks = Database::open(&fixture.paths)?.managed_resource_tracks()?;
+    let observed_tracks = tracks
+        .iter()
+        .map(|track| {
+            (
+                track.resource_name.as_str(),
+                track.track.as_str(),
+                track.desired_state,
+            )
+        })
+        .collect::<Vec<_>>();
     let prepared_resolver = read_required_file(&fixture.paths.resolver_config())?;
     let system_resolver = read_required_file(&fixture.system_resolver_path)?;
     let prepared_anchor = read_required_file(&fixture.paths.pf_anchor_config())?;
@@ -508,6 +520,21 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
         request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
     }));
     assert_eq!(reconciliation_request_count(&daemon_requests), 1);
+    // The manifest is fetched and the default tracks are recorded before reconciliation.
+    assert_eq!(fixture.environment.text_request_count(), 1);
+    assert!(read_optional_file(&fixture.paths.downloads().join("manifest.json"))?.is_some());
+    assert_eq!(observed_tracks, expected_setup_tracks());
+    for shim in ["php", "composer"] {
+        let path = fixture.paths.bin().join(shim);
+        assert_eq!(
+            read_required_file(&path)?,
+            format!(
+                "#!/bin/sh\nexec {} shim:{shim} \"$@\"\n",
+                shell_quote(&fixture.environment.current_exe.to_string_lossy())
+            )
+        );
+        assert_eq!(file_mode(&path)?, 0o700);
+    }
 
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -548,75 +575,6 @@ fn setup_pf_apply_conflict_does_not_reinstall_the_helper() -> anyhow::Result<()>
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, operations))
     });
-    Ok(())
-}
-
-#[test]
-fn setup_records_default_resource_desired_tracks_before_reconciliation() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = Fixture::new(tempdir.path());
-
-    seed_online_setup_manifest(&fixture)?;
-    let daemon = DaemonFixture::start(&fixture.paths)?;
-
-    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
-    let daemon_requests = daemon.finish()?;
-    let database = Database::open(&fixture.paths)?;
-    let tracks = database.managed_resource_tracks()?;
-    let observed = tracks
-        .iter()
-        .map(|track| {
-            (
-                track.resource_name.as_str(),
-                track.track.as_str(),
-                track.desired_state,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(observed, expected_setup_tracks());
-    assert!(daemon_requests.iter().any(|request| {
-        request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
-    }));
-    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
-
-    Ok(())
-}
-
-#[test]
-fn setup_fetches_manifest_before_recording_default_resources() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = Fixture::new(tempdir.path());
-    seed_bundled_helper_metadata(&fixture)?;
-    fixture
-        .environment
-        .script_manifest_text(setup_manifest_json()?);
-    let daemon = DaemonFixture::start(&fixture.paths)?;
-
-    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
-    let daemon_requests = daemon.finish()?;
-    let database = Database::open(&fixture.paths)?;
-    let tracks = database.managed_resource_tracks()?;
-    let observed = tracks
-        .iter()
-        .map(|track| {
-            (
-                track.resource_name.as_str(),
-                track.track.as_str(),
-                track.desired_state,
-            )
-        })
-        .collect::<Vec<_>>();
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(fixture.environment.text_request_count(), 1);
-    assert!(read_optional_file(&fixture.paths.downloads().join("manifest.json"))?.is_some());
-    assert_eq!(observed, expected_setup_tracks());
-    assert!(daemon_requests.iter().any(|request| {
-        request.contains(r#""kind":"reconcile""#) && request.contains(r#""scope":"system""#)
-    }));
-
     Ok(())
 }
 
@@ -701,92 +659,46 @@ fn setup_manifest_fetch_failure_without_cache_stops_before_system_mutation() -> 
 #[test]
 fn setup_manifest_missing_default_continues_core_setup_and_records_remaining_defaults()
 -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = Fixture::new(tempdir.path());
-    seed_bundled_helper_metadata(&fixture)?;
-    fixture
-        .environment
-        .script_manifest_text(setup_manifest_json_without("mysql")?);
-    let daemon = DaemonFixture::start(&fixture.paths)?;
+    for (name, terminal) in [
+        ("setup_manifest_missing_default_plain", false),
+        ("setup_manifest_missing_default_terminal", true),
+    ] {
+        let tempdir = tempdir()?;
+        let fixture = Fixture::new(tempdir.path());
+        seed_bundled_helper_metadata(&fixture)?;
+        fixture
+            .environment
+            .script_manifest_text(setup_manifest_json_without("mysql")?);
+        if terminal {
+            fixture.environment.set_terminal_surfaces(true, false, 200);
+        }
+        let daemon = DaemonFixture::start(&fixture.paths)?;
 
-    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
-    let daemon_requests = daemon.finish()?;
-    let observed = observed_setup_tracks(&fixture.paths)?;
+        let output = run_pv(
+            &["setup", "--no-path", "--no-color"],
+            fixture.environment.as_ref(),
+        )?;
+        let daemon_requests = daemon.finish()?;
+        let observed = observed_setup_tracks(&fixture.paths)?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert_eq!(fixture.environment.text_request_count(), 1);
-    assert!(
-        output
-            .stdout
-            .contains("artifact manifest does not include Managed Resource `mysql`")
-    );
-    assert!(read_optional_file(&fixture.system_resolver_path)?.is_some());
-    assert!(read_optional_file(&fixture.system_anchor_path)?.is_some());
-    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_some());
-    assert_eq!(fixture.environment.certificates().len(), 1);
-    assert_eq!(observed, expected_setup_tracks_except(&["mysql"]));
-    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_snapshot!("setup_manifest_missing_default_plain", output.stdout);
-    });
-
-    Ok(())
-}
-
-#[test]
-fn setup_manifest_missing_default_closes_terminal_flow_after_details() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = Fixture::new(tempdir.path());
-    seed_bundled_helper_metadata(&fixture)?;
-    fixture
-        .environment
-        .script_manifest_text(setup_manifest_json_without("mysql")?);
-    fixture.environment.set_terminal_surfaces(true, false, 200);
-    let daemon = DaemonFixture::start(&fixture.paths)?;
-
-    let output = run_pv(
-        &["setup", "--no-path", "--no-color"],
-        fixture.environment.as_ref(),
-    )?;
-    let daemon_requests = daemon.finish()?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert_eq!(reconciliation_request_count(&daemon_requests), 1);
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_snapshot!("setup_manifest_missing_default_terminal", output.stdout);
-    });
-
-    Ok(())
-}
-
-#[test]
-fn setup_installs_php_and_composer_shims() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = Fixture::new(tempdir.path());
-
-    seed_online_setup_manifest(&fixture)?;
-    let daemon = DaemonFixture::start(&fixture.paths)?;
-
-    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
-    let _daemon_requests = daemon.finish()?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        read_required_file(&fixture.paths.bin().join("php"))?,
-        format!(
-            "#!/bin/sh\nexec {} shim:php \"$@\"\n",
-            shell_quote(&fixture.environment.current_exe.to_string_lossy())
-        )
-    );
-    assert_eq!(
-        read_required_file(&fixture.paths.bin().join("composer"))?,
-        format!(
-            "#!/bin/sh\nexec {} shim:composer \"$@\"\n",
-            shell_quote(&fixture.environment.current_exe.to_string_lossy())
-        )
-    );
-    assert_eq!(file_mode(&fixture.paths.bin().join("php"))?, 0o700);
-    assert_eq!(file_mode(&fixture.paths.bin().join("composer"))?, 0o700);
+        assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+        assert_eq!(fixture.environment.text_request_count(), 1, "{name}");
+        assert!(
+            output
+                .stdout
+                .contains("artifact manifest does not include Managed Resource `mysql`"),
+            "{name}"
+        );
+        assert!(read_optional_file(&fixture.system_resolver_path)?.is_some());
+        assert!(read_optional_file(&fixture.system_anchor_path)?.is_some());
+        assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_some());
+        assert_eq!(fixture.environment.certificates().len(), 1, "{name}");
+        assert_eq!(observed, expected_setup_tracks_except(&["mysql"]), "{name}");
+        assert_eq!(reconciliation_request_count(&daemon_requests), 1, "{name}");
+        with_normalized_tempdir(tempdir.path(), || {
+            assert_snapshot!(name, output.stdout);
+        });
+    }
 
     Ok(())
 }
@@ -803,8 +715,14 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
         fixture.environment.as_ref(),
     )?;
 
+    // Without --non-interactive, a missing helper still needs confirmation first.
+    script_setup_manifest(&fixture)?;
+    let unconfirmed = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stderr.contains("requires macOS authentication"));
+    assert_eq!(unconfirmed.exit_code, ExitCode::FAILURE);
+    assert!(unconfirmed.stderr.contains("requires confirmation"));
     assert!(fixture.environment.operations().is_empty());
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
@@ -913,22 +831,6 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((output, operations));
     });
-
-    Ok(())
-}
-
-#[test]
-fn setup_requires_confirmation_before_installing_missing_helper() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = Fixture::new(tempdir.path());
-    seed_online_setup_manifest(&fixture)?;
-    fixture.environment.set_helper_missing();
-
-    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.contains("requires confirmation"));
-    assert!(fixture.environment.operations().is_empty());
 
     Ok(())
 }

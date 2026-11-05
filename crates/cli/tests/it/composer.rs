@@ -215,25 +215,37 @@ fn composer_install_uses_manifest_default_php_track_without_cached_manifest() ->
 {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
+    let terminal_home = tempdir.path().join("terminal-home");
     let current_dir = tempdir.path().join("outside");
     create_dir(&current_dir)?;
     let php_artifacts = php_pair_artifacts("8.4.8-pv1");
     let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
     let manifest = composer_manifest("8.4", &php_artifacts, &[&composer_artifact]);
-    prepare_existing_php_pair_releases(&home, "8.4", &php_artifacts)?;
-    prepare_existing_release(&home, "2", &composer_artifact)?;
+    for home in [&home, &terminal_home] {
+        prepare_existing_php_pair_releases(home, "8.4", &php_artifacts)?;
+        prepare_existing_release(home, "2", &composer_artifact)?;
+    }
     let environment = TestEnvironment::new(
         &home,
         &current_dir,
         ScriptedClient::new().with_text(&manifest),
     );
+    let terminal_environment = TestEnvironment::new(
+        &terminal_home,
+        &current_dir,
+        ScriptedClient::new().with_text(&manifest),
+    )
+    .with_terminal();
 
     let output = run_pv(&["composer:install"], &environment)?;
+    let terminal = run_pv(&["composer:install", "--no-color"], &terminal_environment)?;
     let database = Database::open(&pv_paths(&home))?;
     let records = managed_resource_records(&database)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
     assert!(!output.stderr.contains("error:"));
+    assert!(!terminal.stderr.contains("error:"));
     assert_eq!(environment.byte_request_count(), 0);
     with_tempdir_filters(tempdir.path(), || {
         assert_debug_snapshot!((
@@ -242,38 +254,9 @@ fn composer_install_uses_manifest_default_php_track_without_cached_manifest() ->
             environment.text_request_count(),
             environment.byte_request_count(),
         ));
-        Ok(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn composer_install_on_a_terminal_reports_the_php_pair() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let php_artifacts = php_pair_artifacts("8.4.8-pv1");
-    let composer_artifact = composer_fixture_artifact("2.8.1-pv1");
-    let manifest = composer_manifest("8.4", &php_artifacts, &[&composer_artifact]);
-    prepare_existing_php_pair_releases(&home, "8.4", &php_artifacts)?;
-    prepare_existing_release(&home, "2", &composer_artifact)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&manifest),
-    )
-    .with_terminal();
-
-    let output = run_pv(&["composer:install", "--no-color"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    with_tempdir_filters(tempdir.path(), || {
         assert_snapshot!(
             "composer_install_on_a_terminal_reports_the_php_pair",
-            output.stdout
+            terminal.stdout
         );
         Ok(())
     })?;

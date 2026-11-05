@@ -124,42 +124,13 @@ mysql:
     let environment = TestEnvironment::new(&home, &project);
 
     let output = run_pv(&["project:env", "acme.test"], &environment)?;
+    let json = run_pv(&["project:env", "--json", "acme.test"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(json.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn project_env_json_renders_generated_values() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(
-        &project.join("pv.yml"),
-        r#"mysql:
-  version: "8.0"
-  env:
-    DB_HOST: "${host}"
-  allocations:
-    app:
-      env:
-        DATABASE_URL: "mysql://${username}:${password}@${host}:${port}/${database}"
-        DB_DATABASE: "${database}"
-"#,
-    )?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    record_mysql_context(&home, &project_record)?;
-    let environment = TestEnvironment::new(&home, &project);
-
-    let output = run_pv(&["project:env", "--json", "acme.test"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
+    assert!(json.stderr.is_empty());
+    assert_debug_snapshot!((output, json));
 
     Ok(())
 }
@@ -175,31 +146,14 @@ fn project_env_returns_empty_output_for_no_mappings() -> anyhow::Result<()> {
     let environment = TestEnvironment::new(&home, &project_record.path);
 
     let output = run_pv(&["project:env"], &environment)?;
+    let json = run_pv(&["project:env", "--json"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(json.exit_code, ExitCode::SUCCESS);
     assert!(output.stdout.is_empty());
+    assert_eq!(json.stdout, "{}\n");
     assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
-
-    Ok(())
-}
-
-#[test]
-fn project_env_json_returns_empty_object_for_no_mappings() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "php: 8.4\n")?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    let environment = TestEnvironment::new(&home, &project_record.path);
-
-    let output = run_pv(&["project:env", "--json"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(output.stdout, "{}\n");
-    assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
+    assert!(json.stderr.is_empty());
 
     Ok(())
 }
@@ -287,37 +241,16 @@ fn project_env_previews_conflicting_keys_without_mutating_dotenv() -> anyhow::Re
     let environment = TestEnvironment::new(&home, &project_record.path);
 
     let output = run_pv(&["project:env"], &environment)?;
+    let json = run_pv(&["project:env", "--json"], &environment)?;
     let env_after = read_file(&env_path)?;
     let database = Database::open(&pv_paths(&home))?;
     let jobs = database.recent_jobs()?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert_eq!(json.exit_code, ExitCode::SUCCESS);
     assert_eq!(env_after, existing_env);
     assert!(jobs.is_empty());
-    assert_debug_snapshot!((output, env_after, jobs));
-
-    Ok(())
-}
-
-#[test]
-fn project_env_json_previews_conflicting_keys_without_warnings() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project = tempdir.path().join("acme");
-    create_dir(&project)?;
-    write_file(&project.join("pv.yml"), "env:\n  APP_URL: \"${url}\"\n")?;
-    let env_path = project.join(".env");
-    let existing_env = "APP_URL=https://user.test\nOTHER=value\n";
-    write_file(&env_path, existing_env)?;
-    let project_record = register_project(&home, &project, "acme.test")?;
-    let environment = TestEnvironment::new(&home, &project_record.path);
-
-    let output = run_pv(&["project:env", "--json"], &environment)?;
-    let env_after = read_file(&env_path)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(env_after, existing_env);
-    assert_debug_snapshot!((output, env_after));
+    assert_debug_snapshot!((output, json, env_after, jobs));
 
     Ok(())
 }

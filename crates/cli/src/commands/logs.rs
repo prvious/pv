@@ -600,10 +600,6 @@ mod tests {
         ␛[1mgateway:error␛[0m␛[2m | ␛[0m␛[31mnot PV color␛[0m [Warning] debug trace
         ␛[1mgateway:error␛[0m␛[2m | ␛[0mplain line
         "#);
-    }
-
-    #[test]
-    fn plain_log_prefixes_carry_no_escapes() {
         assert_snapshot!(render(true, false), @r#"
         gateway:error | error: upstream worker:8.3 refused for legacy-shop.test
         gateway:error | {"level":"fatal","msg":"allowed memory size exhausted"}
