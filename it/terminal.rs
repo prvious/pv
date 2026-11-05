@@ -661,6 +661,9 @@ fn assert_screen_snapshot(name: &str, tempdir: &Utf8Path, session: &Session) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
+    // Report headings pad the app version to the right edge.
+    let version = env!("CARGO_PKG_VERSION").replace('.', r"\.");
+    settings.add_filter(&format!(" +v{version}"), " v<version>");
     settings.bind(|| assert_snapshot!(name, session.screen()));
 }
 

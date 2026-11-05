@@ -5,9 +5,10 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use config::ProjectConfigFile;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
@@ -363,26 +364,6 @@ fn project_env_reports_malformed_env_blocks_without_stdout() -> anyhow::Result<(
     assert_debug_snapshot!((output, env_after));
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn register_project(

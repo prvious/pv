@@ -19,10 +19,11 @@ use state::{Database, JobsLock};
 use support::resource_cli::{
     ResourceCliSpec, ScriptedClient, TestEnvironment, create_dir, fixture_artifact,
     managed_resource_records, prepare_existing_release, pv_paths, record_installed_resource,
-    resource_manifest, resource_record_snapshots, run_pv, seed_running_resource,
+    resource_manifest, resource_record_snapshots, seed_running_resource,
 };
 
 use crate::support;
+use crate::support::run_pv;
 
 const RESOURCE: ResourceCliSpec = ResourceCliSpec {
     resource_name: "mysql",

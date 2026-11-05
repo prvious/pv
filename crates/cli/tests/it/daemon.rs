@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use daemon::DAEMON_EXIT_GRACE;
 use insta::assert_debug_snapshot;
 use platform::clock::{self, real};
@@ -19,6 +19,7 @@ use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig};
 use serde_json::json;
 use state::{PvPaths, StateError};
 
+use crate::support::run_pv;
 use crate::support::runtime::{ForeignMonitorRecord, RuntimeFixture, gateway_spec};
 
 #[expect(
@@ -883,26 +884,6 @@ fn daemon_disable_refuses_non_pv_owned_launch_agent() -> anyhow::Result<()> {
     });
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn read_required_file(path: &Utf8Path) -> anyhow::Result<String> {

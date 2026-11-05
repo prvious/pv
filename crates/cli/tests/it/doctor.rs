@@ -7,9 +7,10 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::support::{RunOutput, run_pv};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
@@ -527,26 +528,6 @@ fn doctor_is_read_only() -> anyhow::Result<()> {
     assert_doctor_snapshot("doctor_is_read_only", tempdir.path(), output);
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn run_doctor_with_health(

@@ -111,7 +111,9 @@ fn status_code(status: ExitStatus) -> Option<i32> {
 fn version_builds_and_runs_from_source() -> Result<()> {
     let output = run_pv(&["--version"])?;
 
-    assert_debug_snapshot!(output);
+    assert_eq!(output.code, Some(0));
+    assert_eq!(output.stdout, format!("pv {}\n", env!("CARGO_PKG_VERSION")));
+    assert!(output.stderr.is_empty());
 
     Ok(())
 }

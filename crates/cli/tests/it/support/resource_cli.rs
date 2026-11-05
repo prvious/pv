@@ -4,10 +4,9 @@ use std::ffi::OsString;
 use std::io;
 use std::io::Write;
 use std::path::PathBuf;
-use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use state::{
     Database, ManagedResourceTrackRecord, PortRequest, PvPaths, RuntimeObservedStatus,
@@ -111,30 +110,6 @@ impl Environment for TestEnvironment {
 
         Ok(TargetPlatform::DarwinArm64)
     }
-}
-
-#[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "snapshot-only structure is read through derived Debug"
-)]
-pub(crate) struct RunOutput {
-    pub(crate) exit_code: ExitCode,
-    pub(crate) stdout: String,
-    pub(crate) stderr: String,
-}
-
-pub(crate) fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 pub(crate) fn managed_resource_records(

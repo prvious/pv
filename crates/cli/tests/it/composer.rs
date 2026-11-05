@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::{Answer, Environment, Prompt, PromptKind, run_with_environment};
@@ -943,26 +944,6 @@ fn composer_shim_uses_cached_manifest_default_without_network() -> anyhow::Resul
     })?;
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn managed_resource_records(

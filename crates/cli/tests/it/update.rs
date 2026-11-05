@@ -17,6 +17,7 @@ mod update_tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use crate::support::{RunOutput, run_pv};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
     use cli::{Environment, run_with_environment};
@@ -30,10 +31,10 @@ mod update_tests {
     use state::{AppReleaseLayout, PvPaths};
 
     const APP_MANIFEST_URL: &str = "https://updates.example.test/pv-app-manifest.json";
-    const APP_BINARY_URL: &str = "https://downloads.example.test/pv/0.3.0/pv-darwin-arm64";
-    const APP_BINARY: &[u8] = b"pv 0.3.0\n";
+    const APP_BINARY_URL: &str = "https://downloads.example.test/pv/99.0.0/pv-darwin-arm64";
+    const APP_BINARY: &[u8] = b"pv 99.0.0\n";
     const APP_BINARY_SHA256: &str =
-        "daa36b28494155c914f2745dcb1908b9e97f07f718313751c5c0be96f9c28b74";
+        "8ea25dd074960f84dcf50e5432a5953d5d8d907eb0cb2edf02a9757d3e02f24b";
     const HELPER_BINARY: &[u8] = b"pv helper 1.0.0\n";
     const HELPER_BINARY_SHA256: &str =
         "f15b9ec9f06fc9e7e92af6e7cdfe82ae574bdc11f09bf796e44280989b1378d2";
@@ -1308,7 +1309,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1324,7 +1325,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_eq!(environment.operations(), ["remove helper"]);
         assert!(output.stderr.contains("authentication cancelled"));
@@ -1346,7 +1347,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1367,10 +1368,10 @@ mod update_tests {
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
         assert!(output.stderr.is_empty());
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
-            state::fs::read_to_string(&paths.app_release_binary("0.3.0"))?,
-            "pv 0.3.0\n"
+            state::fs::read_to_string(&paths.app_release_binary("99.0.0"))?,
+            "pv 99.0.0\n"
         );
         assert_eq!(
             daemon_requests,
@@ -1411,13 +1412,17 @@ mod update_tests {
         let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace(
-                &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
-                &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
-            )
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace(
+            &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
+            &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
+        )
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -1429,15 +1434,15 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
-            state::fs::read_to_string(&paths.app_release_helper("0.3.0"))?,
+            state::fs::read_to_string(&paths.app_release_helper("99.0.0"))?,
             String::from_utf8(HELPER_BINARY.to_vec())?
         );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state::fs::read_to_string(
                 &paths
-                    .app_release_helper("0.3.0")
+                    .app_release_helper("99.0.0")
                     .with_file_name("pv-helper.json")
             )?)?,
             json!({
@@ -1451,7 +1456,7 @@ mod update_tests {
             vec![
                 format!(
                     "install helper {} sha256 {HELPER_BINARY_SHA256}",
-                    paths.app_release_helper("0.3.0")
+                    paths.app_release_helper("99.0.0")
                 ),
                 format!("bootout {LAUNCH_AGENT_LABEL}"),
                 format!("bootstrap {}", launch_agent_path(&paths)),
@@ -1482,13 +1487,17 @@ mod update_tests {
         let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace(
-                &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
-                &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
-            )
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace(
+            &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
+            &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
+        )
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -1507,7 +1516,7 @@ mod update_tests {
         let _requests = daemon.join()?;
 
         assert_eq!(exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.execs(),
             vec![(
@@ -1576,7 +1585,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1656,7 +1665,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1668,7 +1677,7 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             daemon_requests,
             vec![json!({
@@ -1704,7 +1713,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1715,7 +1724,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -1741,7 +1750,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1753,7 +1762,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -1780,7 +1789,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1794,7 +1803,7 @@ mod update_tests {
         let jobs_lock = state::JobsLock::acquire(&paths);
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -2001,7 +2010,7 @@ mod update_tests {
             ScriptedClient::new()
                 .with_text(
                     &app_manifest(
-                        "0.3.0",
+                        "99.0.0",
                         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                         u64::try_from(APP_BINARY.len())?,
                     )
@@ -2021,7 +2030,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert!(temporary_downloads.is_empty());
         assert_update_snapshot(
@@ -2044,9 +2053,13 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(
-                    &app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-                        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-                        .replace("pv-helper-2.0.0", "pv-helper-2.1.0"),
+                    &app_manifest(
+                        "99.0.0",
+                        APP_BINARY_SHA256,
+                        u64::try_from(APP_BINARY.len())?,
+                    )
+                    .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+                    .replace("pv-helper-2.0.0", "pv-helper-2.1.0"),
                 )
                 .with_download_error(ResourcesError::HttpRequestFailed {
                     url: APP_BINARY_URL.to_string(),
@@ -2064,7 +2077,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert!(temporary_downloads.is_empty());
 
@@ -2083,7 +2096,7 @@ mod update_tests {
             &home,
             ReadOnlyDownloadsClient {
                 manifest: app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     u64::try_from(APP_BINARY.len())?,
                 ),
@@ -2175,7 +2188,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2202,7 +2215,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_eq!(
             environment.operations(),
@@ -2256,7 +2269,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2267,7 +2280,7 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -2314,7 +2327,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2365,9 +2378,13 @@ mod update_tests {
                 health_response(),
             ],
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2428,9 +2445,13 @@ mod update_tests {
             ],
             Duration::from_millis(100),
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2464,7 +2485,7 @@ mod update_tests {
             })
         );
         assert!(state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_eq!(rollback_candidates.len(), 1);
         assert_eq!(
@@ -2504,13 +2525,17 @@ mod update_tests {
             &paths,
             vec![daemon_error_response("updated daemon boot failed")],
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace(
-                &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
-                &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
-            )
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace(
+            &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
+            &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
+        )
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2527,7 +2552,7 @@ mod update_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.helper_status.borrow().as_ref(),
             Some(&PrivilegedHelperStatus {
@@ -2569,9 +2594,13 @@ mod update_tests {
             &paths,
             vec![daemon_error_response("updated daemon boot failed")],
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2618,7 +2647,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2630,7 +2659,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_update_snapshot("update_reports_rollback_symlink_restore_failure", output);
 
         Ok(())
@@ -2655,7 +2684,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2671,7 +2700,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_update_snapshot(
             "update_reports_rollback_daemon_restart_failure_after_restore",
@@ -2700,7 +2729,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2720,7 +2749,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_update_snapshot(
             "update_reports_migration_failure_marker_after_health_failure",
@@ -2753,7 +2782,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2783,14 +2812,14 @@ mod update_tests {
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.3.0", b"pv 0.3.0\n")?;
+        let layout = install_active_release(&paths, "99.0.0", b"pv 99.0.0\n")?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let environment = TestEnvironment::new(&home, PanickingClient);
 
         let output = run_pv(&["update"], &environment)?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_update_snapshot(
             "update_fails_before_network_when_active_release_version_differs",
             output,
@@ -2859,7 +2888,7 @@ mod update_tests {
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
-                .with_text(&app_manifest("0.3.0", APP_BINARY_SHA256, 999))
+                .with_text(&app_manifest("99.0.0", APP_BINARY_SHA256, 999))
                 .with_download(APP_BINARY),
         );
 
@@ -2872,7 +2901,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_update_snapshot(
             "update_size_mismatch_leaves_active_release_untouched",
@@ -2898,7 +2927,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2914,8 +2943,8 @@ mod update_tests {
         releases.sort();
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert_eq!(releases, vec![CURRENT_APP_VERSION, "0.3.0"]);
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
+        assert_eq!(releases, vec![CURRENT_APP_VERSION, "99.0.0"]);
 
         Ok(())
     }
@@ -2934,7 +2963,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2945,7 +2974,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert!(state::fs::path_entry_exists(
             &paths.app_releases_dir().join("0.0.8")
         )?);
@@ -3175,26 +3204,6 @@ mod update_tests {
         }
     }
 
-    #[derive(Debug)]
-    struct RunOutput {
-        exit_code: ExitCode,
-        stdout: String,
-        stderr: String,
-    }
-
-    fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let args = std::iter::once("pv").chain(args.iter().copied());
-        let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-        Ok(RunOutput {
-            exit_code,
-            stdout: String::from_utf8(stdout)?,
-            stderr: String::from_utf8(stderr)?,
-        })
-    }
-
     fn managed_resource_update_check_response(
         current_artifact_path: impl AsRef<Path>,
     ) -> serde_json::Value {
@@ -3297,6 +3306,7 @@ mod update_tests {
         settings.add_filter(r"/[\w\-]+/home/\.pv", "<pv-home>");
         settings.add_filter(r"/private<tempdir>", "<tempdir>");
         settings.add_filter(r"[a-f0-9]{64}", "<sha256>");
+        settings.add_filter(&CURRENT_APP_VERSION.replace('.', r"\."), "<version>");
         settings.add_filter(
             r"pv-helper-rollback-[0-9]+-[0-9]+\.tmp",
             "pv-helper-rollback-<id>.tmp",
@@ -3458,32 +3468,32 @@ mod update_tests {
 {
   "schema_version": 2,
   "channel": "stable",
-  "version": "0.3.0",
+  "version": "99.0.0",
   "minimum_pv_version": "0.1.0",
   "published_at": "2026-06-11T12:00:00Z",
   "assets": [
     {
       "platform": "darwin-arm64",
-      "url": "https://downloads.example.test/pv/0.3.0/pv-darwin-arm64",
+      "url": "https://downloads.example.test/pv/99.0.0/pv-darwin-arm64",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "size": 12345678,
       "helper": {
         "version": "2.0.0",
         "protocol_version": 2,
-        "url": "https://downloads.example.test/pv/0.3.0/pv-helper-2.0.0-darwin-arm64",
+        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-2.0.0-darwin-arm64",
         "sha256": "f15b9ec9f06fc9e7e92af6e7cdfe82ae574bdc11f09bf796e44280989b1378d2",
         "size": 16
       }
     },
     {
       "platform": "darwin-amd64",
-      "url": "https://downloads.example.test/pv/0.3.0/pv-darwin-amd64",
+      "url": "https://downloads.example.test/pv/99.0.0/pv-darwin-amd64",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "size": 12345678,
       "helper": {
         "version": "2.0.0",
         "protocol_version": 2,
-        "url": "https://downloads.example.test/pv/0.3.0/pv-helper-2.0.0-darwin-amd64",
+        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-2.0.0-darwin-amd64",
         "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "size": 16
       }

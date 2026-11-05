@@ -9,9 +9,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::assert_debug_snapshot;
 use platform::ResolverConfig;
 use platform::clock::{self, real};
@@ -582,26 +583,6 @@ impl DaemonFixture {
 
         Ok(lock(&self.requests).clone())
     }
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 #[expect(

@@ -5,9 +5,10 @@ use std::net::TcpListener;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::assert_debug_snapshot;
 use state::{Database, PortRequest, PvPaths, RuntimeObservedStatus, RuntimeSubject};
 
@@ -108,8 +109,8 @@ fn rustfs_open_aliases_open_live_console_port() -> anyhow::Result<()> {
     let home = tempdir.path().join("home");
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
-    let console_guard = TcpListener::bind(("127.0.0.1", 0))?;
-    let console_port = console_guard.local_addr()?.port();
+    let console_port = pv_fake::port()?;
+    let _console = TcpListener::bind(("127.0.0.1", console_port))?;
     let console_url = format!("http://127.0.0.1:{console_port}");
     seed_running_rustfs_console(&paths, console_port)?;
 
@@ -132,17 +133,6 @@ fn rustfs_open_aliases_open_live_console_port() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "snapshot-only structure is read through derived Debug"
-)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
 fn assert_open_snapshot(name: &'static str, snapshot: impl std::fmt::Debug) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(
@@ -152,19 +142,6 @@ fn assert_open_snapshot(name: &'static str, snapshot: impl std::fmt::Debug) {
     settings.bind(|| {
         assert_debug_snapshot!(name, snapshot);
     });
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn seed_running_rustfs_console(paths: &PvPaths, console_port: u16) -> anyhow::Result<()> {

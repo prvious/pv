@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
 
+use crate::support::{RunOutput, run_pv};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::{Environment, run_with_environment};
@@ -1891,26 +1892,6 @@ fn spawn_daemon_fixture_thread(
     operation: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
 ) -> thread::JoinHandle<anyhow::Result<()>> {
     thread::spawn(operation)
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn run_setup_with_stream_surfaces(

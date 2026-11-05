@@ -3,9 +3,10 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::{Settings, assert_debug_snapshot};
 use state::{
     Database, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode, ProjectRecord, PvPaths,
@@ -193,26 +194,6 @@ fn seed_project(paths: &PvPaths, project_path: &Utf8Path) -> anyhow::Result<Proj
         .project;
 
     Ok(project)
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn path_exists(path: &Utf8Path) -> bool {
