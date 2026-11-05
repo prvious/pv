@@ -18,6 +18,7 @@ camino-tempfile = { workspace = true }
 clap = { workspace = true }
 data-encoding = { workspace = true }
 flate2 = { workspace = true }
+platform = { path = "../platform" }
 resources = { path = "../resources" }
 self-update = { path = "../self-update" }
 serde = { workspace = true }
@@ -30,3 +31,4 @@ url = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true }
+platform = { path = "../platform", features = ["test-support"] }

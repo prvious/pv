@@ -112,9 +112,9 @@ Do not update unrelated tracks, platforms, or resource recipes.
 Focused checks:
 
 ```sh
-cargo nextest run -p pv-release --test recipe_metadata
-cargo nextest run -p pv-release --test recipe_fixtures
-cargo nextest run -p pv-release --test release_records
+cargo nextest run -p pv-release -E 'test(/^recipe_metadata::/)'
+cargo nextest run -p pv-release -E 'test(/^recipe_fixtures::/)'
+cargo nextest run -p pv-release -E 'test(/^release_records::/)'
 ```
 
 If snapshots change, inspect them first and accept only expected checksum/provenance changes:

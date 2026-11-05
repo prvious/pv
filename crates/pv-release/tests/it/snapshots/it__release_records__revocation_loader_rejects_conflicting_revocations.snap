@@ -1,0 +1,38 @@
+---
+source: crates/pv-release/tests/it/release_records.rs
+expression: cases
+---
+[
+    (
+        "duplicate",
+        Err(
+            DuplicateRevocation {
+                identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
+            },
+        ),
+    ),
+    (
+        "different_reason",
+        Err(
+            ConflictingRevocation {
+                identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
+            },
+        ),
+    ),
+    (
+        "different_replacement",
+        Err(
+            ConflictingRevocation {
+                identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
+            },
+        ),
+    ),
+    (
+        "different_revoked_at",
+        Err(
+            ConflictingRevocation {
+                identity: "redis:7.2:7.2.5-pv1:darwin-arm64",
+            },
+        ),
+    ),
+]

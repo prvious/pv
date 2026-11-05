@@ -129,9 +129,9 @@ jq -r '
 Focused test checks:
 
 ```sh
-cargo nextest run -p pv-release --test release_records
-cargo nextest run -p pv-release --test manifest_generation
-cargo nextest run -p pv-release --test publication
+cargo nextest run -p pv-release -E 'test(/^release_records::/)'
+cargo nextest run -p pv-release -E 'test(/^manifest_generation::/)'
+cargo nextest run -p pv-release -E 'test(/^publication::/)'
 cargo nextest run -p resources -E 'test(/^manifest_foundation::/)'
 cargo nextest run -p cli -E 'test(/^update::/)'
 ```

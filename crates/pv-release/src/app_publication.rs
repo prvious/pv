@@ -235,19 +235,6 @@ fn validate_candidate_is_not_older_than_current(
             ),
         });
     }
-    if let Some(current_app_manifest) = current_app_manifest
-        && current_app_manifest_is_legacy(current_app_manifest)?
-    {
-        if candidate_version == current_version.version {
-            return Err(crate::ReleaseError::InvalidPublicationInput {
-                path: current_app_manifest.to_string(),
-                reason: "migration from a schema-1 app manifest requires a newer app version"
-                    .to_string(),
-            });
-        }
-
-        return Ok(());
-    }
     if let Some(current_app_manifest) = current_app_manifest {
         validate_helper_release_continuity(records, current_app_manifest)?;
         if candidate_version == current_version.version {
@@ -437,55 +424,14 @@ fn current_stable_app_manifest_version(
     current_app_manifest: &Utf8Path,
 ) -> crate::Result<AppUpdateVersion> {
     let current_json = read_to_string(current_app_manifest)?;
-    let current_manifest = match AppUpdateManifest::parse(&current_json) {
-        Ok(current_manifest) => return Ok(current_manifest.version().clone()),
-        Err(error) => error,
-    };
-    let legacy = serde_json::from_str::<serde_json::Value>(&current_json).map_err(|_error| {
+    let current_manifest = AppUpdateManifest::parse(&current_json).map_err(|error| {
         crate::ReleaseError::InvalidPublicationInput {
             path: current_app_manifest.to_string(),
-            reason: format!("failed to parse current stable app manifest: {current_manifest}"),
-        }
-    })?;
-    if legacy
-        .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        != Some(1)
-    {
-        return Err(crate::ReleaseError::InvalidPublicationInput {
-            path: current_app_manifest.to_string(),
-            reason: format!("failed to parse current stable app manifest: {current_manifest}"),
-        });
-    }
-    let version = legacy
-        .get("version")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| crate::ReleaseError::InvalidPublicationInput {
-            path: current_app_manifest.to_string(),
-            reason: "schema-1 current stable app manifest has no string version".to_string(),
-        })?;
-
-    AppUpdateVersion::parse(version.to_string()).map_err(|error| {
-        crate::ReleaseError::InvalidPublicationInput {
-            path: current_app_manifest.to_string(),
-            reason: format!("failed to parse schema-1 current stable app version: {error}"),
-        }
-    })
-}
-
-fn current_app_manifest_is_legacy(current_app_manifest: &Utf8Path) -> crate::Result<bool> {
-    let current_json = read_to_string(current_app_manifest)?;
-    let current = serde_json::from_str::<serde_json::Value>(&current_json).map_err(|error| {
-        crate::ReleaseError::InvalidPublicationInput {
-            path: current_app_manifest.to_string(),
-            reason: format!("failed to inspect current stable app manifest schema: {error}"),
+            reason: format!("failed to parse current stable app manifest: {error}"),
         }
     })?;
 
-    Ok(current
-        .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        == Some(1))
+    Ok(current_manifest.version().clone())
 }
 
 fn current_stable_app_installer_version(

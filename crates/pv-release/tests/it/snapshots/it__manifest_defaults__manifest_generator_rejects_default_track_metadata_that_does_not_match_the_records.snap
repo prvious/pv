@@ -1,0 +1,15 @@
+---
+source: crates/pv-release/tests/it/manifest_defaults.rs
+expression: "(missing_default, missing_track, missing_resource)"
+---
+(
+    GeneratedManifestInvalid {
+        reason: "resource `php` has multiple tracks (`8.3, 8.4`) but no explicit default_track metadata",
+    },
+    GeneratedManifestInvalid {
+        reason: "resource `php` has explicit default_track `8.5` but generated tracks are (`8.3, 8.4`)",
+    },
+    GeneratedManifestInvalid {
+        reason: "manifest default metadata includes resource `mysql` but no release records generated that resource",
+    },
+)

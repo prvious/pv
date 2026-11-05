@@ -12,25 +12,6 @@ use crate::recipe::{
 
 const PUBLISHED_AT: &str = "2026-01-01T00:00:00Z";
 
-pub fn generate_recipe_fixtures(
-    php: &Utf8Path,
-    composer: &Utf8Path,
-    archives: &Utf8Path,
-    records: &Utf8Path,
-    pv_commit: &str,
-    build_run_id: &str,
-) -> crate::Result<()> {
-    generate_recipe_fixtures_with_backing(
-        php,
-        composer,
-        &[],
-        archives,
-        records,
-        pv_commit,
-        build_run_id,
-    )
-}
-
 pub fn generate_recipe_fixtures_with_backing(
     php: &Utf8Path,
     composer: &Utf8Path,

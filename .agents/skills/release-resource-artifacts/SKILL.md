@@ -77,8 +77,8 @@ Update nearby tests and snapshots that encode artifact versions, object keys, re
 Useful verification for recipe metadata changes:
 
 ```sh
-cargo nextest run -p pv-release --test recipe_metadata
-cargo nextest run -p pv-release --test recipe_fixtures
+cargo nextest run -p pv-release -E 'test(/^recipe_metadata::/)'
+cargo nextest run -p pv-release -E 'test(/^recipe_fixtures::/)'
 cargo insta pending-snapshots --workspace
 git diff --check
 cargo nextest run -p pv-release

@@ -104,8 +104,8 @@ Prefer existing `pv-release` test patterns and `insta` snapshots.
 Focused checks:
 
 ```sh
-cargo nextest run -p pv-release --test recipe_metadata
-cargo nextest run -p pv-release --test recipe_fixtures
+cargo nextest run -p pv-release -E 'test(/^recipe_metadata::/)'
+cargo nextest run -p pv-release -E 'test(/^recipe_fixtures::/)'
 ```
 
 If snapshots change, inspect them first, then accept only expected changes:
