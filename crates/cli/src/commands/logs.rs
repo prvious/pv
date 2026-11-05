@@ -258,12 +258,6 @@ fn resolve_worker_track(paths: &PvPaths, worker: &str) -> Result<String, Execute
         return Ok(worker.to_string());
     }
 
-    if let Some(database) = Database::open_read_only(paths)?
-        && let Some(track) = database.global_php_default_track()?
-    {
-        return Ok(track);
-    }
-
     let php = ResourceName::new("php")?;
     let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
     let track = manifest.resolve_track(&php, TrackSelector::Latest)?;

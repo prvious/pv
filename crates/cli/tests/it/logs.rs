@@ -4,9 +4,10 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::assert_debug_snapshot;
 use state::{Database, ManagedResourceTrackInstallInput, PvPaths};
 
@@ -228,13 +229,17 @@ fn logs_gateway_tails_plain_rotated_access_and_error_logs() -> anyhow::Result<()
 }
 
 #[test]
-fn logs_worker_latest_uses_global_default_track() -> anyhow::Result<()> {
+fn logs_worker_latest_uses_manifest_default_track() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     let mut database = Database::open(&paths)?;
-    database.record_global_php_default_track("8.4")?;
+    database.record_global_php_default_track("8.3")?;
+    write_file(
+        &paths.downloads().join("manifest.json"),
+        &manifest_with_default_track("php", ["8.3", "8.4"], "8.4"),
+    )?;
     write_log(&paths.worker_log("8.4"), "worker ready\n")?;
 
     let output = run_pv(&["logs", "--worker", "latest"], &environment)?;
@@ -292,7 +297,7 @@ fn logs_resource_latest_resolves_manifest_default_track() -> anyhow::Result<()> 
     seed_installed_track(&paths, "postgres", "16")?;
     write_file(
         &paths.downloads().join("manifest.json"),
-        &postgres_manifest_with_default_track("16"),
+        &manifest_with_default_track("postgres", ["15", "16"], "16"),
     )?;
     write_log(&paths.resource_log("postgres", "16"), "postgres ready\n")?;
 
@@ -346,26 +351,6 @@ fn logs_resource_filters_canonical_resources_and_aliases() -> anyhow::Result<()>
     Ok(())
 }
 
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
-}
-
 fn write_log(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
     write_file(path, content)
 }
@@ -402,25 +387,26 @@ fn seed_installed_track(paths: &PvPaths, resource_name: &str, track: &str) -> an
     Ok(())
 }
 
-fn postgres_manifest_with_default_track(default_track: &str) -> String {
+fn manifest_with_default_track(resource: &str, tracks: [&str; 2], default_track: &str) -> String {
+    let [old, new] = tracks;
     format!(
         r#"{{
   "schema_version": 1,
   "minimum_pv_version": "0.0.0",
   "resources": [
     {{
-      "name": "postgres",
+      "name": "{resource}",
       "default_track": "{default_track}",
       "tracks": [
         {{
-          "name": "15",
+          "name": "{old}",
           "artifacts": [
             {{
-              "artifact_version": "15.0.0-pv1",
-              "upstream_version": "15.0.0",
+              "artifact_version": "{old}.0-pv1",
+              "upstream_version": "{old}.0",
               "pv_build_revision": "1",
               "platform": "any",
-              "url": "https://artifacts.example.test/postgres-15.tar.gz",
+              "url": "https://artifacts.example.test/{resource}-{old}.tar.gz",
               "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
               "size": 15,
               "published_at": "2026-01-01T00:00:00Z"
@@ -428,14 +414,14 @@ fn postgres_manifest_with_default_track(default_track: &str) -> String {
           ]
         }},
         {{
-          "name": "16",
+          "name": "{new}",
           "artifacts": [
             {{
-              "artifact_version": "16.0.0-pv1",
-              "upstream_version": "16.0.0",
+              "artifact_version": "{new}.0-pv1",
+              "upstream_version": "{new}.0",
               "pv_build_revision": "1",
               "platform": "any",
-              "url": "https://artifacts.example.test/postgres-16.tar.gz",
+              "url": "https://artifacts.example.test/{resource}-{new}.tar.gz",
               "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
               "size": 16,
               "published_at": "2026-01-01T00:00:00Z"
