@@ -9,27 +9,34 @@ use std::thread;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 #[cfg(target_os = "macos")]
 use cli::run_with_environment;
-use insta::{Settings, assert_debug_snapshot};
+#[cfg(target_os = "macos")]
+use insta::Settings;
+use insta::assert_debug_snapshot;
 use state::{Database, JobsLock};
+#[cfg(target_os = "macos")]
 use support::resource_cli::{
-    ResourceCliSpec, ScriptedClient, TestEnvironment, create_dir, fixture_artifact,
-    managed_resource_records, prepare_existing_release, pv_paths, resource_manifest,
-    resource_record_snapshots,
+    ResourceCliSpec, fixture_artifact, managed_resource_records, prepare_existing_release,
+    resource_manifest, resource_record_snapshots,
 };
+use support::resource_cli::{ScriptedClient, TestEnvironment, create_dir, pv_paths};
 
 use crate::support;
 use crate::support::run_pv;
 
+#[cfg(target_os = "macos")]
 const RESOURCE: ResourceCliSpec = ResourceCliSpec {
     resource_name: "mysql",
     executable_path: "bin/mysqld",
     support_files: &[],
 };
+#[cfg(target_os = "macos")]
 const DEFAULT_TRACK: &str = "8.0";
+#[cfg(target_os = "macos")]
 const NEW_VERSION: &str = "8.0.36-pv1";
 
 #[cfg(target_os = "macos")]
@@ -268,6 +275,7 @@ fn artifact_mutation_retries_reconciliation_after_jobs_lock_handoff() -> anyhow:
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn assert_resource_snapshot(
     name: &'static str,
     tempdir: &Utf8Path,
