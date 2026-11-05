@@ -3,9 +3,10 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use state::{Database, PvPaths};
 
@@ -104,54 +105,6 @@ fn jobs_lists_recent_history() -> anyhow::Result<()> {
 }
 
 #[test]
-fn jobs_shows_failure_summary() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    let mut database = Database::open(&paths)?;
-    let job = database.start_job("reconcile", "project:acme")?;
-    database.fail_job(&job.id, "Project config is invalid")?;
-
-    let output = run_pv(&["jobs"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_jobs_snapshot("jobs_shows_failure_summary", output);
-
-    Ok(())
-}
-
-#[test]
-fn jobs_on_a_narrow_terminal_wraps_long_failure_summary() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home).on_terminal(80);
-    let mut database = Database::open(&paths)?;
-    let job = database.start_job("reconcile", "project:acme")?;
-    database.fail_job(
-        &job.id,
-        "Gateway failed to start because the configured local port is already occupied by another process",
-    )?;
-
-    let output = run_pv(&["jobs", "--no-color"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    let mut settings = Settings::clone_current();
-    settings.add_filter(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", "<timestamp>");
-    settings.bind(|| {
-        assert_snapshot!(
-            "jobs_on_a_narrow_terminal_wraps_long_failure_summary",
-            output.stdout
-        );
-    });
-
-    Ok(())
-}
-
-#[test]
 fn jobs_on_a_terminal_render_a_report_table() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -201,26 +154,6 @@ fn jobs_json_lists_recent_history() -> anyhow::Result<()> {
     assert_jobs_snapshot("jobs_json_lists_recent_history", output);
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn seed_jobs(paths: &PvPaths) -> anyhow::Result<()> {

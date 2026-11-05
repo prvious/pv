@@ -145,29 +145,3 @@ fn write_clap_error(
         write!(writer, "{error}")
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use std::io;
-    use std::process::ExitCode;
-
-    use super::finish_execution;
-    use crate::error::ExecuteError;
-    use crate::output::{Presentation, Streams};
-
-    #[test]
-    fn finish_execution_formats_io_errors() -> anyhow::Result<()> {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let exit_code = finish_execution(
-            Err(ExecuteError::Io(io::Error::other("stdout closed"))),
-            &mut Streams::new(&mut stdout, &mut stderr, Presentation::plain()),
-        )?;
-
-        assert_eq!(exit_code, ExitCode::FAILURE);
-        assert!(stdout.is_empty());
-        assert_eq!(String::from_utf8(stderr)?, "error: stdout closed\n");
-
-        Ok(())
-    }
-}

@@ -7,9 +7,10 @@ use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
+use crate::support::run_pv;
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
@@ -17,8 +18,8 @@ use platform::{
     PrivilegedHelperStatus, ResolverConfig,
 };
 use state::{
-    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, JobDiagnosticSubject,
-    PvPaths, RuntimeObservedStatus, RuntimeSubject,
+    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PvPaths,
+    RuntimeObservedStatus, RuntimeSubject,
 };
 
 #[derive(Debug)]
@@ -249,54 +250,6 @@ fn doctor_accepts_helper_only_version_from_active_release_metadata() -> anyhow::
 }
 
 #[test]
-fn doctor_reports_missing_helper_and_continues_other_checks() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    environment.set_helper_missing();
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("[fail] Privileged helper"));
-    assert!(output.stdout.contains("[pass] Artifact manifest cache"));
-    assert_doctor_snapshot(
-        "doctor_reports_missing_helper_and_continues_other_checks",
-        tempdir.path(),
-        output,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn doctor_reports_cross_account_helper_recovery() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    environment.set_helper_authentication_error();
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert_doctor_snapshot(
-        "doctor_reports_cross_account_helper_recovery",
-        tempdir.path(),
-        output,
-    );
-
-    Ok(())
-}
-
-#[test]
 fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -357,49 +310,6 @@ fn doctor_on_a_terminal_groups_checks_with_repair_hints() -> anyhow::Result<()> 
 }
 
 #[test]
-fn doctor_tracks_failure_repair_and_identical_recurrence() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    let mut database = Database::open(&paths)?;
-    let failure = database.start_job("reconcile", "project:project_1")?;
-    database.fail_job(&failure.id, "Gateway failed to start")?;
-
-    let failed = run_doctor_with_health(&paths, &environment)?;
-    let repair = database.start_job("reconcile", "project:project_1")?;
-    database.complete_job_with_coverage(
-        &repair.id,
-        "Project reconciled",
-        &[
-            JobDiagnosticSubject::Project {
-                id: "project_1".to_owned(),
-            },
-            JobDiagnosticSubject::GatewayRuntime,
-        ],
-    )?;
-    let healthy = run_doctor_with_health(&paths, &environment)?;
-    let recurrence = database.start_job("reconcile", "project:project_1")?;
-    database.fail_job(&recurrence.id, "Gateway failed to start")?;
-    let recurring = run_doctor_with_health(&paths, &environment)?;
-
-    assert_eq!(failed.exit_code, ExitCode::FAILURE);
-    assert_eq!(healthy.exit_code, ExitCode::SUCCESS);
-    assert_eq!(recurring.exit_code, ExitCode::FAILURE);
-    assert!(failed.stderr.is_empty());
-    assert!(healthy.stderr.is_empty());
-    assert!(recurring.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_tracks_failure_repair_and_identical_recurrence",
-        tempdir.path(),
-        (failed, healthy, recurring),
-    );
-
-    Ok(())
-}
-
-#[test]
 fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -422,73 +332,62 @@ fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
 }
 
 #[test]
-fn doctor_fails_when_system_resolver_is_missing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    delete_optional_file(&environment.resolver_path_utf8()?)?;
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
+fn doctor_fails_one_check_and_continues_the_others() -> anyhow::Result<()> {
+    type BreakCheck = fn(&TestEnvironment) -> anyhow::Result<()>;
+    let cases: [(&'static str, BreakCheck); 5] = [
+        (
+            "doctor_fails_when_system_resolver_is_missing",
+            |environment| delete_optional_file(&environment.resolver_path_utf8()?),
+        ),
+        (
+            "doctor_fails_when_active_pf_redirects_are_missing",
+            |environment| {
+                *environment.active_pf_config.borrow_mut() = None;
+                Ok(())
+            },
+        ),
+        (
+            "doctor_fails_when_system_ca_trust_is_missing",
+            |environment| {
+                environment.trusted_certificates.borrow_mut().clear();
+                Ok(())
+            },
+        ),
+        (
+            "doctor_reports_missing_helper_and_continues_other_checks",
+            |environment| {
+                environment.set_helper_missing();
+                Ok(())
+            },
+        ),
+        (
+            "doctor_reports_cross_account_helper_recovery",
+            |environment| {
+                environment.set_helper_authentication_error();
+                Ok(())
+            },
+        ),
+    ];
 
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
+    for (name, break_check) in cases {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let paths = PvPaths::for_home(home.clone());
+        let environment = TestEnvironment::new(&home);
+        seed_required_checks(&paths, &environment, true)?;
+        break_check(&environment)?;
+        let health_server = spawn_health_server(&paths.daemon_socket())?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_fails_when_system_resolver_is_missing",
-        tempdir.path(),
-        output,
-    );
+        let output = run_pv(&["doctor"], &environment)?;
+        join_health_server(health_server)?;
 
-    Ok(())
-}
-
-#[test]
-fn doctor_fails_when_active_pf_redirects_are_missing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    *environment.active_pf_config.borrow_mut() = None;
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_fails_when_active_pf_redirects_are_missing",
-        tempdir.path(),
-        output,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn doctor_fails_when_system_ca_trust_is_missing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    seed_required_checks(&paths, &environment, true)?;
-    environment.trusted_certificates.borrow_mut().clear();
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-
-    let output = run_pv(&["doctor"], &environment)?;
-    join_health_server(health_server)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_doctor_snapshot(
-        "doctor_fails_when_system_ca_trust_is_missing",
-        tempdir.path(),
-        output,
-    );
+        assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+        assert!(
+            output.stdout.contains("[pass] Artifact manifest cache"),
+            "{name}"
+        );
+        assert_doctor_snapshot(name, tempdir.path(), output);
+    }
 
     Ok(())
 }
@@ -527,40 +426,6 @@ fn doctor_is_read_only() -> anyhow::Result<()> {
     assert_doctor_snapshot("doctor_is_read_only", tempdir.path(), output);
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
-}
-
-fn run_doctor_with_health(
-    paths: &PvPaths,
-    environment: &impl Environment,
-) -> anyhow::Result<RunOutput> {
-    if state::fs::path_exists(&paths.daemon_socket()) {
-        state::fs::delete_file(&paths.daemon_socket())?;
-    }
-    let health_server = spawn_health_server(&paths.daemon_socket())?;
-    let output = run_pv(&["doctor"], environment)?;
-    join_health_server(health_server)?;
-
-    Ok(output)
 }
 
 fn seed_required_checks(

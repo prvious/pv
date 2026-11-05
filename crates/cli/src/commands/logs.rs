@@ -258,12 +258,6 @@ fn resolve_worker_track(paths: &PvPaths, worker: &str) -> Result<String, Execute
         return Ok(worker.to_string());
     }
 
-    if let Some(database) = Database::open_read_only(paths)?
-        && let Some(track) = database.global_php_default_track()?
-    {
-        return Ok(track);
-    }
-
     let php = ResourceName::new("php")?;
     let manifest = ArtifactManifestCache::new(paths.downloads()).load_cached()?;
     let track = manifest.resolve_track(&php, TrackSelector::Latest)?;
@@ -606,10 +600,6 @@ mod tests {
         ␛[1mgateway:error␛[0m␛[2m | ␛[0m␛[31mnot PV color␛[0m [Warning] debug trace
         ␛[1mgateway:error␛[0m␛[2m | ␛[0mplain line
         "#);
-    }
-
-    #[test]
-    fn plain_log_prefixes_carry_no_escapes() {
         assert_snapshot!(render(true, false), @r#"
         gateway:error | error: upstream worker:8.3 refused for legacy-shop.test
         gateway:error | {"level":"fatal","msg":"allowed memory size exhausted"}

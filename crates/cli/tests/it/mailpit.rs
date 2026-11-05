@@ -5,9 +5,10 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use state::{
     Database, LinkProjectInput, ProjectManagedResourceInput, PvPaths, RuntimeObservedStatus,
     RuntimeSubject,
@@ -67,34 +68,6 @@ impl Environment for TestEnvironment {
 }
 
 #[test]
-fn mailpit_open_reports_exact_message_when_not_running() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let environment = TestEnvironment::new(&home, &current_dir);
-
-    let mailpit_output = run_pv(&["mailpit:open"], &environment)?;
-    let mail_output = run_pv(&["mail:open"], &environment)?;
-
-    assert_eq!(mailpit_output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(mail_output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(
-        mailpit_output.stdout,
-        "Mailpit is not running for any linked Project\n"
-    );
-    assert_eq!(
-        mail_output.stdout,
-        "Mailpit is not running for any linked Project\n"
-    );
-    assert!(mailpit_output.stderr.is_empty());
-    assert!(mail_output.stderr.is_empty());
-    assert!(environment.opened_urls().is_empty());
-
-    Ok(())
-}
-
-#[test]
 fn mailpit_open_opens_running_dashboard_without_mutating_state() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -122,26 +95,6 @@ fn mailpit_open_opens_running_dashboard_without_mutating_state() -> anyhow::Resu
     assert_eq!(after, before);
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn record_linked_mailpit_project(

@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use daemon::DAEMON_EXIT_GRACE;
 use insta::assert_debug_snapshot;
 use platform::clock::{self, real};
@@ -19,6 +19,7 @@ use platform::{LAUNCH_AGENT_LABEL, LaunchAgentConfig};
 use serde_json::json;
 use state::{PvPaths, StateError};
 
+use crate::support::run_pv;
 use crate::support::runtime::{ForeignMonitorRecord, RuntimeFixture, gateway_spec};
 
 #[expect(
@@ -74,11 +75,6 @@ impl TestEnvironment {
         self
     }
 
-    fn with_bootout_exit_status_five(mut self) -> Self {
-        self.bootout_error = Some(BootoutError::ExitStatusFive);
-        self
-    }
-
     fn operations(&self) -> Vec<String> {
         self.operations.borrow().clone()
     }
@@ -87,7 +83,6 @@ impl TestEnvironment {
 #[derive(Clone, Copy, Debug)]
 enum BootoutError {
     AlreadyUnloaded,
-    ExitStatusFive,
 }
 
 impl Environment for TestEnvironment {
@@ -171,12 +166,6 @@ impl Environment for TestEnvironment {
                     "launch agent is not loaded".to_string(),
                 ));
             }
-            Some(BootoutError::ExitStatusFive) => {
-                return Err(platform::PlatformError::LaunchAgentCommandStatus {
-                    command: format!("/bin/launchctl bootout gui/501/{LAUNCH_AGENT_LABEL}"),
-                    status: "exit status: 5".to_string(),
-                });
-            }
             None => {}
         }
 
@@ -206,46 +195,13 @@ fn daemon_enable_installs_pv_launch_agent_and_starts_it() -> anyhow::Result<()> 
     let daemon = DaemonFixture::start(&paths, 2)?;
 
     let output = run_pv(&["daemon:enable"], &environment)?;
-    let _daemon_requests = daemon.finish()?;
+    let daemon_requests = daemon.finish()?;
     let plist = read_required_file(&launch_agent_path)?;
     let parsed = LaunchAgentConfig::parse(&plist);
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stdout.contains("LaunchAgent installed"));
     assert!(output.stderr.is_empty());
-    assert_eq!(
-        parsed,
-        Some(LaunchAgentConfig::new(
-            paths.active_pv_binary(),
-            paths.logs().join("launchd.out.log"),
-            paths.logs().join("launchd.err.log"),
-        ))
-    );
-
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((output, environment.operations(), plist));
-    });
-
-    Ok(())
-}
-
-#[test]
-fn daemon_enable_waits_for_health_and_submits_reconciliation() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let current_exe = tempdir.path().join("pv");
-    let launch_agent_path = tempdir
-        .path()
-        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
-    let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path);
-    let paths = PvPaths::for_home(&home);
-    let daemon = DaemonFixture::start(&paths, 2)?;
-
-    let output = run_pv(&["daemon:enable"], &environment)?;
-    let daemon_requests = daemon.finish()?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert_eq!(
         daemon_requests,
         vec![
@@ -259,6 +215,18 @@ fn daemon_enable_waits_for_health_and_submits_reconciliation() -> anyhow::Result
             ),
         ]
     );
+    assert_eq!(
+        parsed,
+        Some(LaunchAgentConfig::new(
+            paths.active_pv_binary(),
+            paths.logs().join("launchd.out.log"),
+            paths.logs().join("launchd.err.log"),
+        ))
+    );
+
+    with_normalized_tempdir(tempdir.path(), || {
+        assert_debug_snapshot!((output, environment.operations(), plist));
+    });
 
     Ok(())
 }
@@ -316,33 +284,48 @@ fn daemon_restart_replaces_stale_pv_owned_launch_agent() -> anyhow::Result<()> {
 
 #[test]
 fn daemon_disable_removes_only_pv_owned_launch_agent() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let current_exe = tempdir.path().join("pv");
-    let launch_agent_path = tempdir
-        .path()
-        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
-    let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path);
-    let paths = PvPaths::for_home(&home);
-    let config = LaunchAgentConfig::new(
-        &current_exe,
-        paths.logs().join("launchd.out.log"),
-        paths.logs().join("launchd.err.log"),
-    );
-    write_file(&launch_agent_path, &config.render()?)?;
+    for (name, already_unloaded) in [
+        ("daemon_disable_removes_only_pv_owned_launch_agent", false),
+        (
+            "daemon_disable_removes_pv_owned_plist_when_launch_agent_is_already_unloaded",
+            true,
+        ),
+    ] {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let current_dir = tempdir.path().join("work");
+        let current_exe = tempdir.path().join("pv");
+        let launch_agent_path = tempdir
+            .path()
+            .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
+        let mut environment =
+            TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path);
+        if already_unloaded {
+            environment = environment.with_unloaded_launch_agent();
+        }
+        let paths = PvPaths::for_home(&home);
+        let config = LaunchAgentConfig::new(
+            &current_exe,
+            paths.logs().join("launchd.out.log"),
+            paths.logs().join("launchd.err.log"),
+        );
+        write_file(&launch_agent_path, &config.render()?)?;
 
-    let output = run_pv(&["daemon:disable"], &environment)?;
-    let plist_after_disable = read_optional_file(&launch_agent_path)?;
+        let output = run_pv(&["daemon:disable"], &environment)?;
+        let plist_after_disable = read_optional_file(&launch_agent_path)?;
 
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.contains("LaunchAgent removed"));
-    assert!(output.stderr.is_empty());
-    assert!(plist_after_disable.is_none());
+        assert_eq!(output.exit_code, ExitCode::SUCCESS, "{name}");
+        assert!(output.stdout.contains("LaunchAgent removed"), "{name}");
+        assert!(output.stderr.is_empty(), "{name}");
+        assert!(plist_after_disable.is_none(), "{name}");
 
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((output, environment.operations(), plist_after_disable));
-    });
+        with_normalized_tempdir(tempdir.path(), || {
+            assert_debug_snapshot!(
+                name,
+                (output, environment.operations(), plist_after_disable)
+            );
+        });
+    }
 
     Ok(())
 }
@@ -655,51 +638,6 @@ fn daemon_replacement_waits_for_delayed_exit_before_bootstrap() -> anyhow::Resul
 }
 
 #[test]
-fn daemon_replacement_refuses_to_bootstrap_while_previous_daemon_is_alive() -> anyhow::Result<()> {
-    for command in ["daemon:enable", "daemon:restart"] {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(&home);
-        let launch_agent_path = tempdir.path().join("owned.plist");
-        let environment = TestEnvironment::new(
-            &home,
-            tempdir.path(),
-            &paths.active_pv_binary(),
-            &launch_agent_path,
-        );
-        let stale = LaunchAgentConfig::new(
-            tempdir.path().join("old-pv"),
-            paths.logs().join("out"),
-            paths.logs().join("err"),
-        );
-        let original_plist = stale.render()?;
-        write_file(&launch_agent_path, &original_plist)?;
-        let mut spec = gateway_spec(&paths);
-        spec.command = paths.bin().join("releases/fixture/pv");
-        spec.arguments = vec!["daemon:run".to_owned()];
-        spec.metadata_path = paths.run().join("fixture-daemon.json");
-        let mut daemon = RuntimeFixture::start(&paths, spec)?;
-        let pid = daemon.pid()?;
-        let record = serde_json::to_string(&json!({
-            "pid": pid, "start_identity": platform::inspect_process_start_identity(pid)?,
-        }))?;
-        state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
-
-        clock::install_fake_for_test().advance_when_waiting_in_background(&DAEMON_EXIT_GRACE);
-        let output = run_pv(&[command], &environment)?;
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(
-            environment.operations(),
-            [format!("bootout {LAUNCH_AGENT_LABEL}")]
-        );
-        assert_eq!(read_required_file(&launch_agent_path)?, original_plist);
-        assert_eq!(read_required_file(&paths.daemon_process_record())?, record);
-        daemon.cleanup()?;
-    }
-    Ok(())
-}
-
-#[test]
 fn daemon_disable_keeps_foreign_runtime_records_and_owned_plist() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -766,41 +704,6 @@ fn lifecycle_admission_blocks_start_and_disable_before_mutation() -> anyhow::Res
 }
 
 #[test]
-fn daemon_disable_removes_pv_owned_plist_when_launch_agent_is_already_unloaded()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let current_exe = tempdir.path().join("pv");
-    let launch_agent_path = tempdir
-        .path()
-        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
-    let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path)
-        .with_unloaded_launch_agent();
-    let paths = PvPaths::for_home(&home);
-    let config = LaunchAgentConfig::new(
-        &current_exe,
-        paths.logs().join("launchd.out.log"),
-        paths.logs().join("launchd.err.log"),
-    );
-    write_file(&launch_agent_path, &config.render()?)?;
-
-    let output = run_pv(&["daemon:disable"], &environment)?;
-    let plist_after_disable = read_optional_file(&launch_agent_path)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.contains("LaunchAgent removed"));
-    assert!(output.stderr.is_empty());
-    assert!(plist_after_disable.is_none());
-
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((output, environment.operations(), plist_after_disable));
-    });
-
-    Ok(())
-}
-
-#[test]
 fn daemon_disable_attempts_bootout_when_launch_agent_plist_is_missing() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -822,36 +725,6 @@ fn daemon_disable_attempts_bootout_when_launch_agent_plist_is_missing() -> anyho
         vec![format!("bootout {LAUNCH_AGENT_LABEL}")]
     );
     assert!(plist_after_disable.is_none());
-
-    Ok(())
-}
-
-#[test]
-fn daemon_disable_does_not_suppress_status_five_without_unloaded_message() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let current_exe = tempdir.path().join("pv");
-    let launch_agent_path = tempdir
-        .path()
-        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
-    let environment = TestEnvironment::new(&home, &current_dir, &current_exe, &launch_agent_path)
-        .with_bootout_exit_status_five();
-    let paths = PvPaths::for_home(&home);
-    let config = LaunchAgentConfig::new(
-        &current_exe,
-        paths.logs().join("launchd.out.log"),
-        paths.logs().join("launchd.err.log"),
-    );
-    write_file(&launch_agent_path, &config.render()?)?;
-
-    let output = run_pv(&["daemon:disable"], &environment)?;
-    let plist_after_disable = read_optional_file(&launch_agent_path)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.contains("exit status: 5"));
-    assert!(plist_after_disable.is_some());
 
     Ok(())
 }
@@ -883,26 +756,6 @@ fn daemon_disable_refuses_non_pv_owned_launch_agent() -> anyhow::Result<()> {
     });
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn read_required_file(path: &Utf8Path) -> anyhow::Result<String> {

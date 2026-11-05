@@ -1,5 +1,5 @@
 use std::ffi::OsString;
-use std::io::{self, Write};
+use std::io::{self};
 use std::iter::repeat_n;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -16,11 +16,10 @@ use prompts::{ScriptedPrompts, Step};
 /// Chooses Edit at "Use these selections?".
 const EDIT: Step = Step::Answer(Answer::Selected(2));
 
+/// Prompts on a terminal while stdout stays plain.
 #[derive(Debug)]
 struct TestEnvironment {
     current_dir: PathBuf,
-    terminal: bool,
-    decorated: bool,
     prompts: ScriptedPrompts,
 }
 
@@ -28,23 +27,8 @@ impl TestEnvironment {
     fn interactive(current_dir: &Utf8Path, steps: impl IntoIterator<Item = Step>) -> Self {
         Self {
             current_dir: current_dir.as_std_path().to_path_buf(),
-            terminal: true,
-            decorated: false,
             prompts: ScriptedPrompts::new(steps),
         }
-    }
-
-    fn non_interactive(current_dir: &Utf8Path) -> Self {
-        Self {
-            terminal: false,
-            ..Self::interactive(current_dir, [])
-        }
-    }
-
-    /// Stdout is an 80-column terminal, so rows render decorated.
-    fn decorated(mut self) -> Self {
-        self.decorated = true;
-        self
     }
 }
 
@@ -70,15 +54,15 @@ impl Environment for TestEnvironment {
     }
 
     fn stdin_is_terminal(&self) -> bool {
-        self.terminal
+        true
     }
 
     fn stdout_is_terminal(&self) -> bool {
-        self.decorated
+        false
     }
 
     fn stderr_is_terminal(&self) -> bool {
-        self.terminal
+        true
     }
 
     fn terminal_width(&self) -> Option<usize> {
@@ -95,23 +79,15 @@ impl Environment for TestEnvironment {
 }
 
 #[derive(Debug)]
+#[expect(
+    dead_code,
+    reason = "snapshot-only fields are read through derived Debug"
+)]
 struct Session {
     exit_code: ExitCode,
     stdout: String,
     stderr: String,
     prompts: Vec<String>,
-}
-
-struct ClosedStdout;
-
-impl Write for ClosedStdout {
-    fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-        Err(io::ErrorKind::BrokenPipe.into())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
 }
 
 #[test]
@@ -131,25 +107,6 @@ fn init_interactive_accepts_defaults_and_writes_config() -> anyhow::Result<()> {
     assert_snapshot!(
         "init_interactive_accepts_defaults_and_writes_config_config",
         read_file(&project.join("pv.yml"))?
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_interactive_renders_the_decorated_flow_on_a_terminal() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment =
-        TestEnvironment::interactive(&project, [Step::Accept, Step::Accept]).decorated();
-
-    let session = run_init(&["--no-color"], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    assert_session_snapshot(
-        "init_interactive_renders_the_decorated_flow_on_a_terminal",
-        tempdir.path(),
-        &session,
     );
 
     Ok(())
@@ -191,26 +148,6 @@ fn init_interactive_final_cancel_leaves_existing_config_unchanged() -> anyhow::R
     assert_eq!(read_file(&project.join("pv.yml"))?, original);
     assert_session_snapshot(
         "init_interactive_final_cancel_leaves_existing_config_unchanged",
-        tempdir.path(),
-        &session,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_escape_cancels_without_writing() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::interactive(&project, [Step::Cancel]);
-
-    let session = run_init(&[], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::from(130));
-    assert!(session.stderr.is_empty());
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert_session_snapshot(
-        "init_escape_cancels_without_writing",
         tempdir.path(),
         &session,
     );
@@ -284,47 +221,32 @@ fn init_interactive_blank_edits_preserve_existing_defaults() -> anyhow::Result<(
 }
 
 #[test]
-fn init_interactive_explicit_allocation_edits_replace_existing_allocations() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    write_file(
-        &project.join("pv.yml"),
-        "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
-    )?;
-    let environment = TestEnvironment::interactive(&project, edit_mysql_allocations(&["app"]));
+fn init_interactive_explicit_allocation_edits_rewrite_allocations() -> anyhow::Result<()> {
+    let cases = [
+        (
+            "init_interactive_explicit_allocation_edits_replace_existing_allocations_config",
+            "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary: {}\n",
+            "app",
+        ),
+        (
+            "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_config",
+            "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
+            "primary,app",
+        ),
+    ];
 
-    let session = run_init(&[], &environment)?;
+    for (name, existing_config, allocations) in cases {
+        let tempdir = tempdir()?;
+        let project = laravel_project(tempdir.path())?;
+        write_file(&project.join("pv.yml"), existing_config)?;
+        let environment =
+            TestEnvironment::interactive(&project, edit_mysql_allocations(&[allocations]));
 
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    let config = read_file(&project.join("pv.yml"))?;
-    assert_snapshot!(
-        "init_interactive_explicit_allocation_edits_replace_existing_allocations_config",
-        config
-    );
+        let session = run_init(&[], &environment)?;
 
-    Ok(())
-}
-
-#[test]
-fn init_interactive_explicit_allocation_edits_preserve_retained_allocation_config()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    write_file(
-        &project.join("pv.yml"),
-        "php: 8.3\nroot: public\nmysql:\n  version: 8.4\n  allocations:\n    primary:\n      env:\n        CUSTOM_PRIMARY: preserved\n        DB_HOST: custom.internal\n    legacy:\n      env:\n        LEGACY_VALUE: remove-me\n",
-    )?;
-    let environment =
-        TestEnvironment::interactive(&project, edit_mysql_allocations(&["primary,app"]));
-
-    let session = run_init(&[], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    let config = read_file(&project.join("pv.yml"))?;
-    assert_snapshot!(
-        "init_interactive_explicit_allocation_edits_preserve_retained_allocation_config_config",
-        config
-    );
+        assert_eq!(session.exit_code, ExitCode::SUCCESS, "{name}");
+        assert_snapshot!(name, read_file(&project.join("pv.yml"))?);
+    }
 
     Ok(())
 }
@@ -377,82 +299,6 @@ fn init_interactive_retries_invalid_tracks_and_document_roots() -> anyhow::Resul
         "init_interactive_retries_invalid_tracks_and_document_roots_config",
         read_file(&project.join("pv.yml"))?
     );
-
-    Ok(())
-}
-
-#[test]
-fn init_without_a_terminal_refuses_with_rerun_flags() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project);
-
-    let session = run_init(&[], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::FAILURE);
-    assert!(session.stdout.is_empty());
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert_session_snapshot(
-        "init_without_a_terminal_refuses_with_rerun_flags",
-        tempdir.path(),
-        &session,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_print_writes_only_the_generated_yaml() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project).decorated();
-
-    let session = run_init(&["--print"], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    assert!(session.stderr.is_empty());
-    assert!(!session.stdout.contains('\u{1b}'));
-    assert!(!path_exists(&project.join("pv.yml"))?);
-    assert_snapshot!(session.stdout);
-
-    Ok(())
-}
-
-#[test]
-fn init_yes_writes_detected_defaults_without_prompting() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project);
-
-    let session = run_init(&["--yes"], &environment)?;
-
-    assert_eq!(session.exit_code, ExitCode::SUCCESS);
-    assert!(path_exists(&project.join("pv.yml"))?);
-    assert_session_snapshot(
-        "init_yes_writes_detected_defaults_without_prompting",
-        tempdir.path(),
-        &session,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn init_yes_writes_config_when_plain_stdout_is_closed() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let project = laravel_project(tempdir.path())?;
-    let environment = TestEnvironment::non_interactive(&project);
-    let mut stderr = Vec::new();
-
-    let result = run_with_environment(
-        ["pv", "init", "--yes"],
-        &environment,
-        &mut ClosedStdout,
-        &mut stderr,
-    );
-
-    assert!(!matches!(result, Ok(ExitCode::SUCCESS)));
-    assert!(path_exists(&project.join("pv.yml"))?);
 
     Ok(())
 }

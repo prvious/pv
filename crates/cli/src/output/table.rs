@@ -209,16 +209,6 @@ mod tests {
     }
 
     #[test]
-    fn decorated_tables_align_columns_when_they_fit() {
-        assert_snapshot!(render(&projects(), Surface::terminal(false, 120)), @"
-        PROJECT    MODE           PHP      STATUS     ENV       PATH
-        acme.test  served         8.5      ● ok       rendered  /Users/me/Code/acme
-        invoicer   resource-only  default  ○ unknown  warning   /Users/me/Code/clients/invoicer-platform
-           env: warning: APP_URL already exists outside the PV block
-        ");
-    }
-
-    #[test]
     fn decorated_tables_stack_records_when_columns_do_not_fit() {
         assert_snapshot!(render(&projects(), Surface::terminal(false, 80)), @"
         acme.test
@@ -278,7 +268,13 @@ mod tests {
     }
 
     #[test]
-    fn decorated_tables_measure_colored_cells_by_visible_width() {
+    fn decorated_tables_align_columns_by_visible_width() {
+        assert_snapshot!(render(&projects(), Surface::terminal(false, 120)), @"
+        PROJECT    MODE           PHP      STATUS     ENV       PATH
+        acme.test  served         8.5      ● ok       rendered  /Users/me/Code/acme
+        invoicer   resource-only  default  ○ unknown  warning   /Users/me/Code/clients/invoicer-platform
+           env: warning: APP_URL already exists outside the PV block
+        ");
         assert_snapshot!(render(&projects(), Surface::terminal(true, 120)), @"
         ␛[2mPROJECT␛[0m    ␛[2mMODE␛[0m           ␛[2mPHP␛[0m      ␛[2mSTATUS␛[0m     ␛[2mENV␛[0m       ␛[2mPATH␛[0m
         acme.test  served         8.5      ␛[32m●␛[0m ␛[32mok␛[0m       rendered  ␛[36m/Users/me/Code/acme␛[0m

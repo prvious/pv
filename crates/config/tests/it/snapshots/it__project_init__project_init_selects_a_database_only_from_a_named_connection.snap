@@ -1,0 +1,51 @@
+---
+source: crates/config/tests/it/project_init.rs
+expression: detections
+---
+[
+    (
+        "ambiguous",
+        Some(
+            (
+                false,
+                "No strong MySQL signal",
+            ),
+        ),
+        Some(
+            (
+                false,
+                "No strong Postgres signal",
+            ),
+        ),
+    ),
+    (
+        "postgres",
+        Some(
+            (
+                false,
+                "No strong MySQL signal",
+            ),
+        ),
+        Some(
+            (
+                true,
+                "Detected DB_CONNECTION=postgres",
+            ),
+        ),
+    ),
+    (
+        "pgsql",
+        Some(
+            (
+                false,
+                "No strong MySQL signal",
+            ),
+        ),
+        Some(
+            (
+                true,
+                "Detected DB_CONNECTION=pgsql",
+            ),
+        ),
+    ),
+]

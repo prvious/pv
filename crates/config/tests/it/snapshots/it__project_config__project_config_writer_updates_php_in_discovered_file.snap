@@ -8,14 +8,17 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
     ),
     true,
     ProjectConfig {
-        serve: true,
-        env_file: ".env",
+        serve: false,
+        env_file: ".env.local",
         php: Some(
             PhpConfig {
                 version: Some(
                     "8.4",
                 ),
-                extensions: [],
+                extensions: [
+                    "redis",
+                    "xdebug",
+                ],
             },
         ),
         root: Some(
@@ -26,7 +29,9 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
         },
         hooks: ProjectHooks {
             prepare: [],
-            setup: [],
+            setup: [
+                "php artisan migrate",
+            ],
         },
         resources: {
             "mysql": ResourceConfig {
@@ -54,14 +59,17 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
         },
     },
     ProjectConfig {
-        serve: true,
-        env_file: ".env",
+        serve: false,
+        env_file: ".env.local",
         php: Some(
             PhpConfig {
                 version: Some(
                     "8.4",
                 ),
-                extensions: [],
+                extensions: [
+                    "redis",
+                    "xdebug",
+                ],
             },
         ),
         root: Some(
@@ -72,7 +80,9 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
         },
         hooks: ProjectHooks {
             prepare: [],
-            setup: [],
+            setup: [
+                "php artisan migrate",
+            ],
         },
         resources: {
             "mysql": ResourceConfig {

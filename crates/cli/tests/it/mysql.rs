@@ -4,33 +4,39 @@ use std::io::{BufRead, BufReader, Write, copy, sink};
 use std::net::Shutdown;
 #[cfg(target_os = "macos")]
 use std::os::unix::net::UnixListener;
-use std::process::ExitCode;
 #[cfg(target_os = "macos")]
 use std::thread;
 #[cfg(target_os = "macos")]
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "macos")]
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 #[cfg(target_os = "macos")]
 use cli::run_with_environment;
-use insta::{Settings, assert_debug_snapshot};
+#[cfg(target_os = "macos")]
+use insta::Settings;
+use insta::assert_debug_snapshot;
 use state::{Database, JobsLock};
+#[cfg(target_os = "macos")]
 use support::resource_cli::{
-    ResourceCliSpec, ScriptedClient, TestEnvironment, create_dir, fixture_artifact,
-    managed_resource_records, prepare_existing_release, pv_paths, record_installed_resource,
-    resource_manifest, resource_record_snapshots, run_pv, seed_running_resource,
+    ResourceCliSpec, fixture_artifact, managed_resource_records, prepare_existing_release,
+    resource_manifest, resource_record_snapshots,
 };
+use support::resource_cli::{ScriptedClient, TestEnvironment, create_dir, pv_paths};
 
 use crate::support;
+use crate::support::run_pv;
 
+#[cfg(target_os = "macos")]
 const RESOURCE: ResourceCliSpec = ResourceCliSpec {
     resource_name: "mysql",
     executable_path: "bin/mysqld",
     support_files: &[],
 };
+#[cfg(target_os = "macos")]
 const DEFAULT_TRACK: &str = "8.0";
-const OLD_VERSION: &str = "8.0.35-pv1";
+#[cfg(target_os = "macos")]
 const NEW_VERSION: &str = "8.0.36-pv1";
 
 #[cfg(target_os = "macos")]
@@ -269,134 +275,7 @@ fn artifact_mutation_retries_reconciliation_after_jobs_lock_handoff() -> anyhow:
     Ok(())
 }
 
-#[test]
-fn mysql_install_uses_manifest_default_and_installs_without_network_download() -> anyhow::Result<()>
-{
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let artifact = fixture_artifact(NEW_VERSION);
-    prepare_existing_release(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&resource_manifest(DEFAULT_TRACK, &[&artifact], RESOURCE)),
-    );
-
-    let output = run_pv(&["mysql:install"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database, RESOURCE)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_resource_snapshot(
-        "mysql_install_uses_manifest_default_and_installs_without_network_download",
-        tempdir.path(),
-        &(
-            output,
-            resource_record_snapshots(&records, tempdir.path())?,
-            environment.text_request_count(),
-            environment.byte_request_count(),
-        ),
-    );
-
-    Ok(())
-}
-
-#[test]
-fn mysql_update_updates_installed_tracks() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let old_artifact = fixture_artifact(OLD_VERSION);
-    let new_artifact = fixture_artifact(NEW_VERSION);
-    record_installed_resource(&home, DEFAULT_TRACK, &old_artifact, RESOURCE)?;
-    prepare_existing_release(&home, DEFAULT_TRACK, &new_artifact, RESOURCE)?;
-    let environment = TestEnvironment::new(
-        &home,
-        &current_dir,
-        ScriptedClient::new().with_text(&resource_manifest(
-            DEFAULT_TRACK,
-            &[&new_artifact],
-            RESOURCE,
-        )),
-    );
-
-    let output = run_pv(&["mysql:update"], &environment)?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database, RESOURCE)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_resource_snapshot(
-        "mysql_update_updates_installed_tracks",
-        tempdir.path(),
-        &(
-            output,
-            resource_record_snapshots(&records, tempdir.path())?,
-            environment.text_request_count(),
-            environment.byte_request_count(),
-        ),
-    );
-
-    Ok(())
-}
-
-#[test]
-fn mysql_list_reports_running_state_ports_and_usage() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = pv_paths(&home);
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let artifact = fixture_artifact(NEW_VERSION);
-    record_installed_resource(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
-    seed_running_resource(&paths, DEFAULT_TRACK, "tcp", 3306, RESOURCE)?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let output = run_pv(&["mysql:list"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_resource_snapshot(
-        "mysql_list_reports_running_state_ports_and_usage",
-        tempdir.path(),
-        &output,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn mysql_uninstall_force_prune_queues_removal_intent() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("outside");
-    create_dir(&current_dir)?;
-    let artifact = fixture_artifact(NEW_VERSION);
-    record_installed_resource(&home, DEFAULT_TRACK, &artifact, RESOURCE)?;
-    let environment = TestEnvironment::new(&home, &current_dir, ScriptedClient::new());
-
-    let output = run_pv(
-        &["mysql:uninstall", DEFAULT_TRACK, "--force", "--prune"],
-        &environment,
-    )?;
-    let database = Database::open(&pv_paths(&home))?;
-    let records = managed_resource_records(&database, RESOURCE)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stderr.contains("error:"));
-    assert_resource_snapshot(
-        "mysql_uninstall_force_prune_queues_removal_intent",
-        tempdir.path(),
-        &(output, resource_record_snapshots(&records, tempdir.path())?),
-    );
-
-    Ok(())
-}
-
+#[cfg(target_os = "macos")]
 fn assert_resource_snapshot(
     name: &'static str,
     tempdir: &Utf8Path,

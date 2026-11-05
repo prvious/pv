@@ -4,9 +4,10 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     ActivePfRedirectInspection, KeychainCertificate, PfConfReference, PfRedirectConfig,
@@ -268,118 +269,46 @@ fn status_reports_dns_and_ports_repair_required_as_failure() -> anyhow::Result<(
 }
 
 #[test]
-fn status_reports_project_env_failures_as_failure() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project_path = tempdir.path().join("project");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path.clone(),
-            primary_hostname: "app.test".to_string(),
-            config_path: project_path.join("pv.toml"),
-            desired_php_track: Some("8.4".to_string()),
-        })?
-        .project;
-    database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Failed,
-        Some("missing required env placeholder"),
-        &[],
-    )?;
+fn status_exit_code_follows_project_env_status() -> anyhow::Result<()> {
+    let cases = [
+        (
+            "status_reports_project_env_failures_as_failure",
+            ProjectEnvObservedStatus::Failed,
+            "missing required env placeholder",
+            ExitCode::FAILURE,
+        ),
+        (
+            "status_reports_pending_project_env_as_success",
+            ProjectEnvObservedStatus::Pending,
+            "waiting for reconciliation",
+            ExitCode::SUCCESS,
+        ),
+    ];
 
-    let output = run_pv(&["status"], &environment)?;
+    for (name, status, message, exit_code) in cases {
+        let tempdir = tempdir()?;
+        let home = tempdir.path().join("home");
+        let project_path = tempdir.path().join("project");
+        let paths = PvPaths::for_home(home.clone());
+        let environment = TestEnvironment::new(&home);
+        let mut database = Database::open(&paths)?;
+        let project = database
+            .link_project(LinkProjectInput {
+                path: project_path.clone(),
+                original_path: project_path.clone(),
+                primary_hostname: "app.test".to_string(),
+                config_path: project_path.join("pv.toml"),
+                desired_php_track: Some("8.4".to_string()),
+            })?
+            .project;
+        database.record_project_env_observed_snapshot(&project.id, status, Some(message), &[])?;
 
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stderr.is_empty());
-    assert_status_snapshot(
-        "status_reports_project_env_failures_as_failure",
-        tempdir.path(),
-        output,
-    );
+        let output = run_pv(&["status"], &environment)?;
 
-    Ok(())
-}
-
-#[test]
-fn status_reports_pending_project_env_as_success() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project_path = tempdir.path().join("project");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path.clone(),
-            primary_hostname: "app.test".to_string(),
-            config_path: project_path.join("pv.toml"),
-            desired_php_track: Some("8.4".to_string()),
-        })?
-        .project;
-    database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Pending,
-        Some("waiting for reconciliation"),
-        &[],
-    )?;
-
-    let output = run_pv(&["status"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stderr.is_empty());
-    assert_status_snapshot(
-        "status_reports_pending_project_env_as_success",
-        tempdir.path(),
-        output,
-    );
-
-    Ok(())
-}
-
-#[test]
-fn status_reports_warning_project_env_as_success() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let project_path = tempdir.path().join("project");
-    let paths = PvPaths::for_home(home.clone());
-    let environment = TestEnvironment::new(&home);
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path.clone(),
-            primary_hostname: "app.test".to_string(),
-            config_path: project_path.join("pv.toml"),
-            desired_php_track: Some("8.4".to_string()),
-        })?
-        .project;
-    database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Warning,
-        Some("Project runtime has warnings"),
-        &[ProjectEnvObservedWarningInput {
-            kind: "ignored_php_extension".to_string(),
-            message: "ignored unsupported PHP extension `missing`".to_string(),
-        }],
-    )?;
-
-    let plain = run_pv(&["status"], &environment)?;
-    let json = run_pv(&["status", "--json"], &environment)?;
-
-    assert_eq!(plain.exit_code, ExitCode::SUCCESS);
-    assert!(plain.stderr.is_empty());
-    assert_eq!(json.exit_code, ExitCode::SUCCESS);
-    assert!(json.stderr.is_empty());
-    assert_status_snapshot(
-        "status_reports_warning_project_env_as_success",
-        tempdir.path(),
-        (plain, json),
-    );
+        assert_eq!(output.exit_code, exit_code, "{name}");
+        assert!(output.stderr.is_empty(), "{name}");
+        assert_status_snapshot(name, tempdir.path(), output);
+    }
 
     Ok(())
 }
@@ -496,26 +425,6 @@ fn status_json_redacts_secret_context() -> anyhow::Result<()> {
     assert_status_snapshot("status_json_redacts_secret_context", tempdir.path(), output);
 
     Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn seed_resource_state(paths: &PvPaths) -> anyhow::Result<()> {

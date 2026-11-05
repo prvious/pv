@@ -4,9 +4,10 @@ use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-use cli::{Environment, run_with_environment};
+use cli::Environment;
 use insta::assert_debug_snapshot;
 use platform::{
     KeychainCertificate, KeychainTrustResult, LocalCaMetadata, PlatformError, generate_local_ca,
@@ -181,7 +182,7 @@ fn ca_trust_reuses_existing_current_local_ca() -> anyhow::Result<()> {
 }
 
 #[test]
-fn ca_trust_on_a_terminal_reports_system_trust_state() -> anyhow::Result<()> {
+fn ca_trust_and_untrust_on_a_terminal_report_trust_state() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -199,11 +200,13 @@ fn ca_trust_on_a_terminal_reports_system_trust_state() -> anyhow::Result<()> {
 
     let current = run_pv(&["ca:trust", "--no-color"], &current_environment)?;
     let untrusted = run_pv(&["ca:trust", "--no-color"], &untrusted_environment)?;
+    let untrust = run_pv(&["ca:untrust", "--no-color"], &current_environment)?;
 
     assert_eq!(current.exit_code, ExitCode::SUCCESS);
     assert_eq!(untrusted.exit_code, ExitCode::SUCCESS);
+    assert_eq!(untrust.exit_code, ExitCode::SUCCESS);
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((current, untrusted));
+        assert_debug_snapshot!((current, untrusted, untrust));
     });
 
     Ok(())
@@ -313,7 +316,7 @@ fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::
 }
 
 #[test]
-fn ca_untrust_leaves_local_ca_files_and_removes_system_keychain_trust() -> anyhow::Result<()> {
+fn ca_untrust_removes_system_trust_and_keeps_local_ca_files() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let current_dir = tempdir.path().join("work");
@@ -321,99 +324,34 @@ fn ca_untrust_leaves_local_ca_files_and_removes_system_keychain_trust() -> anyho
     let generated = generate_local_ca()?;
     write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
     write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
-    let environment =
-        TestEnvironment::new(&home, &current_dir).with_certificate(KeychainCertificate {
-            metadata: generated.metadata.clone(),
-            trust: KeychainTrustResult::TrustRoot,
-        });
+    let trusted = TestEnvironment::new(&home, &current_dir).with_certificate(KeychainCertificate {
+        metadata: generated.metadata.clone(),
+        trust: KeychainTrustResult::TrustRoot,
+    });
+    let untrusted = TestEnvironment::new(&home, &current_dir);
 
-    let output = run_pv(&["ca:untrust"], &environment)?;
+    let removed = run_pv(&["ca:untrust"], &trusted)?;
+    let absent = run_pv(&["ca:untrust"], &untrusted)?;
 
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_no_privileged_guidance(&output.stdout);
-    assert!(read_optional_file(&paths.ca_certificate())?.is_some());
-    assert!(read_optional_file(&paths.ca_private_key())?.is_some());
-    assert!(environment.certificates.borrow().is_empty());
+    for output in [&removed, &absent] {
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert_no_privileged_guidance(&output.stdout);
+    }
+    assert_eq!(
+        read_required_file(&paths.ca_certificate())?,
+        generated.certificate_pem
+    );
+    assert_eq!(
+        read_required_file(&paths.ca_private_key())?,
+        generated.private_key_pem
+    );
+    assert!(trusted.certificates.borrow().is_empty());
 
     with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((output, environment.operations.borrow().clone()));
+        assert_debug_snapshot!((removed, trusted.operations.borrow().clone(), absent));
     });
 
     Ok(())
-}
-
-#[test]
-fn ca_untrust_on_a_terminal_reports_local_ca_state() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let paths = pv_paths(&home);
-    let generated = generate_local_ca()?;
-    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
-    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
-    let environment = TestEnvironment::new(&home, &current_dir)
-        .with_certificate(KeychainCertificate {
-            metadata: generated.metadata.clone(),
-            trust: KeychainTrustResult::TrustRoot,
-        })
-        .on_terminal(120);
-
-    let output = run_pv(&["ca:untrust", "--no-color"], &environment)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!(output);
-    });
-
-    Ok(())
-}
-
-#[test]
-fn ca_untrust_succeeds_when_system_trust_is_absent_and_preserves_local_ca_files()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let paths = pv_paths(&home);
-    let generated = generate_local_ca()?;
-    write_file(&paths.ca_certificate(), &generated.certificate_pem)?;
-    write_file(&paths.ca_private_key(), &generated.private_key_pem)?;
-    let environment = TestEnvironment::new(&home, &current_dir);
-
-    let output = run_pv(&["ca:untrust"], &environment)?;
-    let certificate_after = read_required_file(&paths.ca_certificate())?;
-    let private_key_after = read_required_file(&paths.ca_private_key())?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_no_privileged_guidance(&output.stdout);
-    assert_eq!(certificate_after, generated.certificate_pem);
-    assert_eq!(private_key_after, generated.private_key_pem);
-
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!(output);
-    });
-
-    Ok(())
-}
-
-#[derive(Debug)]
-struct RunOutput {
-    exit_code: ExitCode,
-    stdout: String,
-    stderr: String,
-}
-
-fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-    let mut stdout = Vec::new();
-    let mut stderr = Vec::new();
-    let args = std::iter::once("pv").chain(args.iter().copied());
-    let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-    Ok(RunOutput {
-        exit_code,
-        stdout: String::from_utf8(stdout)?,
-        stderr: String::from_utf8(stderr)?,
-    })
 }
 
 fn pv_paths(home: &Utf8Path) -> PvPaths {

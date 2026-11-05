@@ -935,6 +935,11 @@ mod tests {
             recent_errors: Vec::new(),
             log_directory: "/home/acme/.pv/logs".to_string(),
         };
+        // The heading pads the app version to the right edge.
+        let mut settings = insta::Settings::clone_current();
+        let version = env!("CARGO_PKG_VERSION").replace('.', r"\.");
+        settings.add_filter(&format!(" +v{version}"), " v<version>");
+        let _settings = settings.bind_to_scope();
         let mut bytes = Vec::new();
         snapshot.write(&mut Output::new(&mut bytes, Surface::terminal(false, 100)))?;
 

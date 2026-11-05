@@ -17,9 +17,10 @@ mod update_tests {
     use std::thread;
     use std::time::{Duration, Instant};
 
+    use crate::support::{RunOutput, run_pv};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
-    use cli::{Environment, run_with_environment};
+    use cli::Environment;
     use insta::{Settings, assert_debug_snapshot};
     use platform::{
         HELPER_PROTOCOL_VERSION, LAUNCH_AGENT_LABEL, LaunchAgentConfig, PRIVILEGED_HELPER_VERSION,
@@ -30,26 +31,14 @@ mod update_tests {
     use state::{AppReleaseLayout, PvPaths};
 
     const APP_MANIFEST_URL: &str = "https://updates.example.test/pv-app-manifest.json";
-    const APP_BINARY_URL: &str = "https://downloads.example.test/pv/0.3.0/pv-darwin-arm64";
-    const APP_BINARY: &[u8] = b"pv 0.3.0\n";
+    const APP_BINARY_URL: &str = "https://downloads.example.test/pv/99.0.0/pv-darwin-arm64";
+    const APP_BINARY: &[u8] = b"pv 99.0.0\n";
     const APP_BINARY_SHA256: &str =
-        "daa36b28494155c914f2745dcb1908b9e97f07f718313751c5c0be96f9c28b74";
+        "8ea25dd074960f84dcf50e5432a5953d5d8d907eb0cb2edf02a9757d3e02f24b";
     const HELPER_BINARY: &[u8] = b"pv helper 1.0.0\n";
     const HELPER_BINARY_SHA256: &str =
         "f15b9ec9f06fc9e7e92af6e7cdfe82ae574bdc11f09bf796e44280989b1378d2";
     const CURRENT_APP_VERSION: &str = env!("CARGO_PKG_VERSION");
-
-    struct ClosedStderr;
-
-    impl Write for ClosedStderr {
-        fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-            Err(io::ErrorKind::BrokenPipe.into())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
 
     struct TestEnvironment {
         home: PathBuf,
@@ -104,11 +93,6 @@ mod update_tests {
 
         fn execs(&self) -> Vec<(PathBuf, Vec<String>)> {
             self.execs.borrow().clone()
-        }
-
-        fn with_exec_error(self, error: io::Error) -> Self {
-            let _previous = self.exec_result.replace(Err(error));
-            self
         }
 
         fn with_unloaded_launch_agent(mut self) -> Self {
@@ -416,144 +400,144 @@ mod update_tests {
     }
 
     #[test]
-    fn update_check_reports_app_and_managed_resource_updates() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_update_check_response(
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                ),
-            ],
-        )?;
-        let environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
-
-        let output = run_pv(&["update", "--check"], &environment)?;
-
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
-        assert_update_snapshot(
-            "update_check_reports_app_and_managed_resource_updates",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_on_a_terminal_renders_status_rows() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_update_check_response(
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                ),
-            ],
-        )?;
-        let environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
-        environment.terminal_width.set(Some(100));
-
-        let output = run_pv(&["update", "--check", "--no-color"], &environment)?;
-
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
-        assert_update_snapshot("update_check_on_a_terminal_renders_status_rows", output);
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_reports_unavailable_app_version_on_both_surfaces() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let resource_status = managed_resource_update_check_response(
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-        );
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                resource_status.clone(),
-                health_response(),
-                resource_status,
-            ],
-        )?;
-        let mut manifest: serde_json::Value = serde_json::from_str(APP_MANIFEST)?;
-        if let Some(assets) = manifest["assets"].as_array_mut() {
+    fn update_check_reports_app_helper_and_managed_resource_states() -> anyhow::Result<()> {
+        let mut unavailable_app: serde_json::Value = serde_json::from_str(APP_MANIFEST)?;
+        if let Some(assets) = unavailable_app["assets"].as_array_mut() {
             assets.remove(0);
         }
-        let manifest = serde_json::to_string(&manifest)?;
-        let plain_environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
-        let plain = run_pv(&["update", "--check"], &plain_environment)?;
-        let terminal_environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
-        terminal_environment.terminal_width.set(Some(100));
-
-        let terminal = run_pv(&["update", "--check", "--no-color"], &terminal_environment)?;
-
-        daemon.join()?;
-        assert_eq!(plain.exit_code, ExitCode::SUCCESS);
-        assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
-        assert!(plain.stderr.is_empty());
-        assert!(terminal.stderr.is_empty());
-        assert_update_snapshot("update_check_reports_unavailable_app_version_plain", plain);
-        assert_update_snapshot(
-            "update_check_on_a_terminal_reports_unavailable_app_version",
-            terminal,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_on_a_terminal_reports_retained_helper_protocol() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_update_check_response(
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+        let unavailable_app = serde_json::to_string(&unavailable_app)?;
+        let older_app = app_manifest("0.1.0", &"a".repeat(64), 12_345_678);
+        let helper_protocol_change = app_manifest(CURRENT_APP_VERSION, &"a".repeat(64), 12_345_678)
+            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+            .replace(
+                &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
+                &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
+            )
+            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let update_available = || {
+            (
+                "update_available",
+                json!({"latest_artifact_version": "8.8.1-pv1"}),
+            )
+        };
+        // (snapshot, app manifest, redis status from the daemon, terminal)
+        let cases = [
+            (
+                "update_check_reports_app_and_managed_resource_updates",
+                APP_MANIFEST,
+                update_available(),
+                false,
+            ),
+            (
+                "update_check_on_a_terminal_renders_status_rows",
+                APP_MANIFEST,
+                update_available(),
+                true,
+            ),
+            (
+                "update_check_reports_unavailable_app_version_plain",
+                unavailable_app.as_str(),
+                update_available(),
+                false,
+            ),
+            (
+                "update_check_on_a_terminal_reports_unavailable_app_version",
+                unavailable_app.as_str(),
+                update_available(),
+                true,
+            ),
+            (
+                "update_check_on_a_terminal_reports_retained_helper_protocol",
+                older_app.as_str(),
+                update_available(),
+                true,
+            ),
+            (
+                "update_check_marks_helper_only_protocol_change_unavailable",
+                helper_protocol_change.as_str(),
+                update_available(),
+                false,
+            ),
+            (
+                "update_check_marks_helper_only_protocol_change_unavailable_terminal",
+                helper_protocol_change.as_str(),
+                update_available(),
+                true,
+            ),
+            (
+                "update_check_reports_current_managed_resource",
+                APP_MANIFEST,
+                ("current", json!({"latest_artifact_version": "8.8.0-pv1"})),
+                false,
+            ),
+            (
+                "update_check_reports_revoked_managed_resource",
+                APP_MANIFEST,
+                (
+                    "revoked",
+                    json!({
+                        "current_revocation": {
+                            "artifact_version": "8.8.0-pv1",
+                            "reason": "security vulnerability"
+                        },
+                        "latest_artifact_version": "8.8.1-pv1"
+                    }),
                 ),
-            ],
-        )?;
-        let manifest = app_manifest(
-            "0.1.0",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            12_345_678,
-        );
-        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
-            .with_helper_status("2.0.0", 2);
-        environment.terminal_width.set(Some(100));
+                false,
+            ),
+            (
+                "update_check_reports_blocked_managed_resource",
+                APP_MANIFEST,
+                (
+                    "blocked",
+                    json!({
+                        "blocked_by": {
+                            "minimum_pv_version": "0.5.0",
+                            "current_pv_version": "0.1.0"
+                        }
+                    }),
+                ),
+                false,
+            ),
+            (
+                "update_check_reports_unavailable_managed_resource",
+                APP_MANIFEST,
+                ("unavailable", json!({"reason": "no installable artifact"})),
+                false,
+            ),
+        ];
 
-        let output = run_pv(&["update", "--check", "--no-color"], &environment)?;
+        for (name, manifest, (status, extra), terminal) in cases {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            let daemon = FakeDaemon::start(
+                &paths,
+                vec![
+                    health_response(),
+                    managed_resource_status_response(
+                        status,
+                        paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
+                        extra,
+                    ),
+                ],
+            )?;
+            let environment =
+                TestEnvironment::new(&home, ScriptedClient::new().with_text(manifest));
+            let mut arguments = vec!["update", "--check"];
+            if terminal {
+                environment.terminal_width.set(Some(100));
+                arguments.push("--no-color");
+            }
 
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
-        assert_update_snapshot(
-            "update_check_on_a_terminal_reports_retained_helper_protocol",
-            output,
-        );
+            let output = run_pv(&arguments, &environment)?;
+
+            daemon.join()?;
+            assert_eq!(output.exit_code, ExitCode::SUCCESS, "{name}");
+            assert!(output.stderr.is_empty(), "{name}");
+            assert_update_snapshot(name, output);
+        }
 
         Ok(())
     }
@@ -590,60 +574,6 @@ mod update_tests {
     }
 
     #[test]
-    fn update_check_marks_helper_only_protocol_change_unavailable() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let resource_status = managed_resource_update_check_response(
-            paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-        );
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                resource_status.clone(),
-                health_response(),
-                resource_status,
-            ],
-        )?;
-        let manifest = app_manifest(
-            CURRENT_APP_VERSION,
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            12_345_678,
-        )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace(
-            &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
-            &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
-        )
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
-        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
-
-        let output = run_pv(&["update", "--check"], &environment)?;
-        let terminal_environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
-        terminal_environment.terminal_width.set(Some(100));
-        let terminal = run_pv(&["update", "--check", "--no-color"], &terminal_environment)?;
-
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(terminal.exit_code, ExitCode::SUCCESS);
-        assert!(output.stdout.contains("Privileged helper: unavailable"));
-        assert!(
-            output
-                .stdout
-                .contains("protocol change requires a matching PV application update")
-        );
-        assert_update_snapshot(
-            "update_check_marks_helper_only_protocol_change_unavailable_terminal",
-            terminal,
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn update_check_reports_missing_daemon_before_fetching_manifests() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
@@ -659,278 +589,116 @@ mod update_tests {
     }
 
     #[test]
-    fn update_check_reports_daemon_rejected() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                json!({
-                    "type": "response",
-                    "protocol_version": daemon::PROTOCOL_VERSION,
-                    "status": "error",
-                    "message": "update in progress"
+    fn update_check_reports_daemon_and_app_manifest_failures() -> anyhow::Result<()> {
+        let daemon_rejected = json!({
+            "type": "response",
+            "protocol_version": daemon::PROTOCOL_VERSION,
+            "status": "error",
+            "message": "update in progress"
+        });
+        let cases = [
+            (
+                "update_check_reports_daemon_rejected",
+                vec![health_response(), daemon_rejected],
+                ScriptedClient::new().with_text(APP_MANIFEST),
+            ),
+            (
+                "update_check_reports_app_manifest_parse_failure",
+                vec![health_response()],
+                ScriptedClient::new().with_text("not json"),
+            ),
+            (
+                "update_check_reports_app_manifest_network_failure",
+                vec![health_response()],
+                ScriptedClient::new().with_error(ResourcesError::HttpRequestFailed {
+                    url: APP_MANIFEST_URL.to_string(),
+                    reason: "network error".to_string(),
                 }),
-            ],
-        )?;
-        let environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
+            ),
+        ];
 
-        let output = run_pv(&["update", "--check"], &environment)?;
+        for (name, daemon_responses, client) in cases {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            let daemon = FakeDaemon::start(&paths, daemon_responses)?;
+            let environment = TestEnvironment::new(&home, client);
 
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(output.stdout.is_empty());
-        assert_debug_snapshot!(output);
+            let output = run_pv(&["update", "--check"], &environment)?;
 
-        Ok(())
-    }
+            daemon.join()?;
+            assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+            assert!(output.stdout.is_empty(), "{name}");
+            assert_debug_snapshot!(name, output);
+        }
 
-    #[test]
-    fn update_check_reports_app_manifest_parse_failure() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text("not json"));
-
-        let output = run_pv(&["update", "--check"], &environment)?;
-
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(output.stdout.is_empty());
-        assert_debug_snapshot!(output);
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_reports_app_manifest_network_failure() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new().with_error(ResourcesError::HttpRequestFailed {
-                url: APP_MANIFEST_URL.to_string(),
-                reason: "network error".to_string(),
-            }),
-        );
-
-        let output = run_pv(&["update", "--check"], &environment)?;
-
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(output.stdout.is_empty());
-        assert_debug_snapshot!(output);
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_reports_current_managed_resource() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_status_response(
-                    "current",
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                    json!({"latest_artifact_version": "8.8.0-pv1"}),
-                ),
-            ],
-        )?;
-        let environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
-        let output = run_pv(&["update", "--check"], &environment)?;
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_update_snapshot("update_check_reports_current_managed_resource", output);
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_reports_revoked_managed_resource() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_status_response(
-                    "revoked",
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                    json!({
-                        "current_revocation": {
-                            "artifact_version": "8.8.0-pv1",
-                            "reason": "security vulnerability"
-                        },
-                        "latest_artifact_version": "8.8.1-pv1"
-                    }),
-                ),
-            ],
-        )?;
-        let environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
-        let output = run_pv(&["update", "--check"], &environment)?;
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_update_snapshot("update_check_reports_revoked_managed_resource", output);
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_reports_blocked_managed_resource() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_status_response(
-                    "blocked",
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                    json!({
-                        "blocked_by": {
-                            "minimum_pv_version": "0.5.0",
-                            "current_pv_version": "0.1.0"
-                        }
-                    }),
-                ),
-            ],
-        )?;
-        let environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
-        let output = run_pv(&["update", "--check"], &environment)?;
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_update_snapshot("update_check_reports_blocked_managed_resource", output);
-        Ok(())
-    }
-
-    #[test]
-    fn update_check_reports_unavailable_managed_resource() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                health_response(),
-                managed_resource_status_response(
-                    "unavailable",
-                    paths.resources().join("redis/8.8/releases/8.8.0-pv1"),
-                    json!({"reason": "no installable artifact"}),
-                ),
-            ],
-        )?;
-        let environment =
-            TestEnvironment::new(&home, ScriptedClient::new().with_text(APP_MANIFEST));
-        let output = run_pv(&["update", "--check"], &environment)?;
-        daemon.join()?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_update_snapshot("update_check_reports_unavailable_managed_resource", output);
         Ok(())
     }
 
     #[test]
     fn update_reports_current_app_without_restarting_daemon() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start_with_response_lines(
-            &paths,
-            vec![vec![
-                job_accepted_response("job_1"),
-                job_completed("job_1", "current"),
-            ]],
-        )?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new().with_text(&app_manifest(
-                CURRENT_APP_VERSION,
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                12_345_678,
-            )),
-        );
+        for (name, terminal, job_summary) in [
+            (
+                "update_reports_current_app_without_restarting_daemon",
+                false,
+                "current",
+            ),
+            (
+                "update_on_a_terminal_renders_a_flow",
+                true,
+                "updated 2 artifact(s); reconciled: system ok",
+            ),
+        ] {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            let layout = install_current_release(&paths)?;
+            write_launch_agent(&paths, &paths.active_pv_binary())?;
+            let daemon = FakeDaemon::start_with_response_lines(
+                &paths,
+                vec![vec![
+                    job_accepted_response("job_1"),
+                    job_completed("job_1", job_summary),
+                ]],
+            )?;
+            let environment = TestEnvironment::new(
+                &home,
+                ScriptedClient::new().with_text(&app_manifest(
+                    CURRENT_APP_VERSION,
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    12_345_678,
+                )),
+            );
+            let mut arguments = vec!["update"];
+            if terminal {
+                environment.terminal_width.set(Some(100));
+                arguments.push("--no-color");
+            }
 
-        let output = run_pv(&["update"], &environment)?;
-        let daemon_requests = daemon.join()?;
+            let output = run_pv(&arguments, &environment)?;
+            let daemon_requests = daemon.join()?;
 
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(!output.stderr.contains("error:"));
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert_eq!(
-            daemon_requests,
-            vec![json!({
-                "protocol_version": daemon::PROTOCOL_VERSION,
-                "command": "run_job",
-                "kind": "update",
-                "scope": "system",
-            })]
-        );
-        assert!(environment.operations().is_empty());
-        assert!(environment.execs().is_empty());
-        assert_update_snapshot(
-            "update_reports_current_app_without_restarting_daemon",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_on_a_terminal_renders_a_flow() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start_with_response_lines(
-            &paths,
-            vec![vec![
-                job_accepted_response("job_1"),
-                job_completed("job_1", "updated 2 artifact(s); reconciled: system ok"),
-            ]],
-        )?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new().with_text(&app_manifest(
-                CURRENT_APP_VERSION,
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                12_345_678,
-            )),
-        );
-        environment.terminal_width.set(Some(100));
-
-        let output = run_pv(&["update", "--no-color"], &environment)?;
-        daemon.join()?;
-
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(!output.stderr.contains("error:"));
-        assert_update_snapshot("update_on_a_terminal_renders_a_flow", output);
+            assert_eq!(output.exit_code, ExitCode::SUCCESS, "{name}");
+            assert!(!output.stderr.contains("error:"), "{name}");
+            assert_eq!(
+                layout.active_release()?,
+                Some(CURRENT_APP_VERSION.to_string())
+            );
+            assert_eq!(
+                daemon_requests,
+                vec![json!({
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "command": "run_job",
+                    "kind": "update",
+                    "scope": "system",
+                })]
+            );
+            assert!(environment.operations().is_empty(), "{name}");
+            assert!(environment.execs().is_empty(), "{name}");
+            assert_update_snapshot(name, output);
+        }
 
         Ok(())
     }
@@ -1032,82 +800,51 @@ mod update_tests {
     }
 
     #[test]
-    fn update_rejects_registered_helper_identity_that_cannot_be_rolled_back() -> anyhow::Result<()>
-    {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let manifest = helper_only_update_manifest();
-        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
-            .with_helper_status("0.9.0", platform::HELPER_PROTOCOL_VERSION);
+    fn update_rejects_a_helper_it_could_not_roll_back_to() -> anyhow::Result<()> {
+        type Prepare = fn(&PvPaths, TestEnvironment) -> anyhow::Result<TestEnvironment>;
+        let cases: [(&'static str, Prepare); 3] = [
+            (
+                "update_rejects_protocol_mismatched_helper_that_cannot_be_rolled_back",
+                |_paths, environment| Ok(environment.with_helper_protocol_mismatch()),
+            ),
+            (
+                "update_rejects_registered_helper_identity_that_cannot_be_rolled_back",
+                |_paths, environment| {
+                    Ok(environment.with_helper_status("0.9.0", platform::HELPER_PROTOCOL_VERSION))
+                },
+            ),
+            (
+                "update_rejects_corrupt_release_helper_without_leaving_a_rollback_candidate",
+                |paths, environment| {
+                    write_bytes(
+                        &paths.app_release_helper(CURRENT_APP_VERSION),
+                        b"corrupt helper\n",
+                    )?;
+                    Ok(environment)
+                },
+            ),
+        ];
 
-        let output = run_pv(&["update"], &environment)?;
+        for (name, prepare) in cases {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            install_current_release(&paths)?;
+            write_launch_agent(&paths, &paths.active_pv_binary())?;
+            let manifest = helper_only_update_manifest();
+            let environment = prepare(
+                &paths,
+                TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest)),
+            )?;
 
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(environment.operations().is_empty());
-        assert!(update_temporary_files(&paths)?.is_empty());
-        assert_update_snapshot(
-            "update_rejects_registered_helper_identity_that_cannot_be_rolled_back",
-            output,
-        );
+            let output = run_pv(&["update"], &environment)?;
 
-        Ok(())
-    }
-
-    #[test]
-    fn update_rejects_protocol_mismatched_helper_that_cannot_be_rolled_back() -> anyhow::Result<()>
-    {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let manifest = helper_only_update_manifest();
-        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
-            .with_helper_protocol_mismatch();
-
-        let output = run_pv(&["update"], &environment)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(environment.operations().is_empty());
-        assert!(update_temporary_files(&paths)?.is_empty());
-        assert_update_snapshot(
-            "update_rejects_protocol_mismatched_helper_that_cannot_be_rolled_back",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_rejects_corrupt_release_helper_without_leaving_a_rollback_candidate()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        write_bytes(
-            &paths.app_release_helper(CURRENT_APP_VERSION),
-            b"corrupt helper\n",
-        )?;
-        let manifest = helper_only_update_manifest();
-        let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
-
-        let output = run_pv(&["update"], &environment)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(environment.operations().is_empty());
-        assert!(update_temporary_files(&paths)?.is_empty());
-        assert_update_snapshot(
-            "update_rejects_corrupt_release_helper_without_leaving_a_rollback_candidate",
-            output,
-        );
+            assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+            assert!(environment.operations().is_empty(), "{name}");
+            assert!(update_temporary_files(&paths)?.is_empty(), "{name}");
+            assert_update_snapshot(name, output);
+        }
 
         Ok(())
     }
@@ -1308,7 +1045,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1324,7 +1061,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_eq!(environment.operations(), ["remove helper"]);
         assert!(output.stderr.contains("authentication cancelled"));
@@ -1335,69 +1072,97 @@ mod update_tests {
     #[test]
     fn update_downloads_and_activates_new_app_then_reexecs_managed_resource_continuation()
     -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
-                .with_download(APP_BINARY),
-        );
+        // (snapshot, terminal, LaunchAgent still names an old binary)
+        for (name, terminal, stale_launch_agent) in [
+            (
+                "update_downloads_and_activates_new_app_then_reexecs_managed_resource_continuation",
+                false,
+                false,
+            ),
+            (
+                "update_on_a_terminal_forwards_no_color_to_the_continuation",
+                true,
+                false,
+            ),
+            (
+                "update_reloads_stale_launch_agent_before_restarting_updated_app",
+                false,
+                true,
+            ),
+        ] {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            let layout = install_current_release(&paths)?;
+            let launch_agent_program = if stale_launch_agent {
+                tempdir.path().join("old-pv")
+            } else {
+                paths.active_pv_binary()
+            };
+            write_launch_agent(&paths, &launch_agent_program)?;
+            let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
+            let environment = TestEnvironment::new(
+                &home,
+                ScriptedClient::new()
+                    .with_text(&app_manifest(
+                        "99.0.0",
+                        APP_BINARY_SHA256,
+                        u64::try_from(APP_BINARY.len())?,
+                    ))
+                    .with_download(APP_BINARY),
+            );
+            let mut arguments = vec!["update"];
+            let mut continuation = vec!["internal:update-managed-resources".to_string()];
+            if terminal {
+                environment.terminal_width.set(Some(100));
+                arguments.push("--no-color");
+                continuation.push("--no-color".to_string());
+            }
 
-        let output = run_pv(&["update"], &environment)?;
-        let daemon_requests = if output.exit_code == ExitCode::SUCCESS {
-            daemon.join()?
-        } else {
-            Vec::new()
-        };
-        let mut releases = state::fs::read_dir_paths(&paths.app_releases_dir())?
-            .into_iter()
-            .map(|path| path.file_name().unwrap_or("").to_string())
-            .collect::<Vec<_>>();
-        releases.sort();
+            let output = run_pv(&arguments, &environment)?;
+            let daemon_requests = if output.exit_code == ExitCode::SUCCESS {
+                daemon.join()?
+            } else {
+                Vec::new()
+            };
+            let mut releases = state::fs::read_dir_paths(&paths.app_releases_dir())?
+                .into_iter()
+                .map(|path| path.file_name().unwrap_or("").to_string())
+                .collect::<Vec<_>>();
+            releases.sort();
 
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert_eq!(
-            state::fs::read_to_string(&paths.app_release_binary("0.3.0"))?,
-            "pv 0.3.0\n"
-        );
-        assert_eq!(
-            daemon_requests,
-            vec![json!({
-                "protocol_version": daemon::PROTOCOL_VERSION,
-                "command": "health"
-            })]
-        );
-        assert_eq!(
-            environment.operations(),
-            vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
-            ]
-        );
-        assert_eq!(
-            environment.execs(),
-            vec![(
-                paths.active_pv_binary().as_std_path().to_path_buf(),
-                vec!["internal:update-managed-resources".to_string()]
-            )]
-        );
-        assert_update_snapshot(
-            "update_downloads_and_activates_new_app_then_reexecs_managed_resource_continuation",
-            (output, releases),
-        );
+            assert_eq!(output.exit_code, ExitCode::SUCCESS, "{name}");
+            assert!(output.stderr.is_empty(), "{name}");
+            assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
+            assert_eq!(
+                state::fs::read_to_string(&paths.app_release_binary("99.0.0"))?,
+                "pv 99.0.0\n"
+            );
+            assert_eq!(
+                daemon_requests,
+                vec![json!({
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "command": "health"
+                })]
+            );
+            assert_eq!(
+                environment.operations(),
+                vec![
+                    format!("bootout {LAUNCH_AGENT_LABEL}"),
+                    format!("bootstrap {}", launch_agent_path(&paths)),
+                    format!("kickstart {LAUNCH_AGENT_LABEL}"),
+                ]
+            );
+            assert_eq!(
+                environment.execs(),
+                vec![(
+                    paths.active_pv_binary().as_std_path().to_path_buf(),
+                    continuation
+                )]
+            );
+            assert_update_snapshot(name, (output, releases));
+        }
 
         Ok(())
     }
@@ -1411,13 +1176,17 @@ mod update_tests {
         let layout = install_current_release(&paths)?;
         write_launch_agent(&paths, &paths.active_pv_binary())?;
         let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace(
-                &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
-                &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
-            )
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace(
+            &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
+            &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
+        )
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -1429,15 +1198,15 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
-            state::fs::read_to_string(&paths.app_release_helper("0.3.0"))?,
+            state::fs::read_to_string(&paths.app_release_helper("99.0.0"))?,
             String::from_utf8(HELPER_BINARY.to_vec())?
         );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state::fs::read_to_string(
                 &paths
-                    .app_release_helper("0.3.0")
+                    .app_release_helper("99.0.0")
                     .with_file_name("pv-helper.json")
             )?)?,
             json!({
@@ -1451,7 +1220,7 @@ mod update_tests {
             vec![
                 format!(
                     "install helper {} sha256 {HELPER_BINARY_SHA256}",
-                    paths.app_release_helper("0.3.0")
+                    paths.app_release_helper("99.0.0")
                 ),
                 format!("bootout {LAUNCH_AGENT_LABEL}"),
                 format!("bootstrap {}", launch_agent_path(&paths)),
@@ -1474,256 +1243,58 @@ mod update_tests {
     }
 
     #[test]
-    fn update_reexecs_after_helper_cleanup_warning_cannot_be_written() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace(
-                &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
-                &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
-            )
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&manifest)
-                .with_download(APP_BINARY),
-        )
-        .with_helper_rollback_cleanup_warning("helper transaction cleanup failed");
-
-        let mut stdout = Vec::new();
-        let exit_code = run_with_environment(
-            ["pv", "update"],
-            &environment,
-            &mut stdout,
-            &mut ClosedStderr,
-        )?;
-        let _requests = daemon.join()?;
-
-        assert_eq!(exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert_eq!(
-            environment.execs(),
-            vec![(
-                paths.active_pv_binary().as_std_path().to_path_buf(),
-                vec!["internal:update-managed-resources".to_string()]
-            )]
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn internal_managed_resource_continuation_skips_app_phase_and_submits_update_job()
     -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start_with_response_lines(
-            &paths,
-            vec![vec![
-                job_accepted_response("job_1"),
-                job_completed(
-                    "job_1",
-                    "updated 2 artifact(s); reconciled: Gateway runtime skipped",
-                ),
-            ]],
-        )?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
+        for (name, terminal) in [
+            (
+                "internal_managed_resource_continuation_skips_app_phase_and_submits_update_job",
+                false,
+            ),
+            (
+                "internal_managed_resource_continuation_on_a_terminal_resumes_the_flow",
+                true,
+            ),
+        ] {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            install_current_release(&paths)?;
+            write_launch_agent(&paths, &paths.active_pv_binary())?;
+            let daemon = FakeDaemon::start_with_response_lines(
+                &paths,
+                vec![vec![
+                    job_accepted_response("job_1"),
+                    job_completed(
+                        "job_1",
+                        "updated 2 artifact(s); reconciled: Gateway runtime skipped",
+                    ),
+                ]],
+            )?;
+            let environment = TestEnvironment::new(&home, PanickingClient);
+            let mut arguments = vec!["internal:update-managed-resources"];
+            if terminal {
+                environment.terminal_width.set(Some(100));
+                arguments.push("--no-color");
+            }
 
-        let output = run_pv(&["internal:update-managed-resources"], &environment)?;
-        let daemon_requests = daemon.join()?;
+            let output = run_pv(&arguments, &environment)?;
+            let daemon_requests = daemon.join()?;
 
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(!output.stderr.contains("error:"));
-        assert_eq!(
-            daemon_requests,
-            vec![json!({
-                "protocol_version": daemon::PROTOCOL_VERSION,
-                "command": "run_job",
-                "kind": "update",
-                "scope": "system",
-            })]
-        );
-        assert!(environment.operations().is_empty());
-        assert_update_snapshot(
-            "internal_managed_resource_continuation_skips_app_phase_and_submits_update_job",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_on_a_terminal_forwards_no_color_to_the_continuation() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
-                .with_download(APP_BINARY),
-        );
-        environment.terminal_width.set(Some(100));
-
-        let output = run_pv(&["update", "--no-color"], &environment)?;
-        daemon.join()?;
-
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(
-            environment.execs(),
-            vec![(
-                paths.active_pv_binary().as_std_path().to_path_buf(),
-                vec![
-                    "internal:update-managed-resources".to_string(),
-                    "--no-color".to_string(),
-                ]
-            )]
-        );
-        assert_update_snapshot(
-            "update_on_a_terminal_forwards_no_color_to_the_continuation",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn internal_managed_resource_continuation_on_a_terminal_resumes_the_flow() -> anyhow::Result<()>
-    {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start_with_response_lines(
-            &paths,
-            vec![vec![
-                job_accepted_response("job_1"),
-                job_completed(
-                    "job_1",
-                    "updated 2 artifact(s); reconciled: Gateway runtime skipped",
-                ),
-            ]],
-        )?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
-        environment.terminal_width.set(Some(100));
-
-        let output = run_pv(
-            &["internal:update-managed-resources", "--no-color"],
-            &environment,
-        )?;
-        daemon.join()?;
-
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_update_snapshot(
-            "internal_managed_resource_continuation_on_a_terminal_resumes_the_flow",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_reports_reexec_failure_without_rolling_back_updated_app() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
-                .with_download(APP_BINARY),
-        )
-        .with_exec_error(io::Error::other("exec failed"));
-
-        let output = run_pv(&["update"], &environment)?;
-        let daemon_requests = daemon.join()?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert_eq!(
-            daemon_requests,
-            vec![json!({
-                "protocol_version": daemon::PROTOCOL_VERSION,
-                "command": "health"
-            })]
-        );
-        assert_eq!(
-            environment.execs(),
-            vec![(
-                paths.active_pv_binary().as_std_path().to_path_buf(),
-                vec!["internal:update-managed-resources".to_string()]
-            )]
-        );
-        assert_update_snapshot(
-            "update_reports_reexec_failure_without_rolling_back_updated_app",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_reloads_stale_launch_agent_before_restarting_updated_app() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &tempdir.path().join("old-pv"))?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
-                .with_download(APP_BINARY),
-        );
-
-        let output = run_pv(&["update"], &environment)?;
-        let _daemon_requests = daemon.join()?;
-
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert_eq!(
-            environment.operations(),
-            vec![
-                format!("bootout {LAUNCH_AGENT_LABEL}"),
-                format!("bootstrap {}", launch_agent_path(&paths)),
-                format!("kickstart {LAUNCH_AGENT_LABEL}"),
-            ]
-        );
+            assert_eq!(output.exit_code, ExitCode::SUCCESS, "{name}");
+            assert!(!output.stderr.contains("error:"), "{name}");
+            assert_eq!(
+                daemon_requests,
+                vec![json!({
+                    "protocol_version": daemon::PROTOCOL_VERSION,
+                    "command": "run_job",
+                    "kind": "update",
+                    "scope": "system",
+                })]
+            );
+            assert!(environment.operations().is_empty(), "{name}");
+            assert_update_snapshot(name, output);
+        }
 
         Ok(())
     }
@@ -1741,7 +1312,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1753,7 +1324,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -1780,7 +1351,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -1794,7 +1365,7 @@ mod update_tests {
         let jobs_lock = state::JobsLock::acquire(&paths);
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -1876,65 +1447,56 @@ mod update_tests {
     }
 
     #[test]
-    fn update_rejects_concurrent_update_lock_before_fetching_manifest() -> anyhow::Result<()> {
+    fn update_commands_reject_held_locks_before_any_work() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let home = tempdir.path().join("home");
         let paths = PvPaths::for_home(home.clone());
         state::fs::ensure_layout(&paths)?;
-        let _update_lock = state::UpdateLock::acquire(&paths)?;
         let environment = TestEnvironment::new(&home, PanickingClient);
 
-        let output = run_pv(&["update"], &environment)?;
+        let update_lock = state::UpdateLock::acquire(&paths)?;
+        for (name, arguments) in [
+            (
+                "update_rejects_concurrent_update_lock_before_fetching_manifest",
+                &["update"][..],
+            ),
+            (
+                "update_check_rejects_update_lock_before_daemon_or_manifest",
+                &["update", "--check"][..],
+            ),
+            (
+                "internal_managed_resource_continuation_rejects_update_lock_before_daemon",
+                &["internal:update-managed-resources"][..],
+            ),
+        ] {
+            let output = run_pv(arguments, &environment)?;
 
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(output.stdout, "PV update\n");
-        assert!(output.stderr.contains(paths.update_lock().as_str()));
-        assert_update_snapshot(
-            "update_rejects_concurrent_update_lock_before_fetching_manifest",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_on_a_terminal_closes_the_flow_when_it_stops() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let _update_lock = state::UpdateLock::acquire(&paths)?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
+            assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+            assert!(
+                output.stderr.contains(paths.update_lock().as_str()),
+                "{name}"
+            );
+            assert_update_snapshot(name, output);
+        }
         environment.terminal_width.set(Some(100));
+        let terminal = run_pv(&["update", "--no-color"], &environment)?;
+        environment.terminal_width.set(None);
+        drop(update_lock);
 
-        let output = run_pv(&["update", "--no-color"], &environment)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
+        assert_eq!(terminal.exit_code, ExitCode::FAILURE);
         assert_eq!(
-            output.stdout,
+            terminal.stdout,
             "[pv] update\n\n┌  PV update\n│\n└  ✗ PV update stopped\n"
         );
-        assert!(output.stderr.contains(paths.update_lock().as_str()));
 
-        Ok(())
-    }
-
-    #[test]
-    fn update_rejects_concurrent_jobs_lock_before_fetching_manifest() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let _jobs_lock = state::JobsLock::acquire(&paths)?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
-
+        let jobs_lock = state::JobsLock::acquire(&paths)?;
         let output = run_pv(&["update"], &environment)?;
-        let update_lock = state::UpdateLock::acquire(&paths)?;
+        // The refused update released its own update lock.
+        drop(state::UpdateLock::acquire(&paths)?);
+        drop(jobs_lock);
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(output.stdout, "PV update\n");
         assert!(output.stderr.contains(paths.jobs_lock().as_str()));
-        drop(update_lock);
         assert_update_snapshot(
             "update_rejects_concurrent_jobs_lock_before_fetching_manifest",
             output,
@@ -1944,214 +1506,61 @@ mod update_tests {
     }
 
     #[test]
-    fn update_check_rejects_update_lock_before_daemon_or_manifest() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let _update_lock = state::UpdateLock::acquire(&paths)?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
+    fn update_download_failures_leave_active_release_untouched() -> anyhow::Result<()> {
+        let size = u64::try_from(APP_BINARY.len())?;
+        let with_newer_helper = |sha256: &str| {
+            app_manifest("99.0.0", sha256, size)
+                .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+                .replace("pv-helper-2.0.0", "pv-helper-2.1.0")
+        };
+        let cases = [
+            (
+                "update_checksum_mismatch_leaves_active_release_untouched",
+                ScriptedClient::new()
+                    .with_text(&with_newer_helper(&"a".repeat(64)))
+                    .with_download(APP_BINARY),
+            ),
+            (
+                "update_download_failure_removes_temporary_download",
+                ScriptedClient::new()
+                    .with_text(&with_newer_helper(APP_BINARY_SHA256))
+                    .with_download_error(ResourcesError::HttpRequestFailed {
+                        url: APP_BINARY_URL.to_string(),
+                        reason: "connection reset".to_string(),
+                    }),
+            ),
+            (
+                "update_size_mismatch_leaves_active_release_untouched",
+                ScriptedClient::new()
+                    .with_text(&app_manifest("99.0.0", APP_BINARY_SHA256, 999))
+                    .with_download(APP_BINARY),
+            ),
+        ];
 
-        let output = run_pv(&["update", "--check"], &environment)?;
+        for (name, client) in cases {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            let layout = install_current_release(&paths)?;
+            write_launch_agent(&paths, &paths.active_pv_binary())?;
+            let environment = TestEnvironment::new(&home, client);
 
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.contains(paths.update_lock().as_str()));
-        assert_update_snapshot(
-            "update_check_rejects_update_lock_before_daemon_or_manifest",
-            output,
-        );
+            let output = run_pv(&["update"], &environment)?;
+            let temporary_downloads = update_temporary_files(&paths)?;
 
-        Ok(())
-    }
-
-    #[test]
-    fn internal_managed_resource_continuation_rejects_update_lock_before_daemon()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let _update_lock = state::UpdateLock::acquire(&paths)?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
-
-        let output = run_pv(&["internal:update-managed-resources"], &environment)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.contains(paths.update_lock().as_str()));
-        assert_update_snapshot(
-            "internal_managed_resource_continuation_rejects_update_lock_before_daemon",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_checksum_mismatch_leaves_active_release_untouched() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(
-                    &app_manifest(
-                        "0.3.0",
-                        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                        u64::try_from(APP_BINARY.len())?,
-                    )
-                    .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-                    .replace("pv-helper-2.0.0", "pv-helper-2.1.0"),
-                )
-                .with_download(APP_BINARY),
-        );
-
-        let output = run_pv(&["update"], &environment)?;
-        let temporary_downloads = update_temporary_files(&paths)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(output.stdout, "PV update\n");
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
-        )?);
-        assert!(temporary_downloads.is_empty());
-        assert_update_snapshot(
-            "update_checksum_mismatch_leaves_active_release_untouched",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_download_failure_removes_temporary_download() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(
-                    &app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-                        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-                        .replace("pv-helper-2.0.0", "pv-helper-2.1.0"),
-                )
-                .with_download_error(ResourcesError::HttpRequestFailed {
-                    url: APP_BINARY_URL.to_string(),
-                    reason: "connection reset".to_string(),
-                }),
-        );
-
-        let output = run_pv(&["update"], &environment)?;
-        let temporary_downloads = update_temporary_files(&paths)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(output.stdout, "PV update\n");
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
-        )?);
-        assert!(temporary_downloads.is_empty());
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_preserves_checksum_error_when_download_cleanup_fails() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let environment = TestEnvironment::new(
-            &home,
-            ReadOnlyDownloadsClient {
-                manifest: app_manifest(
-                    "0.3.0",
-                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                    u64::try_from(APP_BINARY.len())?,
-                ),
-                bytes: APP_BINARY.to_vec(),
-                downloads: paths.downloads().to_path_buf(),
-            },
-        );
-
-        let result = run_pv(&["update"], &environment);
-        set_permissions(paths.downloads(), 0o700)?;
-        let output = result?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(output.stdout, "PV update\n");
-        assert!(output.stderr.contains("checksum mismatch"));
-        assert!(output.stderr.contains("warning: failed to remove"));
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_accepts_non_utf8_installed_binary_fixture() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, CURRENT_APP_VERSION, b"\xffpv current\n")?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start_with_response_lines(
-            &paths,
-            vec![vec![
-                job_accepted_response("job_1"),
-                job_completed("job_1", "current"),
-            ]],
-        )?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new().with_text(&app_manifest(
-                CURRENT_APP_VERSION,
-                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-                12_345_678,
-            )),
-        );
-
-        let output = run_pv(&["update"], &environment)?;
-        let requests = daemon.join()?;
-
-        assert_eq!(
-            requests,
-            vec![json!({
-                "protocol_version": daemon::PROTOCOL_VERSION,
-                "command": "run_job",
-                "kind": "update",
-                "scope": "system"
-            })]
-        );
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        // Only progress reaches stderr: no warning and no error.
-        assert!(!output.stderr.contains("error:"));
-        assert!(!output.stderr.contains("warning:"));
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
+            assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+            assert_eq!(output.stdout, "PV update\n", "{name}");
+            assert_eq!(
+                layout.active_release()?,
+                Some(CURRENT_APP_VERSION.to_string())
+            );
+            assert!(!state::fs::path_entry_exists(
+                &paths.app_release_binary("99.0.0")
+            )?);
+            assert!(temporary_downloads.is_empty(), "{name}");
+            assert_update_snapshot(name, output);
+        }
 
         Ok(())
     }
@@ -2175,7 +1584,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2202,7 +1611,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_eq!(
             environment.operations(),
@@ -2256,7 +1665,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2267,7 +1676,7 @@ mod update_tests {
         let daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.operations(),
             vec![
@@ -2314,7 +1723,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2365,9 +1774,13 @@ mod update_tests {
                 health_response(),
             ],
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2428,9 +1841,13 @@ mod update_tests {
             ],
             Duration::from_millis(100),
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2464,7 +1881,7 @@ mod update_tests {
             })
         );
         assert!(state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_eq!(rollback_candidates.len(), 1);
         assert_eq!(
@@ -2504,13 +1921,17 @@ mod update_tests {
             &paths,
             vec![daemon_error_response("updated daemon boot failed")],
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace(
-                &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
-                &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
-            )
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace(
+            &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
+            &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
+        )
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2527,7 +1948,7 @@ mod update_tests {
             .collect::<Vec<_>>();
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_eq!(
             environment.helper_status.borrow().as_ref(),
             Some(&PrivilegedHelperStatus {
@@ -2569,9 +1990,13 @@ mod update_tests {
             &paths,
             vec![daemon_error_response("updated daemon boot failed")],
         )?;
-        let manifest = app_manifest("0.3.0", APP_BINARY_SHA256, u64::try_from(APP_BINARY.len())?)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        let manifest = app_manifest(
+            "99.0.0",
+            APP_BINARY_SHA256,
+            u64::try_from(APP_BINARY.len())?,
+        )
+        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2618,7 +2043,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2630,7 +2055,7 @@ mod update_tests {
         let _daemon_requests = daemon.join()?;
 
         assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
         assert_update_snapshot("update_reports_rollback_symlink_restore_failure", output);
 
         Ok(())
@@ -2655,7 +2080,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2671,7 +2096,7 @@ mod update_tests {
             Some(CURRENT_APP_VERSION.to_string())
         );
         assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
+            &paths.app_release_binary("99.0.0")
         )?);
         assert_update_snapshot(
             "update_reports_rollback_daemon_restart_failure_after_restore",
@@ -2682,202 +2107,119 @@ mod update_tests {
     }
 
     #[test]
-    fn update_reports_migration_failure_marker_after_health_failure() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                daemon_error_response("daemon boot failed"),
-                health_response(),
-            ],
-        )?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
-                .with_download(APP_BINARY),
-        )
-        .with_startup_marker_on_first_kickstart(
-            paths.daemon_startup_error(),
-            r#"{"kind":"migration_failed","message":"migration 7 (resource_port_roles) failed"}"#,
-        );
+    fn update_reports_only_a_fresh_startup_failure_marker_after_health_failure()
+    -> anyhow::Result<()> {
+        for (name, stale_marker) in [
+            (
+                "update_reports_migration_failure_marker_after_health_failure",
+                false,
+            ),
+            (
+                "update_ignores_stale_startup_failure_marker_after_health_failure",
+                true,
+            ),
+        ] {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            let layout = install_current_release(&paths)?;
+            write_launch_agent(&paths, &paths.active_pv_binary())?;
+            if stale_marker {
+                state::fs::write_sensitive_file(
+                    &paths.daemon_startup_error(),
+                    r#"{"kind":"migration_failed","message":"stale migration failure"}"#,
+                )?;
+            }
+            let daemon = FakeDaemon::start(
+                &paths,
+                vec![
+                    daemon_error_response("daemon boot failed"),
+                    health_response(),
+                ],
+            )?;
+            let mut environment = TestEnvironment::new(
+                &home,
+                ScriptedClient::new()
+                    .with_text(&app_manifest(
+                        "99.0.0",
+                        APP_BINARY_SHA256,
+                        u64::try_from(APP_BINARY.len())?,
+                    ))
+                    .with_download(APP_BINARY),
+            );
+            if !stale_marker {
+                environment = environment.with_startup_marker_on_first_kickstart(
+                    paths.daemon_startup_error(),
+                    r#"{"kind":"migration_failed","message":"migration 7 (resource_port_roles) failed"}"#,
+                );
+            }
 
-        let output = run_pv(&["update"], &environment)?;
-        let _daemon_requests = daemon.join()?;
+            let output = run_pv(&["update"], &environment)?;
+            let _daemon_requests = daemon.join()?;
 
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
-        )?);
-        assert_update_snapshot(
-            "update_reports_migration_failure_marker_after_health_failure",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_ignores_stale_startup_failure_marker_after_health_failure() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        state::fs::write_sensitive_file(
-            &paths.daemon_startup_error(),
-            r#"{"kind":"migration_failed","message":"stale migration failure"}"#,
-        )?;
-        let daemon = FakeDaemon::start(
-            &paths,
-            vec![
-                daemon_error_response("daemon boot failed"),
-                health_response(),
-            ],
-        )?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
-                .with_download(APP_BINARY),
-        );
-
-        let output = run_pv(&["update"], &environment)?;
-        let _daemon_requests = daemon.join()?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert!(!output.stderr.contains("stale migration failure"));
-        assert_update_snapshot(
-            "update_ignores_stale_startup_failure_marker_after_health_failure",
-            output,
-        );
+            assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+            assert_eq!(
+                layout.active_release()?,
+                Some(CURRENT_APP_VERSION.to_string())
+            );
+            assert!(!state::fs::path_entry_exists(
+                &paths.app_release_binary("99.0.0")
+            )?);
+            assert!(!output.stderr.contains("stale migration failure"), "{name}");
+            assert_update_snapshot(name, output);
+        }
 
         Ok(())
     }
 
     #[test]
-    fn update_fails_before_network_when_active_release_version_differs() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_active_release(&paths, "0.3.0", b"pv 0.3.0\n")?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
+    fn update_preflight_failures_leave_active_release_untouched() -> anyhow::Result<()> {
+        type Prepare = fn(&PvPaths) -> anyhow::Result<AppReleaseLayout>;
+        let cases: [(&'static str, &str, Prepare); 3] = [
+            (
+                "update_fails_before_activation_when_launch_agent_is_missing",
+                CURRENT_APP_VERSION,
+                install_current_release,
+            ),
+            (
+                "update_fails_before_activation_when_launch_agent_is_not_pv_owned",
+                CURRENT_APP_VERSION,
+                |paths| {
+                    let layout = install_current_release(paths)?;
+                    write_conflicting_launch_agent(paths)?;
+                    Ok(layout)
+                },
+            ),
+            (
+                "update_fails_before_network_when_active_release_version_differs",
+                "99.0.0",
+                |paths| {
+                    let layout = install_active_release(paths, "99.0.0", b"pv 99.0.0\n")?;
+                    write_launch_agent(paths, &paths.active_pv_binary())?;
+                    Ok(layout)
+                },
+            ),
+        ];
 
-        let output = run_pv(&["update"], &environment)?;
+        for (name, active_version, prepare) in cases {
+            let tempdir = tempdir()?;
+            let home = tempdir.path().join("home");
+            let paths = PvPaths::for_home(home.clone());
+            state::fs::ensure_layout(&paths)?;
+            let layout = prepare(&paths)?;
+            let environment = TestEnvironment::new(&home, PanickingClient);
 
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert_update_snapshot(
-            "update_fails_before_network_when_active_release_version_differs",
-            output,
-        );
+            let output = run_pv(&["update"], &environment)?;
 
-        Ok(())
-    }
-
-    #[test]
-    fn update_fails_before_activation_when_launch_agent_is_missing() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
-
-        let output = run_pv(&["update"], &environment)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert_update_snapshot(
-            "update_fails_before_activation_when_launch_agent_is_missing",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_fails_before_activation_when_launch_agent_is_not_pv_owned() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_conflicting_launch_agent(&paths)?;
-        let environment = TestEnvironment::new(&home, PanickingClient);
-
-        let output = run_pv(&["update"], &environment)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert_update_snapshot(
-            "update_fails_before_activation_when_launch_agent_is_not_pv_owned",
-            output,
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_size_mismatch_leaves_active_release_untouched() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest("0.3.0", APP_BINARY_SHA256, 999))
-                .with_download(APP_BINARY),
-        );
-
-        let output = run_pv(&["update"], &environment)?;
-
-        assert_eq!(output.exit_code, ExitCode::FAILURE);
-        assert_eq!(output.stdout, "PV update\n");
-        assert_eq!(
-            layout.active_release()?,
-            Some(CURRENT_APP_VERSION.to_string())
-        );
-        assert!(!state::fs::path_entry_exists(
-            &paths.app_release_binary("0.3.0")
-        )?);
-        assert_update_snapshot(
-            "update_size_mismatch_leaves_active_release_untouched",
-            output,
-        );
+            assert_eq!(output.exit_code, ExitCode::FAILURE, "{name}");
+            assert_eq!(
+                layout.active_release()?,
+                Some(active_version.to_string()),
+                "{name}"
+            );
+            assert_update_snapshot(name, output);
+        }
 
         Ok(())
     }
@@ -2898,7 +2240,7 @@ mod update_tests {
             &home,
             ScriptedClient::new()
                 .with_text(&app_manifest(
-                    "0.3.0",
+                    "99.0.0",
                     APP_BINARY_SHA256,
                     u64::try_from(APP_BINARY.len())?,
                 ))
@@ -2914,42 +2256,8 @@ mod update_tests {
         releases.sort();
 
         assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert_eq!(releases, vec![CURRENT_APP_VERSION, "0.3.0"]);
-
-        Ok(())
-    }
-
-    #[test]
-    fn update_warns_when_pruning_old_app_release_fails() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let home = tempdir.path().join("home");
-        let paths = PvPaths::for_home(home.clone());
-        state::fs::ensure_layout(&paths)?;
-        let layout = install_current_release(&paths)?;
-        state::fs::write_sensitive_file(&paths.app_releases_dir().join("0.0.8"), "not a dir")?;
-        write_launch_agent(&paths, &paths.active_pv_binary())?;
-        let daemon = FakeDaemon::start(&paths, vec![health_response()])?;
-        let environment = TestEnvironment::new(
-            &home,
-            ScriptedClient::new()
-                .with_text(&app_manifest(
-                    "0.3.0",
-                    APP_BINARY_SHA256,
-                    u64::try_from(APP_BINARY.len())?,
-                ))
-                .with_download(APP_BINARY),
-        );
-
-        let output = run_pv(&["update"], &environment)?;
-        let _daemon_requests = daemon.join()?;
-
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert_eq!(layout.active_release()?, Some("0.3.0".to_string()));
-        assert!(state::fs::path_entry_exists(
-            &paths.app_releases_dir().join("0.0.8")
-        )?);
-        assert_update_snapshot("update_warns_when_pruning_old_app_release_fails", output);
+        assert_eq!(layout.active_release()?, Some("99.0.0".to_string()));
+        assert_eq!(releases, vec![CURRENT_APP_VERSION, "99.0.0"]);
 
         Ok(())
     }
@@ -3147,54 +2455,6 @@ mod update_tests {
         }
     }
 
-    #[derive(Debug)]
-    struct ReadOnlyDownloadsClient {
-        manifest: String,
-        bytes: Vec<u8>,
-        downloads: Utf8PathBuf,
-    }
-
-    impl ResourceHttpClient for ReadOnlyDownloadsClient {
-        fn get_text(&self, _url: &str) -> resources::Result<String> {
-            Ok(self.manifest.clone())
-        }
-
-        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
-            writer
-                .write_all(&self.bytes)
-                .map_err(|source| ResourcesError::HttpRequestFailed {
-                    url: url.to_string(),
-                    reason: source.to_string(),
-                })?;
-            set_permissions(&self.downloads, 0o500).map_err(|source| {
-                ResourcesError::HttpRequestFailed {
-                    url: url.to_string(),
-                    reason: source.to_string(),
-                }
-            })
-        }
-    }
-
-    #[derive(Debug)]
-    struct RunOutput {
-        exit_code: ExitCode,
-        stdout: String,
-        stderr: String,
-    }
-
-    fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
-        let args = std::iter::once("pv").chain(args.iter().copied());
-        let exit_code = run_with_environment(args, environment, &mut stdout, &mut stderr)?;
-
-        Ok(RunOutput {
-            exit_code,
-            stdout: String::from_utf8(stdout)?,
-            stderr: String::from_utf8(stderr)?,
-        })
-    }
-
     fn managed_resource_update_check_response(
         current_artifact_path: impl AsRef<Path>,
     ) -> serde_json::Value {
@@ -3297,6 +2557,7 @@ mod update_tests {
         settings.add_filter(r"/[\w\-]+/home/\.pv", "<pv-home>");
         settings.add_filter(r"/private<tempdir>", "<tempdir>");
         settings.add_filter(r"[a-f0-9]{64}", "<sha256>");
+        settings.add_filter(&CURRENT_APP_VERSION.replace('.', r"\."), "<version>");
         settings.add_filter(
             r"pv-helper-rollback-[0-9]+-[0-9]+\.tmp",
             "pv-helper-rollback-<id>.tmp",
@@ -3458,32 +2719,32 @@ mod update_tests {
 {
   "schema_version": 2,
   "channel": "stable",
-  "version": "0.3.0",
+  "version": "99.0.0",
   "minimum_pv_version": "0.1.0",
   "published_at": "2026-06-11T12:00:00Z",
   "assets": [
     {
       "platform": "darwin-arm64",
-      "url": "https://downloads.example.test/pv/0.3.0/pv-darwin-arm64",
+      "url": "https://downloads.example.test/pv/99.0.0/pv-darwin-arm64",
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "size": 12345678,
       "helper": {
         "version": "2.0.0",
         "protocol_version": 2,
-        "url": "https://downloads.example.test/pv/0.3.0/pv-helper-2.0.0-darwin-arm64",
+        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-2.0.0-darwin-arm64",
         "sha256": "f15b9ec9f06fc9e7e92af6e7cdfe82ae574bdc11f09bf796e44280989b1378d2",
         "size": 16
       }
     },
     {
       "platform": "darwin-amd64",
-      "url": "https://downloads.example.test/pv/0.3.0/pv-darwin-amd64",
+      "url": "https://downloads.example.test/pv/99.0.0/pv-darwin-amd64",
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "size": 12345678,
       "helper": {
         "version": "2.0.0",
         "protocol_version": 2,
-        "url": "https://downloads.example.test/pv/0.3.0/pv-helper-2.0.0-darwin-amd64",
+        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-2.0.0-darwin-amd64",
         "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "size": 16
       }

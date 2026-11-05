@@ -923,6 +923,13 @@ mod tests {
         ○  No framework-specific Project signals detected.
              APP_URL: ${project_url}
         ");
+        assert_snapshot!(render(Surface::terminal(false, 120), specimen), @"
+        ◇  Wrote Project config: /Users/me/Code/acme-store/with/a/long/path
+           Laravel: Detected composer.json, artisan, and Laravel project files
+        ⚠  Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.
+        ○  No framework-specific Project signals detected.
+             APP_URL: ${project_url}
+        ");
     }
 
     #[test]
@@ -991,17 +998,6 @@ mod tests {
         ␛[2m│␛[0m
         ␛[2m└␛[0m  ␛[1mWrote Project config:
            ␛[0m␛[36m/Users/me/My Project/pv.yml␛[0m
-        ");
-    }
-
-    #[test]
-    fn decorated_rows_use_wide_terminals() {
-        assert_snapshot!(render(Surface::terminal(false, 120), specimen), @"
-        ◇  Wrote Project config: /Users/me/Code/acme-store/with/a/long/path
-           Laravel: Detected composer.json, artisan, and Laravel project files
-        ⚠  Vite HTTPS: configure the app's Vite config to read VITE_DEV_SERVER_CERT and VITE_DEV_SERVER_KEY.
-        ○  No framework-specific Project signals detected.
-             APP_URL: ${project_url}
         ");
     }
 
