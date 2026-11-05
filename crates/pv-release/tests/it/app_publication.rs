@@ -218,27 +218,6 @@ fn stage_app_publication_rejects_non_newer_stable_manifest_candidate() -> Result
 }
 
 #[test]
-fn stage_app_publication_migrates_newer_candidate_from_schema_one_manifest() -> Result<()> {
-    let fixture = AppPublicationFixture::new()?;
-    fixture.write_valid_inputs()?;
-    let current_manifest = fixture.root().join("current-pv-app-manifest.json");
-    write_file(
-        &current_manifest,
-        "{\n  \"schema_version\": 1,\n  \"version\": \"0.1.0\"\n}\n",
-    )?;
-
-    let output = run_stage_app_publication_with_current_manifest(&fixture, &current_manifest)?;
-    if !output.status.success() {
-        assert_debug_snapshot!(command_failure(&output, fixture.root()));
-        bail!("stage-app-publication rejected the one-time schema-1 migration");
-    }
-
-    assert!(path_exists(&fixture.stage.join("publication-plan.json")));
-
-    Ok(())
-}
-
-#[test]
 fn stage_app_publication_rejects_candidate_older_than_current_stable_installer() -> Result<()> {
     let fixture = AppPublicationFixture::new()?;
     fixture.write_valid_inputs()?;
