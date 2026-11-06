@@ -400,7 +400,7 @@ mod tests {
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
-    use camino::Utf8PathBuf;
+    use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::{Utf8TempDir, tempdir};
     use notify::Event;
     use notify::event::{AccessKind, EventKind, Flag};
@@ -523,63 +523,44 @@ mod tests {
         }
     }
 
-    fn write(path: &camino::Utf8Path, content: &str) -> Result<()> {
+    fn write(path: &Utf8Path, content: &str) -> Result<()> {
         Ok(state::fs::write_sensitive_file(path, content)?)
     }
 
-    #[tokio::test]
-    async fn watcher_enqueues_when_preferred_config_appears_after_empty_link() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let (project_path, scope) = fixture.link("project")?;
-        state::fs::ensure_user_dir(&project_path)?;
-        let mut watcher = fixture.run().await?;
-
-        write(&project_path.join("pv.yml"), "php: '8.4'\n")?;
-
-        assert_eq!(watcher.next_scope().await?, scope);
-
-        Ok(())
-    }
+    type ConfigChange = fn(&Utf8Path) -> Result<()>;
 
     #[tokio::test]
-    async fn watcher_enqueues_when_alternate_config_appears_after_empty_link() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let (project_path, scope) = fixture.link("project")?;
-        state::fs::ensure_user_dir(&project_path)?;
-        let mut watcher = fixture.run().await?;
+    async fn watcher_enqueues_a_config_that_appears_conflicts_or_is_edited_in_place() -> Result<()>
+    {
+        let rows: [(&str, Option<&str>, ConfigChange); 4] = [
+            ("preferred config appears", None, |project| {
+                write(&project.join("pv.yml"), "php: '8.4'\n")
+            }),
+            ("alternate config appears", None, |project| {
+                write(&project.join("pv.yaml"), "php: '8.4'\n")
+            }),
+            ("config conflict appears", Some("php: '8.3'\n"), |project| {
+                write(&project.join("pv.yaml"), "php: '8.4'\n")
+            }),
+            ("config edited in place", Some("php: '8.3'\n"), |project| {
+                Ok(state::fs::open_append_file(&project.join("pv.yml"))?
+                    .write_all(b"serve: true\n")?)
+            }),
+        ];
 
-        write(&project_path.join("pv.yaml"), "php: '8.4'\n")?;
+        for (name, existing_config, change) in rows {
+            let fixture = Fixture::new()?;
+            let (project_path, scope) = fixture.link("project")?;
+            match existing_config {
+                Some(config) => write(&project_path.join("pv.yml"), config)?,
+                None => state::fs::ensure_user_dir(&project_path)?,
+            }
+            let mut watcher = fixture.run().await?;
 
-        assert_eq!(watcher.next_scope().await?, scope);
+            change(&project_path)?;
 
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn watcher_enqueues_when_project_config_conflict_appears() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let (project_path, scope) = fixture.link("project")?;
-        write(&project_path.join("pv.yml"), "php: '8.3'\n")?;
-        let mut watcher = fixture.run().await?;
-
-        write(&project_path.join("pv.yaml"), "php: '8.4'\n")?;
-
-        assert_eq!(watcher.next_scope().await?, scope);
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn watcher_enqueues_a_config_edited_in_place() -> Result<()> {
-        let fixture = Fixture::new()?;
-        let (project_path, scope) = fixture.link("project")?;
-        let config_path = project_path.join("pv.yml");
-        write(&config_path, "php: '8.3'\n")?;
-        let mut watcher = fixture.run().await?;
-
-        state::fs::open_append_file(&config_path)?.write_all(b"serve: true\n")?;
-
-        assert_eq!(watcher.next_scope().await?, scope);
+            assert_eq!(watcher.next_scope().await?, scope, "{name}");
+        }
 
         Ok(())
     }

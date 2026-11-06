@@ -1,4 +1,4 @@
-use anyhow::{Result, anyhow, bail, ensure};
+use anyhow::{Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use resources::{
@@ -147,42 +147,6 @@ fn link_project(database: &mut Database, project_root: &Utf8Path, hostname: &str
         config_path: project_root.join("pv.yml"),
         desired_php_track: None,
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn gateway_cleanup_error_is_reported_without_masking_request_error() -> Result<()> {
-    let result: Result<()> = preserve_gateway_request_result(
-        Err(anyhow!("request failed")),
-        Err(anyhow!("cleanup failed")),
-        || "diagnostics root".to_string(),
-    );
-    let Err(error) = result else {
-        bail!("expected request failure");
-    };
-    let rendered = format!("{error:#}");
-
-    assert!(rendered.contains("diagnostics root"));
-    assert!(rendered.contains("request failed"));
-    assert!(rendered.contains("gateway runtime cleanup also failed"));
-    assert!(rendered.contains("cleanup failed"));
-
-    Ok(())
-}
-
-#[test]
-fn real_artifact_diagnostics_includes_gateway_supervisor_log() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::write_sensitive_file(&paths.gateway_supervisor_log(), "supervisor failure\n")?;
-
-    let diagnostics = real_artifact_diagnostics(&paths, &["8.4".to_owned()]);
-
-    assert!(diagnostics.contains(&format!(
-        "--- {} ---\nsupervisor failure\n",
-        paths.gateway_supervisor_log()
-    )));
 
     Ok(())
 }

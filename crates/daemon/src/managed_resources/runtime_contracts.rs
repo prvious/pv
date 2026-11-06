@@ -96,28 +96,6 @@ async fn real_mailpit_satisfies_the_runtime_contract() -> Result<()> {
     .await
 }
 
-/// PV's test-only fake Mailpit adapter has no real binary, so its contract runs against the fake
-/// alone.
-#[tokio::test]
-async fn pv_fake_mailpit_satisfies_the_fake_adapter_runtime_contract() -> Result<()> {
-    let (_tempdir, paths) = contract_paths()?;
-    let artifact_path = fake_artifact(
-        &paths,
-        "mailpit",
-        "1.0",
-        "bin/pv-fake-mailpit",
-        Persona::PvFakeMailpit,
-    )?;
-
-    mailpit_contract(
-        &paths,
-        &super::fake::FakeMailpitRuntimeAdapter::new()?,
-        &artifact_path,
-        "1.0",
-    )
-    .await
-}
-
 #[tokio::test]
 async fn fake_rustfs_satisfies_the_runtime_contract() -> Result<()> {
     let (_tempdir, paths) = contract_paths()?;

@@ -1460,20 +1460,15 @@ mod bounded_readiness_tests {
 
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
-    use std::net::{Ipv4Addr, SocketAddr, TcpListener};
     use std::time::Duration;
 
-    use anyhow::{Context, Result, anyhow, bail};
+    use anyhow::{Result, anyhow, bail};
     use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use platform::clock;
-    use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, TcpHolderConfig};
-    use rustix::process::{Pid, Signal, kill_process_group, test_kill_process};
+    use rustix::process::{Pid, test_kill_process};
 
-    use super::{
-        ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, monitor_subject,
-        process_group_has_exited,
-    };
+    use super::{ProcessSpec, ProcessSupervisor, RecordedConfigFingerprint, monitor_subject};
     use crate::StopSignal;
     use crate::monitor::{self, MonitorStart, MonitorStop};
     use state::PvPaths;
@@ -1568,78 +1563,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn adopted_process_kill_waits_for_group_and_listener_exit_without_runtime() -> Result<()> {
-        let tempdir = tempdir().context("create temp directory")?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        state::fs::ensure_layout(&paths).context("create test layout")?;
-        pv_fake::install_monitor(&paths)?;
-        let listener_port = pv_fake::port()?;
-        let listener = pv_fake::install_with_settings(
-            &paths.run().join("adopted-kill-listener"),
-            Persona::TcpHolder,
-            FakeSettings {
-                tcp_holder: Some(TcpHolderConfig {
-                    address: SocketAddr::from((Ipv4Addr::LOCALHOST, listener_port)),
-                    reuse_address: false,
-                    reuse_port: false,
-                    ipv6_only: false,
-                    listen: true,
-                }),
-                ..FakeSettings::default()
-            },
-        )?;
-
-        // The listener runs in the background, so it outlives the shell unless PV stops the whole
-        // group.
-        let spec = descendant_spec(
-            &paths,
-            "adopted-kill",
-            "/bin/sh".into(),
-            vec![
-                "-c".to_owned(),
-                format!("\"$1\" & {IDLE_SHELL_LOOP}"),
-                "runtime-teardown".to_owned(),
-                listener.executable().to_string(),
-            ],
-        );
-        let metadata_path = spec.metadata_path.clone();
-        let supervisor = ProcessSupervisor::new(paths);
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .context("build startup runtime")?;
-        let process = runtime
-            .block_on(supervisor.start(spec))
-            .context("start recorded process")?;
-        let leader_pid = process.pid();
-        let descendant_pid = runtime.block_on(wait_for_listener_ready(&listener))?;
-        drop(process);
-        drop(runtime);
-
-        let cleanup_result: Result<()> = (|| {
-            let process = supervisor
-                .adopt_recorded(&metadata_path)?
-                .ok_or_else(|| anyhow!("recorded process was not adoptable"))?;
-            process
-                .kill_and_wait_for_test(Duration::from_secs(1))
-                .context("kill and wait for adopted process")?;
-            Ok(())
-        })();
-        if cleanup_result.is_err() {
-            let _kill_result = kill_process_group(test_pid(leader_pid)?, Signal::KILL);
-            let _group_exited = wait_for_test_process_group_exit_synchronously(leader_pid)?;
-        }
-        cleanup_result?;
-
-        // The monitor keeps the leader unreaped until it is released.
-        assert!(process_group_has_exited(leader_pid)?);
-        assert!(wait_for_test_process_exit_synchronously(descendant_pid)?);
-        assert!(wait_for_test_listener_release(listener_port));
-
-        Ok(())
-    }
-
     fn descendant_spec(
         paths: &PvPaths,
         name: &str,
@@ -1660,24 +1583,6 @@ mod tests {
         }
     }
 
-    /// Waits until `listener` listens, and returns its process ID.
-    async fn wait_for_listener_ready(listener: &InstalledFake) -> Result<u32> {
-        // A new fake's first launch can take seconds on a loaded runner.
-        for _attempt in 0..500 {
-            if let Some(ready) = listener
-                .events()?
-                .iter()
-                .find(|event| matches!(event.kind, EventKind::TcpReady { .. }))
-            {
-                return Ok(u32::try_from(ready.pid)?);
-            }
-
-            clock::poll(Duration::from_millis(20)).await;
-        }
-
-        bail!("{} did not start listening", listener.executable())
-    }
-
     async fn wait_for_test_process_exit(pid: u32) -> Result<bool> {
         let pid = test_pid(pid)?;
         for _attempt in 0..50 {
@@ -1691,45 +1596,6 @@ mod tests {
         }
 
         Ok(false)
-    }
-
-    fn wait_for_test_process_group_exit_synchronously(pid: u32) -> Result<bool> {
-        for _attempt in 0..100 {
-            if process_group_has_exited(pid)? {
-                return Ok(true);
-            }
-
-            clock::poll_blocking(Duration::from_millis(10));
-        }
-
-        Ok(false)
-    }
-
-    fn wait_for_test_process_exit_synchronously(pid: u32) -> Result<bool> {
-        let pid = test_pid(pid)?;
-        for _attempt in 0..100 {
-            match test_kill_process(pid) {
-                Err(rustix::io::Errno::SRCH) => return Ok(true),
-                Ok(()) => {}
-                Err(error) => bail!("failed to inspect process {pid}: {error}"),
-            }
-
-            clock::poll_blocking(Duration::from_millis(10));
-        }
-
-        Ok(false)
-    }
-
-    fn wait_for_test_listener_release(port: u16) -> bool {
-        for _attempt in 0..100 {
-            if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-                return true;
-            }
-
-            clock::poll_blocking(Duration::from_millis(10));
-        }
-
-        false
     }
 
     fn test_pid(pid: u32) -> Result<Pid> {

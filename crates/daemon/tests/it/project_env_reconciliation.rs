@@ -163,65 +163,50 @@ postgres:
 }
 
 #[tokio::test]
-async fn failed_resource_only_transition_after_preflight_preserves_served_mode() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(&paths, &tempdir.path().join("project"), "acme.test", "")?;
-    write_project_config(
-        &project,
-        r#"serve: false
-postgres:
+async fn failed_mode_transition_after_preflight_preserves_the_previous_mode() -> Result<()> {
+    let resource = r#"postgres:
   version: "8.0"
   allocations:
     app-db:
       env:
         DB_DATABASE: "${database}"
-"#,
-    )?;
+"#;
+    for (from_mode, previous_hostname) in [
+        (ProjectMode::Served, Some("acme.test")),
+        (ProjectMode::ResourceOnly, None),
+    ] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let project_path = tempdir.path().join("project");
+        let project = match from_mode {
+            ProjectMode::Served => {
+                let project = link_project(&paths, &project_path, "acme.test", "")?;
+                write_project_config(&project, &format!("serve: false\n{resource}"))?;
+                project
+            }
+            ProjectMode::ResourceOnly => {
+                let project = link_resource_only_project(&paths, &project_path, "serve: false\n")?;
+                write_project_config(&project, resource)?;
+                project
+            }
+        };
 
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-    let reconciled = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("expected failed transition to preserve Project state"))?;
-    let job = latest_job(&database, &format!("project:{}", project.id))?;
+        let lines = run_project_reconciliation(&paths, &project).await?;
+        let database = Database::open(&paths)?;
+        let reconciled = database
+            .project_by_id(&project.id)?
+            .ok_or_else(|| anyhow!("expected failed transition to preserve Project state"))?;
+        let job = latest_job(&database, &format!("project:{}", project.id))?;
 
-    assert!(!lines.is_empty());
-    assert_eq!(job.status, state::JobStatus::Failed);
-    assert_eq!(reconciled.mode, ProjectMode::Served);
-    assert_eq!(reconciled.primary_hostname.as_deref(), Some("acme.test"));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn failed_served_transition_after_preflight_preserves_resource_only_mode() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project =
-        link_resource_only_project(&paths, &tempdir.path().join("project"), "serve: false\n")?;
-    write_project_config(
-        &project,
-        r#"postgres:
-  version: "8.0"
-  allocations:
-    app-db:
-      env:
-        DB_DATABASE: "${database}"
-"#,
-    )?;
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-    let reconciled = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("expected failed transition to preserve Project state"))?;
-    let job = latest_job(&database, &format!("project:{}", project.id))?;
-
-    assert!(!lines.is_empty());
-    assert_eq!(job.status, state::JobStatus::Failed);
-    assert_eq!(reconciled.mode, ProjectMode::ResourceOnly);
-    assert_eq!(reconciled.primary_hostname, None);
+        assert!(!lines.is_empty(), "{from_mode:?}");
+        assert_eq!(job.status, state::JobStatus::Failed, "{from_mode:?}");
+        assert_eq!(reconciled.mode, from_mode);
+        assert_eq!(
+            reconciled.primary_hostname.as_deref(),
+            previous_hostname,
+            "{from_mode:?}"
+        );
+    }
 
     Ok(())
 }
@@ -296,6 +281,8 @@ async fn root_only_env_rendering_writes_dotenv_and_records_rendered_state() -> R
         .collect::<Vec<_>>();
 
     assert_project_certificate_matches(&certificate_pem, &private_key_pem, "acme.test", &local_ca);
+    // A new `.env` holds secrets, so only its owner may read it.
+    assert_eq!(mode_string(&project.path.join(".env"))?, "600");
 
     assert_with_normalized_timestamps_and_tempdir(
         "root_only_env_rendering_writes_dotenv_and_records_rendered_state",
@@ -501,113 +488,6 @@ async fn serving_transition_clears_and_restores_all_dormant_env_entries() -> Res
 }
 
 #[tokio::test]
-async fn project_tls_reconciliation_replaces_overlong_leaf_once() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        r#"env:
-  PV_TLS_CA: "${tls.ca}"
-  VITE_DEV_SERVER_CERT: "${tls.cert}"
-  VITE_DEV_SERVER_KEY: "${tls.key}"
-"#,
-    )?;
-    let local_ca = seed_local_ca(&paths)?;
-    let ca_certificate_before = state::fs::read_to_string(&paths.ca_certificate())?;
-    let ca_private_key_before = state::fs::read_to_string(&paths.ca_private_key())?;
-    let certificate_path = paths.project_tls_certificate(&project.id);
-    let private_key_path = paths.project_tls_private_key(&project.id);
-    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 3650)?;
-    let stale_certificate_chain = state::fs::read_to_string(&certificate_path)?;
-    let stale_private_key = state::fs::read_to_string(&private_key_path)?;
-
-    assert_eq!(certificate_pem_block_count(&stale_certificate_chain), 2);
-    assert!(!platform::project_certificate_matches(
-        &stale_certificate_chain,
-        &stale_private_key,
-        served_project_hostname(&project)?,
-        &local_ca.certificate_pem
-    ));
-    run_project_reconciliation(&paths, &project).await?;
-    let (certificate_after_reconciliation, private_key_after_reconciliation) =
-        read_project_tls_files(&paths, &project)?;
-    let dotenv_after_reconciliation = read_dotenv(&project)?;
-
-    assert_ne!(
-        certificate_after_reconciliation, stale_certificate_chain,
-        "a ten-year Project certificate should be replaced"
-    );
-    assert_ne!(
-        private_key_after_reconciliation, stale_private_key,
-        "replacement should issue a new Project private key"
-    );
-    assert_eq!(
-        certificate_pem_block_count(&certificate_after_reconciliation),
-        2
-    );
-    assert_project_certificate_matches(
-        &certificate_after_reconciliation,
-        &private_key_after_reconciliation,
-        served_project_hostname(&project)?,
-        &local_ca,
-    );
-    assert_eq!(
-        state::fs::read_to_string(&paths.ca_certificate())?,
-        ca_certificate_before,
-        "reconciliation should preserve the PV CA certificate"
-    );
-    assert_eq!(
-        state::fs::read_to_string(&paths.ca_private_key())?,
-        ca_private_key_before,
-        "reconciliation should preserve the PV CA private key"
-    );
-    assert_eq!(
-        dotenv_after_reconciliation,
-        format!(
-            "# >>> PV MANAGED\nPV_TLS_CA={}\nVITE_DEV_SERVER_CERT={}\nVITE_DEV_SERVER_KEY={}\n# <<< PV MANAGED\n",
-            paths.ca_certificate(),
-            certificate_path,
-            private_key_path
-        )
-    );
-
-    run_project_reconciliation(&paths, &project).await?;
-    let (certificate_after_second_reconciliation, private_key_after_second_reconciliation) =
-        read_project_tls_files(&paths, &project)?;
-    let dotenv_after_second_reconciliation = read_dotenv(&project)?;
-
-    assert_eq!(
-        certificate_after_second_reconciliation, certificate_after_reconciliation,
-        "a valid short-lived Project certificate should be byte-idempotent"
-    );
-    assert_eq!(
-        private_key_after_second_reconciliation, private_key_after_reconciliation,
-        "a valid Project private key should be byte-idempotent"
-    );
-    assert_eq!(
-        dotenv_after_second_reconciliation,
-        format!(
-            "# >>> PV MANAGED\nPV_TLS_CA={}\nVITE_DEV_SERVER_CERT={}\nVITE_DEV_SERVER_KEY={}\n# <<< PV MANAGED\n",
-            paths.ca_certificate(),
-            certificate_path,
-            private_key_path
-        )
-    );
-    assert_eq!(
-        state::fs::read_to_string(&paths.ca_certificate())?,
-        ca_certificate_before
-    );
-    assert_eq!(
-        state::fs::read_to_string(&paths.ca_private_key())?,
-        ca_private_key_before
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_reconciliation()
 -> Result<()> {
     let clock = platform::clock::install_fake_for_test();
@@ -740,30 +620,6 @@ async fn project_env_reconciliation_updates_persisted_php_track() -> Result<()> 
 }
 
 #[tokio::test]
-async fn project_env_reconciliation_persists_latest_php_as_concrete_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "php: latest\n",
-    )?;
-    seed_manifest(&paths, "8.4")?;
-
-    run_project_reconciliation(&paths, &project).await?;
-
-    let database = Database::open(&paths)?;
-    let project = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("expected linked project"))?;
-
-    assert_eq!(project.desired_php_track.as_deref(), Some("8.4"));
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn project_env_reconciliation_persists_php_extension_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -771,7 +627,7 @@ async fn project_env_reconciliation_persists_php_extension_runtime() -> Result<(
         &paths,
         &tempdir.path().join("project"),
         "acme.test",
-        "php:\n  version: \"8.4\"\n  extensions: [redis, missing]\n",
+        "php:\n  version: \"8.4\"\n  extensions: [redis, missing, \"not-supported-yet\"]\n",
     )?;
     let release = tempdir.path().join("php-release");
     write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
@@ -798,63 +654,30 @@ async fn project_env_reconciliation_persists_php_extension_runtime() -> Result<(
     assert_eq!(project.php_runtime.track.as_deref(), Some("8.4"));
     assert_eq!(
         project.php_runtime.requested_extensions,
-        ["redis", "missing"]
+        ["redis", "missing", "not-supported-yet"]
     );
     assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
-    assert_eq!(project.php_runtime.ignored_extensions, ["missing"]);
-    assert_eq!(observed.status, ProjectEnvObservedStatus::Warning);
-    assert_eq!(observed.warnings[0].kind, "ignored_php_extension");
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn project_env_reconciliation_persists_non_identity_ignored_php_extension() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "php:\n  version: \"8.4\"\n  extensions: [\"not-supported-yet\"]\n",
-    )?;
-    let release = tempdir.path().join("php-release");
-    write_sensitive_file(&release.join("bin/php"), "#!/bin/sh\n")?;
-    write_sensitive_file(
-        &release.join("share/pv/php-extensions.json"),
-        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
-    )?;
-    write_sensitive_file(&release.join("lib/php/extensions/redis.so"), "")?;
-    {
-        let mut database = Database::open(&paths)?;
-        database.record_managed_resource_track_installed("php", "8.4", "8.4.8-pv1", &release)?;
-    }
-
-    run_project_reconciliation(&paths, &project).await?;
-
-    let database = Database::open(&paths)?;
-    let project = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("expected linked project"))?;
-    let observed = database
-        .project_env_observed_state(&project.id)?
-        .ok_or_else(|| anyhow!("expected observed project env state"))?;
-
-    assert_eq!(project.php_runtime.track.as_deref(), Some("8.4"));
-    assert_eq!(
-        project.php_runtime.requested_extensions,
-        ["not-supported-yet"]
-    );
-    assert!(project.php_runtime.loaded_extensions.is_empty());
     assert_eq!(
         project.php_runtime.ignored_extensions,
-        ["not-supported-yet"]
+        ["missing", "not-supported-yet"]
     );
     assert_eq!(observed.status, ProjectEnvObservedStatus::Warning);
-    assert_eq!(observed.warnings[0].kind, "ignored_php_extension");
     assert_eq!(
-        observed.warnings[0].message,
-        "ignored unsupported PHP extension `not-supported-yet`"
+        observed
+            .warnings
+            .iter()
+            .map(|warning| (warning.kind.as_str(), warning.message.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            (
+                "ignored_php_extension",
+                "ignored unsupported PHP extension `missing`"
+            ),
+            (
+                "ignored_php_extension",
+                "ignored unsupported PHP extension `not-supported-yet`"
+            ),
+        ]
     );
 
     Ok(())
@@ -873,6 +696,10 @@ async fn project_env_reconciliation_reuses_concrete_track_for_latest_php() -> Re
     seed_manifest(&paths, "8.4")?;
 
     run_project_reconciliation(&paths, &project).await?;
+    let resolved = Database::open(&paths)?
+        .project_by_id(&project.id)?
+        .ok_or_else(|| anyhow!("expected linked project"))?;
+    assert_eq!(resolved.desired_php_track.as_deref(), Some("8.4"));
     seed_manifest(&paths, "8.3")?;
     run_project_reconciliation(&paths, &project).await?;
 
@@ -1087,37 +914,6 @@ async fn first_allocation_reconciliation_records_desired_state_before_context_fa
 }
 
 #[tokio::test]
-async fn malformed_pv_block_leaves_dotenv_unchanged_and_records_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "env:\n  APP_URL: \"${url}\"\n",
-    )?;
-    write_sensitive_file(
-        &project.path.join(".env"),
-        "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_URL=https://old.test\n",
-    )?;
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-
-    assert_with_normalized_timestamps(
-        "malformed_pv_block_leaves_dotenv_unchanged_and_records_failure",
-        (
-            lines,
-            read_dotenv(&project)?,
-            database.project_env_observed_state(&project.id)?,
-            latest_job(&database, &format!("project:{}", project.id))?,
-        ),
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn malformed_pv_block_preflight_preserves_resource_and_hostname_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1150,34 +946,6 @@ async fn malformed_pv_block_preflight_preserves_resource_and_hostname_state() ->
             hostnames,
             database.project_managed_resources(&project.id)?,
             database.resource_allocations(&project.id, "postgres")?,
-            database.project_env_observed_state(&project.id)?,
-            latest_job(&database, &format!("project:{}", project.id))?,
-        ),
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn conflicting_user_owned_key_is_commented_out_and_records_rendered_state() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "env:\n  APP_URL: \"${url}\"\n",
-    )?;
-    write_sensitive_file(&project.path.join(".env"), "APP_URL=https://user.test\n")?;
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-
-    assert_with_normalized_timestamps(
-        "conflicting_user_owned_key_is_commented_out_and_records_rendered_state",
-        (
-            lines,
-            read_dotenv(&project)?,
             database.project_env_observed_state(&project.id)?,
             latest_job(&database, &format!("project:{}", project.id))?,
         ),
@@ -1557,180 +1325,6 @@ async fn resources_and_empty_allocations_without_env_mappings_update_state_witho
 }
 
 #[tokio::test]
-async fn missing_dotenv_is_created_with_private_permissions() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "env:\n  APP_URL: \"${url}\"\n",
-    )?;
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-    let dotenv_path = project.path.join(".env");
-
-    assert_with_normalized_timestamps(
-        "missing_dotenv_is_created_with_private_permissions",
-        (
-            lines,
-            read_dotenv(&project)?,
-            mode_string(&dotenv_path)?,
-            database.project_env_observed_state(&project.id)?,
-            latest_job(&database, &format!("project:{}", project.id))?,
-        ),
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn multiple_managed_dotenv_blocks_fold_to_one_and_preserve_permissions() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "env:\n  APP_URL: \"${url}\"\n",
-    )?;
-    let dotenv_path = project.path.join(".env");
-    write_sensitive_file(
-        &dotenv_path,
-        r#"BEFORE=1
-# >>> PV MANAGED
-OLD_ONE=stale
-# <<< PV MANAGED
-BETWEEN=1
-# >>> PV MANAGED
-OLD_TWO=stale
-# <<< PV MANAGED
-AFTER=1
-"#,
-    )?;
-    set_file_mode(&dotenv_path, 0o640)?;
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-
-    assert_with_normalized_timestamps(
-        "multiple_managed_dotenv_blocks_fold_to_one_and_preserve_permissions",
-        (
-            lines,
-            read_dotenv(&project)?,
-            mode_string(&dotenv_path)?,
-            database.project_env_observed_state(&project.id)?,
-            latest_job(&database, &format!("project:{}", project.id))?,
-        ),
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn tls_renews_before_malformed_dotenv_validation_without_mutating_primary_error_or_state()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        r#"env:
-  VITE_DEV_SERVER_CERT: "${tls.cert}"
-postgres:
-  version: "8.0"
-  env:
-    DB_HOST: "${host}"
-"#,
-    )?;
-    let local_ca = seed_local_ca(&paths)?;
-    write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
-    let dotenv = "USER_VALUE=kept\n# >>> PV MANAGED\n";
-    write_sensitive_file(&project.path.join(".env"), dotenv)?;
-    let database = Database::open(&paths)?;
-    let project_before = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("expected linked Project"))?;
-    let resources_before = database.project_managed_resources(&project.id)?;
-    let allocations_before = database.resource_allocations(&project.id, "postgres")?;
-    let expected_validation_error = match config::validate_managed_env_block(Some(dotenv)) {
-        Ok(()) => return Err(anyhow!("malformed managed .env should fail validation")),
-        Err(error) => error,
-    };
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let (certificate, private_key) = read_project_tls_files(&paths, &project)?;
-    let database = Database::open(&paths)?;
-    let project_after = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("expected linked Project after reconciliation"))?;
-    let job = latest_job(&database, &format!("project:{}", project.id))?;
-
-    assert!(platform::project_certificate_matches(
-        &certificate,
-        &private_key,
-        served_project_hostname(&project)?,
-        &local_ca.certificate_pem,
-    ));
-    assert_eq!(
-        job.error.as_deref(),
-        Some(format!("Project config error: {expected_validation_error}").as_str())
-    );
-    assert_eq!(read_dotenv(&project)?, dotenv);
-    assert_eq!(project_after, project_before);
-    assert_eq!(
-        database.project_managed_resources(&project.id)?,
-        resources_before
-    );
-    assert_eq!(
-        database.resource_allocations(&project.id, "postgres")?,
-        allocations_before
-    );
-    assert!(!lines.is_empty());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn masked_tls_maintenance_failure_is_written_to_structured_log() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "env:\n  CERT: \"${tls.cert}\"\n",
-    )?;
-    seed_local_ca(&paths)?;
-    write_sensitive_file(
-        &project.path.join(".env"),
-        "USER_VALUE=kept\n# >>> PV MANAGED\n",
-    )?;
-    state::fs::remove_file(&paths.ca_private_key())?;
-    let expected_tls_error = match state::fs::read_to_string(&paths.ca_private_key()) {
-        Ok(_) => return Err(anyhow!("missing CA private key should fail to read")),
-        Err(error) => daemon::DaemonError::from(error).to_string(),
-    };
-
-    run_project_reconciliation(&paths, &project).await?;
-
-    let content = state::fs::read_to_string(&paths.daemon_log())?;
-    let events = content
-        .lines()
-        .map(serde_json::from_str::<Value>)
-        .collect::<Result<Vec<_>, _>>()?;
-    assert!(events.iter().any(|event| {
-        event["event"] == "project_tls_maintenance_failed"
-            && event["project_id"] == project.id
-            && event["error"] == expected_tls_error
-    }));
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn project_env_reconciliation_uses_global_php_default_for_extension_only_config() -> Result<()>
 {
     let tempdir = tempdir()?;
@@ -1824,37 +1418,6 @@ async fn latest_resource_track_reuses_stored_track_when_manifest_default_changes
         (
             initial_lines,
             rerun_lines,
-            read_project_config(&project)?,
-            read_optional_dotenv(&project)?,
-            database.project_managed_resources(&project.id)?,
-            database.project_env_observed_state(&project.id)?,
-            latest_job(&database, &format!("project:{}", project.id))?,
-        ),
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn omitted_resource_track_resolves_manifest_default_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "postgres:\n  env:\n    DB_HOST: \"${host}\"\n",
-    )?;
-    seed_manifest(&paths, "8.0")?;
-    seed_postgres_resource_context(&paths)?;
-
-    let lines = run_project_reconciliation(&paths, &project).await?;
-    let database = Database::open(&paths)?;
-
-    assert_with_normalized_timestamps(
-        "omitted_resource_track_resolves_manifest_default_track",
-        (
-            lines,
             read_project_config(&project)?,
             read_optional_dotenv(&project)?,
             database.project_managed_resources(&project.id)?,

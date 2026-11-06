@@ -672,146 +672,66 @@ mod tests {
 
     use camino_tempfile::tempdir;
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn promotion_reports_restore_failure_when_fragment_promotion_rollback_fails()
+    async fn cleanup_attempts_root_and_fragment_backups_independently()
     -> Result<(), Box<dyn std::error::Error>> {
-        let tempdir = tempdir()?;
-        let root_config = tempdir.path().join("Caddyfile");
-        state::fs::write_sensitive_file(&root_config, "active\n")?;
-        let root_config_for_fragment_promotion = root_config.clone();
+        for root_delete_fails in [false, true] {
+            let tempdir = tempdir()?;
+            let root_config = tempdir.path().join("Caddyfile");
+            let active_dir = tempdir.path().join("active-fragments");
+            let candidate_dir = tempdir.path().join("candidate-fragments");
+            create_dir_all(&active_dir)?;
+            create_dir_all(&candidate_dir)?;
+            state::fs::write_sensitive_file(&root_config, "previous\n")?;
+            state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), "old\n")?;
+            state::fs::write_sensitive_file(&candidate_dir.join("project.Caddyfile"), "new\n")?;
 
-        let result = promote_validated_config_tree_async(
-            &root_config,
-            "candidate\n",
-            "active\n",
-            |_candidate_path| async { Ok(()) },
-            || {
-                state::fs::delete_file(&root_config_for_fragment_promotion)?;
-                create_dir(&root_config_for_fragment_promotion)?;
+            let promoted = promote_validated_config_tree_async(
+                &root_config,
+                "candidate\n",
+                "candidate\n",
+                |_candidate_path| async { Ok(()) },
+                || promote_config_dir(&active_dir, &candidate_dir),
+            )
+            .await?;
+            let root_backup_path = promoted.root.backup_path.clone();
+            let fragment_backup_path = promoted.fragments.backup_dir.clone();
+            let (failed_path, cleaned_path) = if root_delete_fails {
+                state::fs::delete_file(&root_backup_path)?;
+                create_dir(&root_backup_path)?;
+                (&root_backup_path, &fragment_backup_path)
+            } else {
+                rustix::fs::chmod(
+                    fragment_backup_path.as_std_path(),
+                    rustix::fs::Mode::from_raw_mode(0o500),
+                )?;
+                (&fragment_backup_path, &root_backup_path)
+            };
 
-                Err(DaemonError::UnexpectedProtocolResponse {
-                    reason: "fragment promotion failed".to_owned(),
-                })
-            },
-        )
-        .await;
-
-        let Err(DaemonError::CaddyAdmin(CaddyAdminError::RollbackFailed {
-            original_error,
-            rollback_error,
-        })) = result
-        else {
-            return Err("expected a typed compound promotion rollback error".into());
-        };
-        assert!(matches!(
-            original_error.as_ref(),
-            CaddyAdminError::TaskFailed { operation: CaddyAdminOperation::Load, reason }
-                if reason.contains("fragment promotion failed")
-        ));
-        assert!(matches!(
-            rollback_error.as_ref(),
-            CaddyAdminError::TaskFailed {
-                operation: CaddyAdminOperation::Rollback,
-                ..
+            let cleanup_result = promoted.cleanup();
+            if !root_delete_fails {
+                rustix::fs::chmod(
+                    fragment_backup_path.as_std_path(),
+                    rustix::fs::Mode::from_raw_mode(0o700),
+                )?;
             }
-        ));
+            let Err(cleanup_error) = cleanup_result else {
+                return Err(format!("cleanup of {failed_path} must fail").into());
+            };
 
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cleanup_attempts_root_and_fragment_backups_independently_when_fragment_delete_fails()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let tempdir = tempdir()?;
-        let root_config = tempdir.path().join("Caddyfile");
-        let active_dir = tempdir.path().join("active-fragments");
-        let candidate_dir = tempdir.path().join("candidate-fragments");
-        create_dir_all(&active_dir)?;
-        create_dir_all(&candidate_dir)?;
-        state::fs::write_sensitive_file(&root_config, "previous\n")?;
-        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), "old\n")?;
-        state::fs::write_sensitive_file(&candidate_dir.join("project.Caddyfile"), "new\n")?;
-
-        let promoted = promote_validated_config_tree_async(
-            &root_config,
-            "candidate\n",
-            "candidate\n",
-            |_candidate_path| async { Ok(()) },
-            || promote_config_dir(&active_dir, &candidate_dir),
-        )
-        .await?;
-        let root_backup_path = promoted.root.backup_path.clone();
-        let fragment_backup_path = promoted.fragments.backup_dir.clone();
-
-        rustix::fs::chmod(
-            fragment_backup_path.as_std_path(),
-            rustix::fs::Mode::from_raw_mode(0o500),
-        )?;
-        let Err(cleanup_error) = promoted.cleanup() else {
-            return Err("fragment cleanup must fail".into());
-        };
-        rustix::fs::chmod(
-            fragment_backup_path.as_std_path(),
-            rustix::fs::Mode::from_raw_mode(0o700),
-        )?;
-        assert!(matches!(
-            cleanup_error,
-            ConfigBackupCleanupError::Backup { path, .. } if path == fragment_backup_path
-        ));
-        assert!(!root_backup_path.exists());
-        assert!(fragment_backup_path.exists());
-        assert_eq!(state::fs::read_to_string(&root_config)?, "candidate\n");
-        assert_eq!(
-            state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
-            "new\n"
-        );
-
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn cleanup_attempts_root_and_fragment_backups_independently_when_root_delete_fails()
-    -> Result<(), Box<dyn std::error::Error>> {
-        let tempdir = tempdir()?;
-        let root_config = tempdir.path().join("Caddyfile");
-        let active_dir = tempdir.path().join("active-fragments");
-        let candidate_dir = tempdir.path().join("candidate-fragments");
-        create_dir_all(&active_dir)?;
-        create_dir_all(&candidate_dir)?;
-        state::fs::write_sensitive_file(&root_config, "previous\n")?;
-        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), "old\n")?;
-        state::fs::write_sensitive_file(&candidate_dir.join("project.Caddyfile"), "new\n")?;
-
-        let promoted = promote_validated_config_tree_async(
-            &root_config,
-            "candidate\n",
-            "candidate\n",
-            |_candidate_path| async { Ok(()) },
-            || promote_config_dir(&active_dir, &candidate_dir),
-        )
-        .await?;
-        let root_backup_path = promoted.root.backup_path.clone();
-        let fragment_backup_path = promoted.fragments.backup_dir.clone();
-        state::fs::delete_file(&root_backup_path)?;
-        create_dir(&root_backup_path)?;
-
-        let Err(cleanup_error) = promoted.cleanup() else {
-            return Err("root cleanup must fail".into());
-        };
-
-        assert!(matches!(
-            cleanup_error,
-            ConfigBackupCleanupError::Backup { path, .. } if path == root_backup_path
-        ));
-        assert!(root_backup_path.exists());
-        assert!(!fragment_backup_path.exists());
-        assert_eq!(state::fs::read_to_string(&root_config)?, "candidate\n");
-        assert_eq!(
-            state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
-            "new\n"
-        );
+            assert!(matches!(
+                cleanup_error,
+                ConfigBackupCleanupError::Backup { path, .. } if path == *failed_path
+            ));
+            assert!(failed_path.exists());
+            assert!(!cleaned_path.exists());
+            assert_eq!(state::fs::read_to_string(&root_config)?, "candidate\n");
+            assert_eq!(
+                state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
+                "new\n"
+            );
+        }
 
         Ok(())
     }

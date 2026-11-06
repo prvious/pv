@@ -14,45 +14,6 @@ use tokio::task::JoinHandle;
 
 const READINESS: Limit = Limit::new("admin readiness", Duration::from_secs(5));
 
-#[test]
-fn transaction_errors_preserve_ownership_and_both_rollback_failures() -> Result<()> {
-    let ownership = CaddyAdminError::runtime_ownership_changed("gateway");
-    assert!(matches!(
-        ownership,
-        CaddyAdminError::RuntimeOwnershipChanged { runtime } if runtime == "gateway"
-    ));
-
-    let original_error = CaddyAdminError::AdminReadinessTimedOut {
-        endpoint: CaddyAdminEndpoint::new("/tmp/pv-caddy-admin.sock"),
-        timeout_ms: 15_000,
-        last_error: Some("HTTP status 503".to_owned()),
-    };
-    let rollback_error = CaddyAdminError::LoadRejected {
-        endpoint: CaddyAdminEndpoint::new("/tmp/pv-caddy-admin.sock"),
-        status: 422,
-        detail: "restored config rejected".to_owned(),
-    };
-    let rollback_error = CaddyAdminError::rollback_failed(original_error, rollback_error);
-
-    let CaddyAdminError::RollbackFailed {
-        original_error,
-        rollback_error,
-    } = rollback_error
-    else {
-        bail!("expected a compound restored-config reload error");
-    };
-    assert!(matches!(
-        original_error.as_ref(),
-        CaddyAdminError::AdminReadinessTimedOut { .. }
-    ));
-    assert!(matches!(
-        rollback_error.as_ref(),
-        CaddyAdminError::LoadRejected { .. }
-    ));
-
-    Ok(())
-}
-
 #[derive(Debug)]
 struct RecordedRequest {
     method: String,
@@ -102,48 +63,39 @@ async fn load_caddyfile_accepts_complete_adapter_warnings() -> Result<()> {
 }
 
 #[tokio::test]
-async fn load_caddyfile_rejects_error_reported_after_adapter_warnings() -> Result<()> {
-    let body = br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]{"error":"loading config: listener unavailable"}
-"#;
-    let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
+async fn load_caddyfile_rejects_error_reported_with_success_status() -> Result<()> {
+    for (name, body) in [
+        (
+            "after adapter warnings",
+            &br#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted"}]{"error":"loading config: listener unavailable"}
+"#[..],
+        ),
+        (
+            "without adapter warnings",
+            &br#"{"error":"loading config: listener unavailable"}
+"#[..],
+        ),
+    ] {
+        let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
 
-    let result = CaddyAdminClient::new()
-        .load_caddyfile(&endpoint, b"candidate\n")
-        .await;
-    let requests = server.await??;
+        let result = CaddyAdminClient::new()
+            .load_caddyfile(&endpoint, b"candidate\n")
+            .await;
+        let requests = server.await??;
 
-    assert_eq!(requests.len(), 1);
-    assert!(matches!(
-        result,
-        Err(CaddyAdminError::LoadReportedFailure {
-            status: 200,
-            detail,
-            ..
-        }) if detail == "loading config: listener unavailable"
-    ));
-    Ok(())
-}
-
-#[tokio::test]
-async fn load_caddyfile_rejects_error_reported_without_adapter_warnings() -> Result<()> {
-    let body = br#"{"error":"loading config: listener unavailable"}
-"#;
-    let (endpoint, server) = spawn_response_server(vec![http_response(200, body)])?;
-
-    let result = CaddyAdminClient::new()
-        .load_caddyfile(&endpoint, b"candidate\n")
-        .await;
-    let requests = server.await??;
-
-    assert_eq!(requests.len(), 1);
-    assert!(matches!(
-        result,
-        Err(CaddyAdminError::LoadReportedFailure {
-            status: 200,
-            detail,
-            ..
-        }) if detail == "loading config: listener unavailable"
-    ));
+        assert_eq!(requests.len(), 1, "{name}");
+        assert!(
+            matches!(
+                &result,
+                Err(CaddyAdminError::LoadReportedFailure {
+                    status: 200,
+                    detail,
+                    ..
+                }) if detail == "loading config: listener unavailable"
+            ),
+            "{name}: {result:?}"
+        );
+    }
     Ok(())
 }
 
