@@ -36,7 +36,6 @@ pub(crate) async fn serve(
     paths: PvPaths,
     listener: LocalListener,
     mut shutdown: oneshot::Receiver<()>,
-    fallback_shutdown: watch::Receiver<bool>,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
     (project_config_watcher, watch_messages): (
         ProjectConfigWatcher,
@@ -53,7 +52,6 @@ pub(crate) async fn serve(
     let startup_paths = paths.clone();
     let startup_queue = queue.clone();
     let startup_runtime_catalog = runtime_catalog.clone();
-    let startup_fallback_shutdown = fallback_shutdown.clone();
     let (startup_shutdown, startup_shutdown_receiver) = oneshot::channel();
     let mut startup_shutdown = Some(startup_shutdown);
     let mut startup_task = Some(tokio::spawn(async move {
@@ -62,7 +60,6 @@ pub(crate) async fn serve(
             startup_queue,
             startup_runtime_catalog.as_deref(),
             startup_shutdown_receiver,
-            startup_fallback_shutdown,
         )
         .await
     }));
@@ -170,13 +167,11 @@ pub(crate) async fn serve(
                                     Ok(Some(EnqueueResult::Queued(queued))) => {
                                         let completion_paths = paths.clone();
                                         let completion_runtime_catalog = runtime_catalog.clone();
-                                        let completion_fallback_shutdown = fallback_shutdown.clone();
                                         background_tasks.spawn(async move {
                                             let result = complete_queued_background_reconciliation_job(
                                                 &completion_paths,
                                                 queued,
                                                 completion_runtime_catalog.as_deref(),
-                                                Some(&completion_fallback_shutdown),
                                             )
                                             .await;
                                             let _result = handle_background_reconciliation_result(
@@ -233,7 +228,6 @@ pub(crate) async fn serve(
                         let task_queue = queue.clone();
                         let task_runtime_catalog = runtime_catalog.clone();
                         let task_shutdown = background_shutdown_receiver.clone();
-                        let task_fallback_shutdown = fallback_shutdown.clone();
 
                         background_tasks.spawn(async move {
                             let scope_text = scope.to_string();
@@ -243,7 +237,6 @@ pub(crate) async fn serve(
                                 scope,
                                 task_runtime_catalog.as_deref(),
                                 task_shutdown,
-                                task_fallback_shutdown,
                             )
                             .await;
                             let _result = handle_background_reconciliation_result(
@@ -264,7 +257,6 @@ pub(crate) async fn serve(
                         let connection_paths = paths.clone();
                         let connection_queue = queue.clone();
                         let connection_runtime_catalog = runtime_catalog.clone();
-                        let connection_fallback_shutdown = fallback_shutdown.clone();
 
                         connections.spawn(async move {
                             handle_connection(
@@ -272,7 +264,6 @@ pub(crate) async fn serve(
                                 connection_queue,
                                 stream,
                                 connection_runtime_catalog,
-                                connection_fallback_shutdown,
                             )
                             .await
                         });
@@ -314,9 +305,7 @@ pub(crate) async fn serve(
     let _send_result = background_shutdown.send(true);
     let startup_result =
         stop_startup_task(&paths, startup_shutdown.take(), startup_task.take()).await;
-    if !*fallback_shutdown.borrow() {
-        connections.abort_all();
-    }
+    connections.abort_all();
     while background_tasks.join_next().await.is_some() {}
     while connections.join_next().await.is_some() {}
 
@@ -349,7 +338,6 @@ async fn run_debounced_reconciliation_job(
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     mut shutdown: watch::Receiver<bool>,
-    fallback_shutdown: watch::Receiver<bool>,
 ) -> Result<(), BackgroundReconciliationError> {
     let mut waiting_for_jobs_lock = false;
     let result = loop {
@@ -388,14 +376,7 @@ async fn run_debounced_reconciliation_job(
         running = queued.wait_for_turn() => running,
     };
 
-    complete_running_background_reconciliation_job(
-        &paths,
-        running,
-        runtime_catalog,
-        None,
-        Some(&fallback_shutdown),
-    )
-    .await
+    complete_running_background_reconciliation_job(&paths, running, runtime_catalog, None).await
 }
 
 /// Resolves once daemon shutdown is requested, or once the shutdown signal can no
@@ -499,15 +480,9 @@ async fn handle_connection(
     queue: ReconciliationQueue,
     stream: LocalStream,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
-    mut fallback_shutdown: watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let mut transport = protocol::transport(stream);
-    let line = tokio::select! {
-        biased;
-        _ = wait_for_fallback_shutdown(&mut fallback_shutdown) => return Ok(()),
-        line = read_request_line(&mut transport) => line?,
-    };
-    let Some(line) = line else {
+    let Some(line) = read_request_line(&mut transport).await? else {
         return Ok(());
     };
     let request = serde_json::from_str::<DaemonRequest>(&line)?;
@@ -536,7 +511,6 @@ async fn handle_connection(
                 &kind,
                 &scope,
                 runtime_catalog.as_deref(),
-                &fallback_shutdown,
             )
             .await
         }
@@ -565,12 +539,6 @@ async fn handle_connection(
 
             Ok(())
         }
-    }
-}
-
-async fn wait_for_fallback_shutdown(shutdown: &mut watch::Receiver<bool>) {
-    if shutdown.wait_for(|requested| *requested).await.is_err() {
-        std::future::pending::<()>().await;
     }
 }
 
@@ -781,7 +749,6 @@ mod tests {
         let task_paths = paths.clone();
         let scope = ReconciliationScope::project(project.id)?;
         let (_shutdown_sender, shutdown_receiver) = watch::channel(false);
-        let (_fallback_sender, fallback_receiver) = watch::channel(false);
         let task = tokio::spawn(async move {
             run_debounced_reconciliation_job(
                 task_paths,
@@ -789,7 +756,6 @@ mod tests {
                 scope,
                 None,
                 shutdown_receiver,
-                fallback_receiver,
             )
             .await
         });
@@ -822,7 +788,6 @@ mod tests {
         let task_paths = paths.clone();
         let scope = ReconciliationScope::project(project.id)?;
         let (shutdown_sender, shutdown_receiver) = watch::channel(false);
-        let (_fallback_sender, fallback_receiver) = watch::channel(false);
         let task = tokio::spawn(async move {
             run_debounced_reconciliation_job(
                 task_paths,
@@ -830,7 +795,6 @@ mod tests {
                 scope,
                 None,
                 shutdown_receiver,
-                fallback_receiver,
             )
             .await
         });

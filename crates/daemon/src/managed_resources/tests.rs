@@ -9,15 +9,13 @@ use std::time::Duration;
 
 use crate::{
     DaemonError, ProcessSpec, ProcessSupervisor, ReadinessCheck,
-    gateway::ReconciliationOutcome,
     jobs::DaemonDownloadProgress,
     managed_resources::{
         ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_READINESS_TIMEOUT,
     },
     project_env::{
-        DemandedResourceTrack, ProjectApplyOptions, ProjectApplyStage, discover_project_demand,
+        DemandedResourceTrack, discover_project_demand,
         reconcile_project_env_with_runtime_catalog_and_progress,
-        reconcile_project_env_with_runtime_catalog_and_progress_outcome,
     },
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
@@ -50,7 +48,7 @@ use state::{
     ResourceAllocationStatus, RuntimeObservedStatus, RuntimeSubject, StateError,
 };
 use time::{Duration as CertificateDuration, OffsetDateTime};
-use tokio::sync::{Semaphore, watch};
+use tokio::sync::Semaphore;
 
 const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
@@ -586,7 +584,7 @@ async fn cleanup_starts_a_stopped_track_to_drop_listed_databases_then_stops_it()
     // Git dropped the worktree, and the run stopped the Postgres no Project uses anymore.
     Database::open(&paths)?.remove_discovered_project(&project.id)?;
     super::stop_undemanded_system_resource_runtimes(&paths, None).await?;
-    super::clean_up_removed_allocations(&paths, None, None).await?;
+    super::clean_up_removed_allocations(&paths, None).await?;
     let database = Database::open(&paths)?;
     let postgres_status = database
         .runtime_observed_states()?
@@ -634,11 +632,11 @@ async fn cleanup_waits_for_an_uninstalled_track_unless_its_data_is_gone() -> Res
     let data_dir = paths.resource_data_dir("postgres", "17");
     state::fs::ensure_user_dir(&data_dir)?;
 
-    super::clean_up_removed_allocations(&paths, None, None).await?;
+    super::clean_up_removed_allocations(&paths, None).await?;
     let waiting = Database::open(&paths)?.pending_cleanups()?;
     // `--prune` deletes the data directory, and the database with it.
     state::fs::delete_dir_all(&data_dir)?;
-    super::clean_up_removed_allocations(&paths, None, None).await?;
+    super::clean_up_removed_allocations(&paths, None).await?;
 
     assert_debug_snapshot!(waiting);
     assert_eq!(Database::open(&paths)?.pending_cleanups()?, []);
@@ -1967,7 +1965,6 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
         DaemonDownloadProgress::disabled(),
         crate::project_env::ProjectApplyOptions::new(
             crate::project_env::ProjectApplyStage::CompleteApply,
-            None,
         ),
     )
     .await?;
@@ -2388,7 +2385,7 @@ async fn project_allocation_failure_preserves_shared_runtime_health() -> Result<
         &catalog,
         &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed, None),
+        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
     )
     .await;
     let Err(DaemonError::State(StateError::InvalidEnvJson { .. })) = result else {
@@ -2406,402 +2403,6 @@ async fn project_allocation_failure_preserves_shared_runtime_health() -> Result<
         })
         .ok_or_else(|| anyhow!("missing shared mysql runtime observation"))?;
     assert_eq!(healthy_after, healthy_before);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn fallback_after_resource_artifact_install_skips_runtime_preparation() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "serve: false\nmysql:\n  version: \"8.0\"\n",
-    )?;
-    let fixture = SetupDefaultFixture {
-        resource_name: "mysql",
-        track: FAKE_SQL_TRACK,
-        artifact_version: FAKE_SQL_ARTIFACT_VERSION,
-        archive_file_name: "mysql-8.0.0-pv1-any.tar.gz",
-        executable_relative_path: "bin/pv-fake-sql",
-        support_files: &[],
-    };
-    let (manifest, archives) = remote_setup_default_fixtures(tempdir.path(), &[fixture])?;
-    let manifest_requests = Arc::new(AtomicUsize::new(0));
-    let active_downloads = Arc::new(AtomicUsize::new(0));
-    let maximum_active_downloads = Arc::new(AtomicUsize::new(0));
-    let release_downloads = Arc::new((Mutex::new(false), Condvar::new()));
-    let (download_started_sender, download_started_receiver) = mpsc::channel();
-    let client = Arc::new(GatedArtifactClient {
-        manifest,
-        archives,
-        manifest_requests,
-        active_downloads,
-        maximum_active_downloads,
-        download_started_sender,
-        release_downloads: Arc::clone(&release_downloads),
-        download_failure: None,
-    });
-    let gate = Arc::new(ReadinessWaveGate::with_gated_preparation(FAKE_SQL_TRACK));
-    let allocation_events = Arc::new(Mutex::new(Vec::new()));
-    let mut catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
-        super::ManagedResourceInstallOptions {
-            manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_owned(),
-            target_platform: resources::TargetPlatform::current()?,
-        },
-        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?,
-    );
-    catalog.http_client = Some(client);
-    let (fallback_sender, fallback_receiver) = watch::channel(false);
-
-    let reconciliation = super::reconcile_persisted_resource_track_for_projects_with_progress(
-        &paths,
-        "mysql",
-        FAKE_SQL_TRACK,
-        Some(&catalog),
-        std::slice::from_ref(&project),
-        DaemonDownloadProgress::disabled(),
-        Some(&fallback_receiver),
-    );
-    tokio::pin!(reconciliation);
-    let download_started = tokio::task::spawn_blocking(move || {
-        download_started_receiver.recv_timeout(Duration::from_secs(5))
-    });
-    tokio::select! {
-        result = &mut reconciliation => {
-            bail!("resource reconciliation finished before artifact cancellation: {result:#?}");
-        }
-        started = download_started => {
-            started??;
-        }
-    }
-    fallback_sender.send(true)?;
-    {
-        let mut released = release_downloads
-            .0
-            .lock()
-            .map_err(|_poison| anyhow!("download release gate lock poisoned"))?;
-        *released = true;
-        release_downloads.1.notify_all();
-    }
-    gate.preparation.add_permits(1);
-    let (installed, failures) =
-        real::timeout(Duration::from_secs(5), &mut reconciliation).await??;
-
-    assert!(installed);
-    assert!(failures.is_empty());
-    assert_eq!(gate.preparation_started.load(Ordering::SeqCst), 0);
-    assert_eq!(gate.started.load(Ordering::SeqCst), 0);
-    assert!(cloned_hook_events(&allocation_events)?.is_empty());
-    assert!(
-        Database::open(&paths)?
-            .managed_resource_track("mysql", FAKE_SQL_TRACK)?
-            .installed_version
-            .is_some()
-    );
-    assert!(
-        !paths
-            .resource_runtime_metadata("mysql", FAKE_SQL_TRACK)
-            .exists()
-    );
-    assert!(
-        !paths
-            .resource_runtime_metadata("mysql", FAKE_SQL_TRACK)
-            .exists()
-    );
-    assert!(
-        !paths
-            .resource_runtime_config("mysql", FAKE_SQL_TRACK)
-            .exists()
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn artifact_failure_completed_during_fallback_outranks_cancellation() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "serve: false\nmysql:\n  version: \"8.0\"\n",
-    )?;
-    let fixture = SetupDefaultFixture {
-        resource_name: "mysql",
-        track: FAKE_SQL_TRACK,
-        artifact_version: FAKE_SQL_ARTIFACT_VERSION,
-        archive_file_name: "mysql-8.0.0-pv1-any.tar.gz",
-        executable_relative_path: "bin/pv-fake-sql",
-        support_files: &[],
-    };
-    let (manifest, archives) = remote_setup_default_fixtures(tempdir.path(), &[fixture])?;
-    let release_downloads = Arc::new((Mutex::new(false), Condvar::new()));
-    let (download_started_sender, download_started_receiver) = mpsc::channel();
-    let client = Arc::new(GatedArtifactClient {
-        manifest,
-        archives,
-        manifest_requests: Arc::new(AtomicUsize::new(0)),
-        active_downloads: Arc::new(AtomicUsize::new(0)),
-        maximum_active_downloads: Arc::new(AtomicUsize::new(0)),
-        download_started_sender,
-        release_downloads: Arc::clone(&release_downloads),
-        download_failure: Some("fixture download failed".to_owned()),
-    });
-    let gate = Arc::new(ReadinessWaveGate::with_gated_preparation(FAKE_SQL_TRACK));
-    let allocation_events = Arc::new(Mutex::new(Vec::new()));
-    let mut catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
-        super::ManagedResourceInstallOptions {
-            manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_owned(),
-            target_platform: resources::TargetPlatform::current()?,
-        },
-        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?,
-    );
-    catalog.http_client = Some(client);
-    let plan = crate::project_env::ProjectResourcePlan {
-        resources: vec![ProjectManagedResourceInput {
-            resource_name: "mysql".to_owned(),
-            track: FAKE_SQL_TRACK.to_owned(),
-        }],
-        allocations: BTreeMap::new(),
-    };
-    let (fallback_sender, fallback_receiver) = watch::channel(false);
-    let mut database = Database::open(&paths)?;
-    let demanded_tracks = BTreeSet::new();
-    let reconciliation = super::reconcile_project_resources_with_catalog_and_progress(
-        &paths,
-        &mut database,
-        &project,
-        &plan,
-        &catalog,
-        &demanded_tracks,
-        DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(
-            super::ArtifactInstall::Allowed,
-            Some(&fallback_receiver),
-        ),
-    );
-    tokio::pin!(reconciliation);
-    let download_started = tokio::task::spawn_blocking(move || {
-        download_started_receiver.recv_timeout(Duration::from_secs(5))?;
-        Ok::<_, mpsc::RecvTimeoutError>(download_started_receiver)
-    });
-    let _download_started_receiver = tokio::select! {
-        result = &mut reconciliation => {
-            bail!("resource reconciliation finished before artifact failure cancellation: {result:#?}");
-        }
-        started = download_started => {
-            started??
-        }
-    };
-    fallback_sender.send(true)?;
-    {
-        let mut released = release_downloads
-            .0
-            .lock()
-            .map_err(|_poison| anyhow!("download release gate lock poisoned"))?;
-        *released = true;
-        release_downloads.1.notify_all();
-    }
-    gate.preparation.add_permits(1);
-    let result = real::timeout(Duration::from_secs(5), &mut reconciliation).await?;
-
-    let error = match result {
-        Err(error) => error,
-        Ok(outcome) => {
-            bail!("artifact failure did not outrank fallback cancellation: {outcome:#?}");
-        }
-    };
-    assert!(
-        format!("{error:#?}").contains("fixture download failed"),
-        "fallback masked the artifact failure: {error:#?}"
-    );
-    assert_eq!(gate.preparation_started.load(Ordering::SeqCst), 0);
-    assert_eq!(gate.started.load(Ordering::SeqCst), 0);
-    assert!(cloned_hook_events(&allocation_events)?.is_empty());
-    assert!(
-        !paths
-            .resource_runtime_metadata("mysql", FAKE_SQL_TRACK)
-            .exists()
-    );
-    assert!(
-        !paths
-            .resource_runtime_metadata("mysql", FAKE_SQL_TRACK)
-            .exists()
-    );
-    assert!(
-        !paths
-            .resource_runtime_config("mysql", FAKE_SQL_TRACK)
-            .exists()
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn fallback_during_project_resource_readiness_preserves_pending_env_state() -> Result<()> {
-    assert_fallback_during_project_resource_readiness(None).await
-}
-
-#[tokio::test]
-async fn readiness_error_during_fallback_outranks_project_cancellation() -> Result<()> {
-    assert_fallback_during_project_resource_readiness(Some("fixture readiness failed")).await
-}
-
-async fn assert_fallback_during_project_resource_readiness(
-    readiness_error: Option<&str>,
-) -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "serve: false\nenv:\n  REVISION: changed\nmysql:\n  version: \"8.0\"\n",
-    )?;
-    let baseline_env = "REVISION=baseline\n";
-    state::fs::write_sensitive_file(&project.path.join(".env"), baseline_env)?;
-    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
-    let port = pv_fake::port()?;
-    let mut database = Database::open(&paths)?;
-    database.assign_port(
-        PortRequest::resource_port("mysql", FAKE_SQL_TRACK, "mysql", port, port, port),
-        |candidate| candidate == port,
-    )?;
-    let project_before = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("missing linked Project"))?;
-    let observed_before = database.project_env_observed_state(&project.id)?;
-    drop(database);
-
-    let gate = Arc::new(match readiness_error {
-        Some(reason) => ReadinessWaveGate::with_failing_readiness(reason),
-        None => ReadinessWaveGate::new(),
-    });
-    let fake_clock = readiness_error.map(|_reason| clock::install_fake_for_test());
-    let allocation_events = Arc::new(Mutex::new(Vec::new()));
-    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
-        super::ManagedResourceInstallOptions {
-            manifest_url: OFFLINE_TEST_MANIFEST_URL.to_owned(),
-            target_platform: resources::TargetPlatform::current()?,
-        },
-        GatedSqlRuntimeAdapter::new(Arc::clone(&gate), Arc::clone(&allocation_events))?,
-    );
-    let (fallback_sender, fallback_receiver) = watch::channel(false);
-    let demanded_tracks = BTreeSet::new();
-    let reconciliation = reconcile_project_env_with_runtime_catalog_and_progress_outcome(
-        &paths,
-        &project.id,
-        Some(&catalog),
-        None,
-        &demanded_tracks,
-        DaemonDownloadProgress::disabled(),
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteApply, Some(&fallback_receiver)),
-    );
-    tokio::pin!(reconciliation);
-
-    real::timeout(Duration::from_secs(5), async {
-        while gate.started.load(Ordering::SeqCst) == 0 {
-            tokio::select! {
-                result = &mut reconciliation => {
-                    return Err(anyhow!("Project reconciliation finished before readiness cancellation: {result:#?}"));
-                }
-                () = tokio::task::yield_now() => {}
-            }
-        }
-        Ok(())
-    })
-    .await??;
-    fallback_sender.send(true)?;
-    gate.proceed.add_permits(1);
-    gate.finish.add_permits(1);
-    let result = match &fake_clock {
-        None => real::timeout(Duration::from_secs(5), &mut reconciliation).await?,
-        Some(fake_clock) => {
-            // Advance only once the first check has failed and a second has started, so the
-            // reported error is the check's own.
-            let (result, ()) = tokio::try_join!(
-                async {
-                    Ok::<_, anyhow::Error>(
-                        real::timeout(Duration::from_secs(5), &mut reconciliation).await?,
-                    )
-                },
-                async {
-                    while gate.started.load(Ordering::SeqCst) < 2 {
-                        tokio::task::yield_now().await;
-                    }
-                    fake_clock
-                        .advance_when_waiting(&RESOURCE_READINESS_TIMEOUT)
-                        .await?;
-                    Ok(())
-                },
-            )?;
-            result
-        }
-    };
-
-    let database = Database::open(&paths)?;
-    let env_after = read_dotenv(&project)?;
-    let observed_after = database.project_env_observed_state(&project.id)?;
-    let project_after = database
-        .project_by_id(&project.id)?
-        .ok_or_else(|| anyhow!("missing linked Project after cancellation"))?;
-    drop(database);
-    let runtime_files_after_reconciliation =
-        runtime_files_exist_for_resource(&paths, "mysql", FAKE_SQL_TRACK)?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    if let Some(adopted) =
-        supervisor.adopt_recorded(&paths.resource_runtime_metadata("mysql", FAKE_SQL_TRACK))?
-    {
-        adopted.stop(Duration::from_secs(1)).await?;
-    }
-    super::cleanup_resource_runtime_files(
-        &paths,
-        &ProjectManagedResourceInput {
-            resource_name: "mysql".to_owned(),
-            track: FAKE_SQL_TRACK.to_owned(),
-        },
-    )?;
-
-    match (readiness_error, result) {
-        (None, Ok(ReconciliationOutcome::Cancelled)) => {
-            assert_eq!(observed_after, observed_before);
-        }
-        (
-            Some(expected),
-            Err(DaemonError::ReadinessTimedOut {
-                last_error: Some(actual),
-                ..
-            }),
-        ) => {
-            assert!(actual.contains(expected));
-            let observed = observed_after
-                .ok_or_else(|| anyhow!("readiness failure was not recorded for the Project"))?;
-            assert_eq!(observed.status, ProjectEnvObservedStatus::Failed);
-            assert!(
-                observed
-                    .message
-                    .as_deref()
-                    .is_some_and(|message| message.contains(expected))
-            );
-            assert_eq!(
-                runtime_files_after_reconciliation,
-                RuntimeFilePresence {
-                    metadata: false,
-                    config: false,
-                }
-            );
-        }
-        (expected, actual) => {
-            bail!("unexpected readiness outcome for {expected:?}: {actual:#?}");
-        }
-    }
-    assert_eq!(env_after, baseline_env);
-    assert_eq!(project_after, project_before);
-    assert!(cloned_hook_events(&allocation_events)?.is_empty());
 
     Ok(())
 }
@@ -2848,7 +2449,7 @@ async fn project_download_failures_follow_original_plan_order() -> Result<()> {
         &catalog,
         &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed, None),
+        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
     )
     .await;
     let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
@@ -2952,7 +2553,6 @@ async fn project_php_demand_does_not_overwrite_concurrent_pair_removal() -> Resu
         crate::jobs::DaemonDownloadProgress::disabled(),
         crate::project_env::ProjectApplyOptions::new(
             crate::project_env::ProjectApplyStage::RecordRequirements,
-            None,
         ),
     )
     .await;
@@ -3032,7 +2632,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         &catalog,
         &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed, None),
+        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
     )
     .await;
     let states = database.runtime_observed_states()?;
@@ -3048,7 +2648,7 @@ async fn project_manifest_failure_preserves_earlier_installed_resource_work() ->
         &catalog,
         &BTreeSet::new(),
         crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed, None),
+        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
     )
     .await?;
     let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
@@ -3170,7 +2770,6 @@ async fn project_application_pins_resource_track_until_selector_changes() -> Res
         progress.clone(),
         crate::project_env::ProjectApplyOptions::new(
             crate::project_env::ProjectApplyStage::CompleteApply,
-            None,
         ),
     )
     .await;
@@ -3200,7 +2799,6 @@ async fn project_application_pins_resource_track_until_selector_changes() -> Res
         progress,
         crate::project_env::ProjectApplyOptions::new(
             crate::project_env::ProjectApplyStage::CompleteApply,
-            None,
         ),
     )
     .await;
@@ -5188,7 +4786,6 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
         progress: &progress,
         prefetched_installs: &mut prefetched_installs,
         artifact_install: super::ArtifactInstall::Allowed,
-        fallback_shutdown: None,
     };
     let reconciliation =
         super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
@@ -5303,7 +4900,6 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
             progress: &progress,
             prefetched_installs: &mut prefetched_installs,
             artifact_install: super::ArtifactInstall::Allowed,
-            fallback_shutdown: None,
         };
         let reconciliation =
             super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
@@ -5381,7 +4977,6 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         progress: &progress,
         prefetched_installs: &mut prefetched_installs,
         artifact_install: super::ArtifactInstall::Allowed,
-        fallback_shutdown: None,
     };
     let result = {
         let reconciliation =
@@ -7894,13 +7489,6 @@ impl ReadinessWaveGate {
     fn with_gated_preparation(track: &str) -> Self {
         Self {
             preparation_track: Some(track.to_owned()),
-            ..Self::new()
-        }
-    }
-
-    fn with_failing_readiness(reason: &str) -> Self {
-        Self {
-            readiness_error: Some(reason.to_owned()),
             ..Self::new()
         }
     }

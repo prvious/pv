@@ -200,8 +200,7 @@ async fn real_postgres_forced_exit_keeps_recovery_records() -> Result<()> {
         let supervisor = ProcessSupervisor::new(paths.clone());
         let spec = adapter.build_process_spec(&paths, &context)?;
         let pending = start_or_adopt_runtime(&supervisor, spec.clone(), adapter.stop_signal(),
-            adapter.readiness(&context)?, None).await?
-            .ok_or_else(|| anyhow!("Postgres was not started"))?;
+            adapter.readiness(&context)?).await?;
         pending.wait().await?;
         let pool = PgPool::connect_with(sql::postgres_options(&admin)).await?;
         let mut connection = pool.acquire().await?;
@@ -770,17 +769,13 @@ async fn start_wait_and_stop<Held>(
     let (log_path, metadata_path) = (spec.log_path.clone(), spec.metadata_path.clone());
     adapter.prepare_runtime(paths, context).await?;
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let Some(pending) = start_or_adopt_runtime(
+    let pending = start_or_adopt_runtime(
         &supervisor,
         spec,
         adapter.stop_signal(),
         adapter.readiness(context)?,
-        None,
     )
-    .await?
-    else {
-        bail!("{} was not started", context.resource_name);
-    };
+    .await?;
     let checked = match pending.wait().await {
         Ok(()) => check.await,
         Err(error) => Err(error.into()),

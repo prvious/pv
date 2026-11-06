@@ -35,9 +35,7 @@ use state::{
     RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START, ResourceAllocationRecord,
     RuntimeObservedStatus, RuntimeSubject, StateError,
 };
-use tokio::sync::watch;
 
-use crate::gateway::ReconciliationOutcome;
 use crate::jobs::DaemonDownloadProgress;
 use crate::project_env::DemandedResourceTrack;
 use crate::supervisor::{
@@ -376,20 +374,13 @@ pub(crate) enum ArtifactInstall {
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct ResourceReconciliationOptions<'a> {
+pub(crate) struct ResourceReconciliationOptions {
     artifact_install: ArtifactInstall,
-    fallback_shutdown: Option<&'a watch::Receiver<bool>>,
 }
 
-impl<'a> ResourceReconciliationOptions<'a> {
-    pub(crate) fn new(
-        artifact_install: ArtifactInstall,
-        fallback_shutdown: Option<&'a watch::Receiver<bool>>,
-    ) -> Self {
-        Self {
-            artifact_install,
-            fallback_shutdown,
-        }
+impl ResourceReconciliationOptions {
+    pub(crate) fn new(artifact_install: ArtifactInstall) -> Self {
+        Self { artifact_install }
     }
 }
 
@@ -400,8 +391,8 @@ pub(crate) async fn reconcile_project_resources_with_progress(
     plan: &crate::project_env::ProjectResourcePlan,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
-    options: ResourceReconciliationOptions<'_>,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
+    options: ResourceReconciliationOptions,
+) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production()?;
 
     reconcile_project_resources_with_catalog_and_progress(
@@ -431,26 +422,17 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
     catalog: &ManagedResourceRuntimeCatalog,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     progress: DaemonDownloadProgress,
-    options: ResourceReconciliationOptions<'_>,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
-    let ResourceReconciliationOptions {
-        artifact_install,
-        fallback_shutdown,
-    } = options;
+    options: ResourceReconciliationOptions,
+) -> Result<(), DaemonError> {
+    let ResourceReconciliationOptions { artifact_install } = options;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let mut demanded_tracks = demanded_tracks.clone();
     demanded_tracks.extend(plan.resources.iter().map(|resource| {
         DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
     }));
 
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
     stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
         .await?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
     let install_requests = missing_project_install_requests(database, plan, catalog);
     let mut prefetched_installs =
         prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
@@ -461,7 +443,6 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
         progress: &progress,
         prefetched_installs: &mut prefetched_installs,
         artifact_install,
-        fallback_shutdown,
     };
 
     reconcile_resource_tracks(paths, database, &mut context, project, plan).await
@@ -487,7 +468,6 @@ pub(crate) async fn reconcile_persisted_resource_track_with_progress(
         runtime_catalog,
         &projects,
         progress,
-        None,
     )
     .await?;
 
@@ -504,7 +484,6 @@ pub(crate) async fn reconcile_persisted_resource_track_for_projects_with_progres
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     projects: &[ProjectRecord],
     progress: DaemonDownloadProgress,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<(bool, BTreeMap<String, DaemonError>), DaemonError> {
     use crate::project_env::record_project_env_failure;
     use state::ResourceAllocationStatus;
@@ -576,22 +555,14 @@ pub(crate) async fn reconcile_persisted_resource_track_for_projects_with_progres
             progress: &progress,
             prefetched_installs: &mut prefetched_installs,
             artifact_install: ArtifactInstall::Forbidden,
-            fallback_shutdown,
         };
 
         reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
-
-        if fallback_shutdown_requested(fallback_shutdown) {
-            return Ok(installed);
-        }
 
         if let Some(adapter) = catalog.adapter(resource_name) {
             let runtime_context =
                 persisted_resource_runtime_context(paths, &mut database, adapter, &resource)?;
             for project in projects {
-                if fallback_shutdown_requested(fallback_shutdown) {
-                    break;
-                }
                 let allocations = database
                     .resource_allocations(&project.id, resource_name)?
                     .into_iter()
@@ -973,7 +944,6 @@ pub(crate) fn verify_system_resource_installations(
 pub(crate) async fn clean_up_removed_allocations(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<(), DaemonError> {
     let mut database = Database::open(paths)?;
     database.forget_reclaimed_cleanups()?;
@@ -997,9 +967,6 @@ pub(crate) async fn clean_up_removed_allocations(
     let supervisor = ProcessSupervisor::new(paths.clone());
 
     for ((resource_name, track), cleanups) in cleanups_by_track {
-        if fallback_shutdown_requested(fallback_shutdown) {
-            break;
-        }
         let resource = state::ProjectManagedResourceInput {
             resource_name,
             track,
@@ -1009,7 +976,6 @@ pub(crate) async fn clean_up_removed_allocations(
             &mut database,
             catalog,
             &supervisor,
-            fallback_shutdown,
             &resource,
             &cleanups,
         )
@@ -1030,7 +996,6 @@ async fn clean_up_track(
     database: &mut Database,
     catalog: &ManagedResourceRuntimeCatalog,
     supervisor: &ProcessSupervisor,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
     resource: &state::ProjectManagedResourceInput,
     cleanups: &[PendingCleanupRecord],
 ) -> Result<(), DaemonError> {
@@ -1067,13 +1032,8 @@ async fn clean_up_track(
         progress: &progress,
         prefetched_installs: &mut prefetched_installs,
         artifact_install: ArtifactInstall::Forbidden,
-        fallback_shutdown,
     };
     reconcile_resource_track(paths, database, &mut reconciliation, resource, &[]).await?;
-    // Shutdown can stop reconciliation before the runtime is ready. The rows stay for next time.
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(());
-    }
     let context = persisted_resource_runtime_context(paths, database, adapter, resource)?;
 
     for cleanup in cleanups {
@@ -1752,7 +1712,6 @@ struct ResourceTrackReconciliationContext<'context> {
     progress: &'context DaemonDownloadProgress,
     prefetched_installs: &'context mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
     artifact_install: ArtifactInstall,
-    fallback_shutdown: Option<&'context watch::Receiver<bool>>,
 }
 
 type ProjectTrackKey = (String, String);
@@ -1798,11 +1757,6 @@ async fn reconcile_resource_track(
         return Ok(());
     };
     let completed = prepared.wait().await;
-    if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-        return completed
-            .readiness
-            .map_err(|error| record_resource_runtime_failure(database, resource, error));
-    }
     match finish_resource_track(paths, database, reconciliation.catalog, completed).await {
         Ok(()) => Ok(()),
         Err(error) => Err(record_resource_runtime_failure(database, resource, error)),
@@ -1815,24 +1769,15 @@ async fn reconcile_resource_tracks(
     reconciliation: &mut ResourceTrackReconciliationContext<'_>,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
+) -> Result<(), DaemonError> {
     let mut pending = FuturesUnordered::new();
     let mut ready = VecDeque::new();
     let mut failures = Vec::new();
-    let mut cancelled = false;
     for resource in &plan.resources {
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            cancelled = true;
-            break;
-        }
         if pending.len() == RUNTIME_READINESS_CONCURRENCY_LIMIT
             && let Some(runtime) = pending.next().await
         {
             ready.push_back(runtime);
-        }
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            cancelled = true;
-            break;
         }
         let allocations = match desired_allocations(database, project, plan, resource) {
             Ok(allocations) => allocations,
@@ -1863,17 +1808,6 @@ async fn reconcile_resource_tracks(
             }
         }
     }
-    if cancelled {
-        for resource in &plan.resources {
-            let key = resource_key(resource);
-            if let Some(PrefetchedProjectInstall::Failed(error)) =
-                reconciliation.prefetched_installs.remove(&key)
-            {
-                let error = record_resource_runtime_failure(database, resource, error);
-                failures.push((key, error));
-            }
-        }
-    }
 
     loop {
         let runtime = if let Some(runtime) = ready.pop_front() {
@@ -1884,18 +1818,6 @@ async fn reconcile_resource_tracks(
             break;
         };
         let key = runtime.key();
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            cancelled = true;
-            if let Err(error) = runtime.readiness {
-                let resource = state::ProjectManagedResourceInput {
-                    resource_name: key.0.clone(),
-                    track: key.1.clone(),
-                };
-                let error = record_resource_runtime_failure(database, &resource, error);
-                failures.push((key, error));
-            }
-            continue;
-        }
         let result = {
             let finalization =
                 finish_resource_track(paths, database, reconciliation.catalog, runtime);
@@ -1928,11 +1850,8 @@ async fn reconcile_resource_tracks(
                 .collect(),
         ));
     }
-    if cancelled || fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
 
-    Ok(ReconciliationOutcome::Completed(()))
+    Ok(())
 }
 
 struct PreparedResourceRuntime {
@@ -2004,15 +1923,9 @@ async fn prepare_resource_track(
             track: resource.track.clone(),
         });
     };
-    if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-        return Ok(None);
-    }
     let mut attempt = 0;
 
     loop {
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            return Ok(None);
-        }
         attempt += 1;
         let ports =
             assign_named_ports(database, adapter, &resource.resource_name, &resource.track)?;
@@ -2043,43 +1956,29 @@ async fn prepare_resource_track(
         };
         let env = adapter.resource_env(&context)?;
         let context = ManagedResourceRuntimeContext { env, ..context };
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            return Ok(None);
-        }
         database.record_managed_resource_track_env_context(
             &resource.resource_name,
             &resource.track,
             &context.env,
         )?;
         let spec = adapter.build_process_spec(paths, &context)?;
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            return Ok(None);
-        }
         adapter.prepare_runtime(paths, &context).await?;
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            return Ok(None);
-        }
         let readiness = adapter.readiness(&context)?;
-        if fallback_shutdown_requested(reconciliation.fallback_shutdown) {
-            return Ok(None);
-        }
         match start_or_adopt_runtime(
             reconciliation.supervisor,
             spec,
             adapter.stop_signal(),
             readiness,
-            reconciliation.fallback_shutdown,
         )
         .await
         {
-            Ok(Some(readiness)) => {
+            Ok(readiness) => {
                 return Ok(Some(PreparedResourceRuntime {
                     context,
                     allocations: allocations.to_vec(),
                     readiness,
                 }));
             }
-            Ok(None) => return Ok(None),
             Err(DaemonError::NonPvManagedResourceRuntimeListener { .. })
                 if attempt < RESOURCE_START_ATTEMPTS =>
             {
@@ -2577,15 +2476,14 @@ async fn start_or_adopt_runtime(
     spec: ProcessSpec,
     stop_signal: StopSignal,
     readiness: ManagedResourceReadiness,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<Option<PendingManagedResourceReadiness>, DaemonError> {
+) -> Result<PendingManagedResourceReadiness, DaemonError> {
     if supervisor.adopt(&spec)?.is_some() {
-        return Ok(Some(PendingManagedResourceReadiness {
+        return Ok(PendingManagedResourceReadiness {
             spec,
             stop_signal,
             readiness,
             process: None,
-        }));
+        });
     }
     // Whatever monitor the subject still has, including one a cancelled start left with no record.
     if supervisor
@@ -2599,22 +2497,14 @@ async fn start_or_adopt_runtime(
         return Err(DaemonError::NonPvManagedResourceRuntimeListener { name: spec.name });
     }
 
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(None);
-    }
-
     let process = supervisor.start(spec.clone()).await?;
 
-    Ok(Some(PendingManagedResourceReadiness {
+    Ok(PendingManagedResourceReadiness {
         spec,
         stop_signal,
         readiness,
         process: Some(process),
-    }))
-}
-
-fn fallback_shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
-    shutdown.is_some_and(|shutdown| *shutdown.borrow())
+    })
 }
 
 struct PendingManagedResourceReadiness {

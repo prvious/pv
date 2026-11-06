@@ -731,8 +731,7 @@ mod tests {
             None,
             &BTreeSet::new(),
             DaemonDownloadProgress::disabled(),
-            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply, None)
-                .with_hooks(Some(&hooks)),
+            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply).with_hooks(Some(&hooks)),
         )
         .await?;
         state::fs::delete_file(&config_path)?;

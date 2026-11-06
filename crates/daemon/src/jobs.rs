@@ -7,10 +7,7 @@ use std::time::Duration;
 use crate::DaemonError;
 use crate::gateway::{
     CADDY_NOT_INSTALLED, GatewayPfRoutingState, ProjectGatewayReconciliationOutcome,
-    ReconciliationOutcome, reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_phase_log,
-    reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown,
-    reconcile_project_gateway_runtimes_with_phase_log,
-    reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown,
+    reconcile_gateway_runtimes_with_phase_log, reconcile_project_gateway_runtimes_with_phase_log,
 };
 use crate::hooks::DaemonHooks;
 use crate::ipc::LocalStream;
@@ -20,11 +17,9 @@ use crate::managed_resources::{
     reconcile_system_resources_with_catalog_and_progress, reconcile_system_resources_with_progress,
     stop_undemanded_system_resource_runtimes, verify_system_resource_installations,
 };
-#[cfg(test)]
-use crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress;
 use crate::project_env::{
     DemandedResourceTrack, ProjectApplyOptions, ProjectApplyStage, ProjectDemand,
-    discover_project_demand, reconcile_project_env_with_runtime_catalog_and_progress_outcome,
+    discover_project_demand, reconcile_project_env_with_runtime_catalog_and_progress,
     record_project_env_failure,
 };
 use crate::reconciliation::{
@@ -336,21 +331,12 @@ pub(crate) async fn run_job(
     kind: &str,
     scope: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let parsed_scope = scope.parse::<ReconciliationScope>();
     if kind == "reconcile" {
         return match parsed_scope {
             Ok(parsed_scope) => {
-                run_reconciliation_job(
-                    paths,
-                    queue,
-                    transport,
-                    parsed_scope,
-                    runtime_catalog,
-                    fallback_shutdown,
-                )
-                .await
+                run_reconciliation_job(paths, queue, transport, parsed_scope, runtime_catalog).await
             }
             Err(error) => {
                 run_invalid_reconciliation_scope_job(paths, transport, scope, error).await
@@ -358,7 +344,7 @@ pub(crate) async fn run_job(
         };
     }
     if kind == "update" && scope == "system" {
-        return run_update_job(paths, queue, transport, runtime_catalog, fallback_shutdown).await;
+        return run_update_job(paths, queue, transport, runtime_catalog).await;
     }
 
     run_started_job(paths, transport, kind, scope).await
@@ -408,7 +394,7 @@ pub(crate) async fn run_background_reconciliation_job_with_origin(
         return Ok(());
     };
 
-    complete_queued_background_reconciliation_job(&paths, queued, runtime_catalog, None).await
+    complete_queued_background_reconciliation_job(&paths, queued, runtime_catalog).await
 }
 
 pub(crate) fn enqueue_background_reconciliation_job(
@@ -437,7 +423,6 @@ pub(crate) async fn run_startup_reconciliation_job(
     queue: ReconciliationQueue,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     mut shutdown: oneshot::Receiver<()>,
-    fallback_shutdown: watch::Receiver<bool>,
 ) -> Result<(), BackgroundReconciliationError> {
     let mut waiting_for_jobs_lock = false;
     let result = loop {
@@ -503,7 +488,6 @@ pub(crate) async fn run_startup_reconciliation_job(
         running,
         runtime_catalog,
         Some(&shutdown),
-        Some(&fallback_shutdown),
     )
     .await
 }
@@ -519,42 +503,14 @@ async fn wait_for_startup_reconciliation_turn(
     }
 }
 
-async fn wait_for_fallback_shutdown(shutdown: &mut watch::Receiver<bool>) {
-    if shutdown.wait_for(|requested| *requested).await.is_err() {
-        std::future::pending::<()>().await;
-    }
-}
-
-fn fallback_shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
-    shutdown.is_some_and(|shutdown| *shutdown.borrow())
-}
-
 pub(crate) async fn complete_queued_background_reconciliation_job(
     paths: &PvPaths,
     queued: QueuedReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<(), BackgroundReconciliationError> {
-    let running = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            let mut fallback_shutdown = fallback_shutdown.clone();
-            tokio::select! {
-                biased;
-                _ = wait_for_fallback_shutdown(&mut fallback_shutdown) => return Ok(()),
-                running = queued.wait_for_turn() => running,
-            }
-        }
-        None => queued.wait_for_turn().await,
-    };
+    let running = queued.wait_for_turn().await;
 
-    complete_running_background_reconciliation_job(
-        paths,
-        running,
-        runtime_catalog,
-        None,
-        fallback_shutdown,
-    )
-    .await
+    complete_running_background_reconciliation_job(paths, running, runtime_catalog, None).await
 }
 
 pub(crate) async fn complete_running_background_reconciliation_job(
@@ -562,7 +518,6 @@ pub(crate) async fn complete_running_background_reconciliation_job(
     running: RunningReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     shutdown: Option<&oneshot::Receiver<()>>,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<(), BackgroundReconciliationError> {
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
@@ -575,21 +530,16 @@ pub(crate) async fn complete_running_background_reconciliation_job(
         running.timing(),
         ReconciliationJobOptions {
             discard_obsolete_project: true,
-            fallback_shutdown,
             hooks: running.hooks(),
+            shutdown,
             ..ReconciliationJobOptions::default()
         },
-        shutdown,
     )
     .await;
 
     match completion {
         ReconciliationJobCompletion::Succeeded(_summary) => {
             running.finish();
-            Ok(())
-        }
-        ReconciliationJobCompletion::Cancelled => {
-            drop(running);
             Ok(())
         }
         ReconciliationJobCompletion::Failed {
@@ -612,7 +562,6 @@ async fn run_reconciliation_job(
     mut transport: DaemonTransport<LocalStream>,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let result = match enqueue_foreground_reconciliation_job(&paths, &queue, scope) {
         Ok(result) => result,
@@ -636,18 +585,10 @@ async fn run_reconciliation_job(
             .await
             .map_err(DaemonError::from);
             let stream_is_open = accepted_result.is_ok();
-            let Some((running, stream_is_open)) = wait_for_foreground_turn(
-                queued,
-                &mut transport,
-                stream_is_open,
-                Some(fallback_shutdown),
-            )
-            .await
-            else {
-                return accepted_result;
-            };
+            let (running, stream_is_open) =
+                wait_for_foreground_turn(queued, &mut transport, stream_is_open).await;
             let scope = running.scope().clone();
-            let result = stream_started_reconciliation_job_with_fallback(
+            let result = stream_started_reconciliation_job_with_options(
                 paths,
                 transport,
                 stream_is_open,
@@ -656,24 +597,11 @@ async fn run_reconciliation_job(
                 runtime_catalog,
                 ForegroundReconciliationOptions {
                     timing: running.timing(),
-                    fallback_shutdown: Some(fallback_shutdown),
                     hooks: running.hooks(),
                 },
             )
             .await;
-
-            let result = match result {
-                ForegroundReconciliationCompletion::Finalized(result) => {
-                    running.finish();
-                    result
-                }
-                ForegroundReconciliationCompletion::Cancelled => {
-                    drop(running);
-                    ReconciliationJobCompletion::Cancelled
-                        .into_result()
-                        .map(|_summary| ())
-                }
-            };
+            running.finish();
 
             foreground_reconciliation_result(accepted_result, result)
         }
@@ -757,7 +685,6 @@ async fn run_update_job(
     queue: ReconciliationQueue,
     mut transport: DaemonTransport<LocalStream>,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let result = match enqueue_update_job(&paths, &queue) {
         Ok(result) => result,
@@ -779,16 +706,8 @@ async fn run_update_job(
             .await
             .map_err(DaemonError::from);
             let stream_is_open = accepted_result.is_ok();
-            let Some((running, stream_is_open)) = wait_for_foreground_turn(
-                queued,
-                &mut transport,
-                stream_is_open,
-                Some(fallback_shutdown),
-            )
-            .await
-            else {
-                return accepted_result;
-            };
+            let (running, stream_is_open) =
+                wait_for_foreground_turn(queued, &mut transport, stream_is_open).await;
             let result = stream_started_update_job(
                 paths,
                 transport,
@@ -797,25 +716,12 @@ async fn run_update_job(
                 runtime_catalog,
                 running.timing(),
                 ReconciliationJobOptions {
-                    fallback_shutdown: Some(fallback_shutdown),
                     hooks: running.hooks(),
                     ..ReconciliationJobOptions::default()
                 },
             )
             .await;
-
-            let result = match result {
-                ForegroundReconciliationCompletion::Finalized(result) => {
-                    running.finish();
-                    result
-                }
-                ForegroundReconciliationCompletion::Cancelled => {
-                    drop(running);
-                    ReconciliationJobCompletion::Cancelled
-                        .into_result()
-                        .map(|_summary| ())
-                }
-            };
+            running.finish();
 
             foreground_reconciliation_result(accepted_result, result)
         }
@@ -865,7 +771,7 @@ async fn stream_started_update_job<Stream>(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     timing: ReconciliationJobTiming,
     options: ReconciliationJobOptions<'_>,
-) -> ForegroundReconciliationCompletion
+) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
 {
@@ -932,49 +838,36 @@ where
             false,
         )
     };
-    if matches!(update_result, ReconciliationJobCompletion::Cancelled) {
-        return ForegroundReconciliationCompletion::Cancelled;
-    }
     let update_result = update_result.into_result();
-    if let Err(error) = started_stream_result {
-        return ForegroundReconciliationCompletion::Finalized(Err(error));
-    }
+    started_stream_result?;
 
     if !stream_is_open || !transport_is_open {
-        return ForegroundReconciliationCompletion::Finalized(update_result.map(|_summary| ()));
+        return update_result.map(|_summary| ());
     }
 
     match update_result {
         Ok(summary) => {
-            let result = write_foreground_terminal_event(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobCompleted {
                     job_id,
                     summary: &summary,
                 },
             )
-            .await;
-            if let Err(error) = result {
-                return ForegroundReconciliationCompletion::Finalized(Err(error));
-            }
+            .await
         }
         Err(error) => {
             let error_message = error.to_string();
-            let result = write_foreground_terminal_event(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobFailed {
                     job_id,
                     error: &error_message,
                 },
             )
-            .await;
-            if let Err(error) = result {
-                return ForegroundReconciliationCompletion::Finalized(Err(error));
-            }
+            .await
         }
     }
-
-    ForegroundReconciliationCompletion::Finalized(Ok(()))
 }
 
 fn foreground_reconciliation_result(
@@ -989,29 +882,20 @@ async fn wait_for_foreground_turn<Stream>(
     queued: QueuedReconciliation,
     transport: &mut DaemonTransport<Stream>,
     mut stream_is_open: bool,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
-) -> Option<(RunningReconciliation, bool)>
+) -> (RunningReconciliation, bool)
 where
     Stream: AsyncWrite + Unpin,
 {
     let job_id = queued.job_id().to_string();
     let wait_for_turn = queued.wait_for_turn();
     tokio::pin!(wait_for_turn);
-    let mut fallback_shutdown = fallback_shutdown.cloned();
     let heartbeat = clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL);
     tokio::pin!(heartbeat);
 
     loop {
         tokio::select! {
             biased;
-            _ = async {
-                if let Some(fallback_shutdown) = fallback_shutdown.as_mut() {
-                    wait_for_fallback_shutdown(fallback_shutdown).await;
-                } else {
-                    std::future::pending::<()>().await;
-                }
-            } => return None,
-            running = &mut wait_for_turn => return Some((running, stream_is_open)),
+            running = &mut wait_for_turn => return (running, stream_is_open),
             _ = &mut heartbeat, if stream_is_open => {
                 heartbeat.set(clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL));
                 let event = DaemonEvent::Log {
@@ -1046,7 +930,7 @@ async fn stream_started_reconciliation_job<Stream>(
 where
     Stream: AsyncWrite + Unpin,
 {
-    stream_started_reconciliation_job_with_fallback(
+    stream_started_reconciliation_job_with_options(
         paths,
         transport,
         stream_is_open,
@@ -1055,54 +939,30 @@ where
         runtime_catalog,
         ForegroundReconciliationOptions {
             timing,
-            fallback_shutdown: None,
             hooks: None,
         },
     )
     .await
-    .into_result()
 }
 
-struct ForegroundReconciliationOptions<'a> {
+struct ForegroundReconciliationOptions {
     timing: ReconciliationJobTiming,
-    fallback_shutdown: Option<&'a watch::Receiver<bool>>,
     hooks: Option<DaemonHooks>,
 }
 
-enum ForegroundReconciliationCompletion {
-    Finalized(Result<(), DaemonError>),
-    Cancelled,
-}
-
-impl ForegroundReconciliationCompletion {
-    #[cfg(test)]
-    fn into_result(self) -> Result<(), DaemonError> {
-        match self {
-            Self::Finalized(result) => result,
-            Self::Cancelled => ReconciliationJobCompletion::Cancelled
-                .into_result()
-                .map(|_summary| ()),
-        }
-    }
-}
-
-async fn stream_started_reconciliation_job_with_fallback<Stream>(
+async fn stream_started_reconciliation_job_with_options<Stream>(
     paths: PvPaths,
     mut transport: DaemonTransport<Stream>,
     stream_is_open: bool,
     job_id: &str,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    options: ForegroundReconciliationOptions<'_>,
-) -> ForegroundReconciliationCompletion
+    options: ForegroundReconciliationOptions,
+) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
 {
-    let ForegroundReconciliationOptions {
-        timing,
-        fallback_shutdown,
-        hooks,
-    } = options;
+    let ForegroundReconciliationOptions { timing, hooks } = options;
     let scope_text = scope.to_string();
     let started_stream_result = if stream_is_open {
         async {
@@ -1142,11 +1002,9 @@ where
                     progress,
                     timing,
                     ReconciliationJobOptions {
-                        fallback_shutdown,
                         hooks,
                         ..ReconciliationJobOptions::default()
                     },
-                    None,
                 ),
                 event_receiver,
                 phase_receiver,
@@ -1164,34 +1022,22 @@ where
                     DaemonDownloadProgress::disabled(),
                     timing,
                     ReconciliationJobOptions {
-                        fallback_shutdown,
                         hooks,
                         ..ReconciliationJobOptions::default()
                     },
-                    None,
                 )
                 .await,
                 false,
             )
         };
-    if matches!(
-        reconciliation_result,
-        ReconciliationJobCompletion::Cancelled
-    ) {
-        return ForegroundReconciliationCompletion::Cancelled;
-    }
     let reconciliation_result = reconciliation_result.into_result();
-    if let Err(error) = started_stream_result {
-        return ForegroundReconciliationCompletion::Finalized(Err(error));
-    }
+    started_stream_result?;
 
     if !stream_is_open || !transport_is_open {
-        return ForegroundReconciliationCompletion::Finalized(
-            reconciliation_result.map(|_summary| ()),
-        );
+        return reconciliation_result.map(|_summary| ());
     }
 
-    let result = match reconciliation_result {
+    match reconciliation_result {
         Ok(summary) => {
             write_foreground_terminal_event(
                 &mut transport,
@@ -1213,9 +1059,7 @@ where
             )
             .await
         }
-    };
-
-    ForegroundReconciliationCompletion::Finalized(result)
+    }
 }
 
 #[cfg(test)]
@@ -1578,11 +1422,6 @@ async fn complete_update_job_with_progress(
     let progress = progress.with_phase_log(phase_log.clone());
     let result =
         complete_update_job_inner(paths, runtime_catalog, progress, &phase_log, options).await;
-    let result = match result {
-        Ok(ReconciliationOutcome::Completed(completed)) => Ok(completed),
-        Ok(ReconciliationOutcome::Cancelled) => return ReconciliationJobCompletion::Cancelled,
-        Err(error) => Err(error),
-    };
     let finalization_timer = phase_log.start(ReconciliationPhase::Finalization, "job");
 
     let completion = match result {
@@ -1664,11 +1503,7 @@ async fn complete_update_job_inner(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
     options: ReconciliationJobOptions<'_>,
-) -> Result<ReconciliationOutcome<CompletedUpdateJob>, FailedUpdateJob> {
-    let fallback_shutdown = options.fallback_shutdown;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+) -> Result<CompletedUpdateJob, FailedUpdateJob> {
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
         let update_progress = progress.clone();
@@ -1695,12 +1530,6 @@ async fn complete_update_job_inner(
     let report = match report.into_result() {
         Ok(report) => report,
         Err(update_error) => {
-            if fallback_shutdown_requested(fallback_shutdown) {
-                return Err(FailedUpdateJob::new(
-                    update_error,
-                    JobDiagnosticSubject::UpdateAssessment,
-                ));
-            }
             return Err(reconcile_partial_update_failure(
                 paths,
                 runtime_catalog,
@@ -1714,13 +1543,10 @@ async fn complete_update_job_inner(
     };
 
     if report.updated_count == 0 {
-        return Ok(ReconciliationOutcome::Completed(CompletedUpdateJob {
+        return Ok(CompletedUpdateJob {
             summary: unchanged_update_summary(&report),
             coverage: Vec::new(),
-        }));
-    }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
+        });
     }
 
     let mut failure_subject = JobDiagnosticSubject::SystemReconciliation;
@@ -1729,14 +1555,12 @@ async fn complete_update_job_inner(
         runtime_catalog,
         progress,
         phase_log,
-        None,
         options,
         Some(&mut failure_subject),
     )
     .await;
     let completed = match reconciliation_result {
-        Ok(ReconciliationOutcome::Completed(completed)) => completed,
-        Ok(ReconciliationOutcome::Cancelled) => return Ok(ReconciliationOutcome::Cancelled),
+        Ok(completed) => completed,
         Err(error) => {
             return Err(compensate_caddy_update_failure(
                 paths,
@@ -1744,7 +1568,6 @@ async fn complete_update_job_inner(
                 error,
                 failure_subject,
                 phase_log,
-                fallback_shutdown,
             )
             .await);
         }
@@ -1755,10 +1578,10 @@ async fn complete_update_job_inner(
         report.updated_count, completed.summary,
     );
 
-    Ok(ReconciliationOutcome::Completed(CompletedUpdateJob {
+    Ok(CompletedUpdateJob {
         summary,
         coverage: completed.coverage,
-    }))
+    })
 }
 
 async fn compensate_caddy_update_failure(
@@ -1767,51 +1590,21 @@ async fn compensate_caddy_update_failure(
     original_error: DaemonError,
     subject: JobDiagnosticSubject,
     phase_log: &ReconciliationPhaseLog,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> FailedUpdateJob {
     match report.rollback_caddy(paths) {
-        Ok(true) if fallback_shutdown_requested(fallback_shutdown) => {
-            FailedUpdateJob::new(original_error, subject)
-        }
-        Ok(true) => match fallback_shutdown {
-            Some(fallback_shutdown) => {
-                match reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                    paths,
-                    phase_log,
-                    fallback_shutdown,
-                )
-                .await
-                {
-                    Ok(ReconciliationOutcome::Completed(_) | ReconciliationOutcome::Cancelled) => {
-                        FailedUpdateJob::new(
-                            original_error,
-                            if subject == JobDiagnosticSubject::GatewayRuntime {
-                                JobDiagnosticSubject::UpdateAssessment
-                            } else {
-                                subject
-                            },
-                        )
-                    }
-                    Err(recovery_error) => FailedUpdateJob::new(
-                        caddy_compensation_error(original_error, recovery_error),
-                        subject,
-                    ),
-                }
-            }
-            None => match reconcile_gateway_runtimes(paths).await {
-                Ok(_summary) => FailedUpdateJob::new(
-                    original_error,
-                    if subject == JobDiagnosticSubject::GatewayRuntime {
-                        JobDiagnosticSubject::UpdateAssessment
-                    } else {
-                        subject
-                    },
-                ),
-                Err(recovery_error) => FailedUpdateJob::new(
-                    caddy_compensation_error(original_error, recovery_error),
-                    subject,
-                ),
-            },
+        Ok(true) => match reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await {
+            Ok(_summary) => FailedUpdateJob::new(
+                original_error,
+                if subject == JobDiagnosticSubject::GatewayRuntime {
+                    JobDiagnosticSubject::UpdateAssessment
+                } else {
+                    subject
+                },
+            ),
+            Err(recovery_error) => FailedUpdateJob::new(
+                caddy_compensation_error(original_error, recovery_error),
+                subject,
+            ),
         },
         Ok(false) => FailedUpdateJob::new(original_error, subject),
         Err(rollback_error) => FailedUpdateJob::new(
@@ -1834,13 +1627,12 @@ async fn reconcile_partial_update_failure(
         runtime_catalog,
         progress,
         phase_log,
-        None,
         options,
         None,
     )
     .await;
     match reconciliation_result {
-        Ok(ReconciliationOutcome::Completed(_) | ReconciliationOutcome::Cancelled) => {
+        Ok(_completed) => {
             FailedUpdateJob::new(update_error, JobDiagnosticSubject::UpdateAssessment)
         }
         Err(reconciliation_error) => FailedUpdateJob::new(
@@ -2020,7 +1812,7 @@ async fn complete_managed_resource_reconciliation_with_progress(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    complete_managed_resource_reconciliation_with_progress_and_fallback_shutdown(
+    complete_managed_resource_reconciliation_with_options(
         paths,
         name,
         track,
@@ -2029,11 +1821,10 @@ async fn complete_managed_resource_reconciliation_with_progress(
         phase_log,
         ReconciliationJobOptions::default(),
     )
-    .await?
-    .into_completed()
+    .await
 }
 
-async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shutdown(
+async fn complete_managed_resource_reconciliation_with_options(
     paths: &PvPaths,
     name: &crate::reconciliation::ReconciliationScopeComponent,
     track: &crate::reconciliation::ReconciliationScopeComponent,
@@ -2041,12 +1832,7 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
     options: ReconciliationJobOptions<'_>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let fallback_shutdown = options.fallback_shutdown;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
-
+) -> Result<CompletedReconciliationJob, DaemonError> {
     let dependent_projects = Database::open(paths)?
         .projects_demanding_managed_resource_track(name.as_str(), track.as_str())?;
     let strict_failures = unready_established_resource_projects(
@@ -2069,9 +1855,6 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
             skip_projects.insert(project_id.clone());
         }
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_reconciliation_errors(strict_failures.into_values());
-    }
 
     let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
     let record_result = reconcile_system_projects_with_progress(
@@ -2083,17 +1866,11 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
         ProjectApplyStage::RecordRequirements,
         &linked_projects(paths)?,
         &skip_projects,
-        fallback_shutdown,
         options.hooks.as_ref(),
     )
     .await;
     finish_project_phase(record_timer, &record_result);
-    let record_failures = record_result?.failures;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_reconciliation_errors(
-            strict_failures.into_values().chain(record_failures),
-        );
-    }
+    record_result?;
 
     let resources_timer = phase_log.start(
         ReconciliationPhase::Resources,
@@ -2106,7 +1883,6 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
         runtime_catalog,
         &dependent_projects,
         progress.clone().suppressing_operation_phases(),
-        fallback_shutdown,
     )
     .await;
     resources_timer.finish(
@@ -2125,14 +1901,6 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
             skip_projects.insert(project_id.clone());
         }
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_reconciliation_errors(
-            strict_failures
-                .into_values()
-                .chain(resource_failures.into_values())
-                .chain(record_failures),
-        );
-    }
 
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
     // The staged apply covers established dependents only: Projects that never
@@ -2147,7 +1915,6 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
         ProjectApplyStage::CompleteStagedApply,
         &dependent_projects,
         &skip_projects,
-        fallback_shutdown,
         options.hooks.as_ref(),
     )
     .await;
@@ -2172,14 +1939,6 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
                 source: Box::new(error),
             });
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        let failures = record_failures
-            .into_iter()
-            .chain(resource_failures.into_values())
-            .chain(project_report.failures)
-            .collect::<Vec<_>>();
-        return cancel_or_preserve_reconciliation_errors(failures);
-    }
     let summary =
         managed_resource_reconciliation_summary(name.as_str(), track.as_str(), &project_report);
     let mut coverage = vec![JobDiagnosticSubject::Resource {
@@ -2188,9 +1947,7 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
     }];
     coverage.extend(project_report.successful_project_coverage());
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob { summary, coverage },
-    ))
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 /// Applies persisted environments after a resource change. Only tests exercise this path
@@ -2294,7 +2051,6 @@ async fn complete_reconciliation_job_with_progress(
             pf_routing_state,
             ..ReconciliationJobOptions::default()
         },
-        None,
     )
     .await
     .into_result()
@@ -2302,7 +2058,6 @@ async fn complete_reconciliation_job_with_progress(
 
 enum ReconciliationJobCompletion {
     Succeeded(String),
-    Cancelled,
     Failed {
         error: Box<DaemonError>,
         recording_error: Option<Box<DaemonError>>,
@@ -2313,10 +2068,6 @@ impl ReconciliationJobCompletion {
     fn into_result(self) -> Result<String, DaemonError> {
         match self {
             Self::Succeeded(summary) => Ok(summary),
-            Self::Cancelled => Err(DaemonError::UnexpectedProtocolResponse {
-                reason: "foreground reconciliation was cancelled without a shutdown signal"
-                    .to_owned(),
-            }),
             Self::Failed {
                 error,
                 recording_error,
@@ -2333,14 +2084,11 @@ impl ReconciliationJobCompletion {
 struct ReconciliationJobOptions<'a> {
     discard_obsolete_project: bool,
     pf_routing_state: Option<GatewayPfRoutingState>,
-    fallback_shutdown: Option<&'a watch::Receiver<bool>>,
     hooks: Option<DaemonHooks>,
+    /// The startup job's shutdown signal; only the system scope reads it.
+    shutdown: Option<&'a oneshot::Receiver<()>>,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the startup-only shutdown signal and cloneable test fallback have distinct scopes"
-)]
 async fn complete_reconciliation_job_with_progress_outcome(
     paths: &PvPaths,
     job_id: &str,
@@ -2349,11 +2097,9 @@ async fn complete_reconciliation_job_with_progress_outcome(
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
     options: ReconciliationJobOptions<'_>,
-    shutdown: Option<&oneshot::Receiver<()>>,
 ) -> ReconciliationJobCompletion {
     let discard_obsolete_project = options.discard_obsolete_project;
     let pf_routing_state = options.pf_routing_state;
-    let fallback_shutdown = options.fallback_shutdown;
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, "reconcile", &scope_text)
         .with_progress(progress.phase_sender.clone());
@@ -2386,13 +2132,10 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     &[],
                 );
             }
-            Ok(ReconciliationOutcome::Completed(
-                CompletedReconciliationJob {
-                    summary: "Project was removed before background reconciliation; skipped"
-                        .to_owned(),
-                    coverage: Vec::new(),
-                },
-            ))
+            Ok(CompletedReconciliationJob {
+                summary: "Project was removed before background reconciliation; skipped".to_owned(),
+                coverage: Vec::new(),
+            })
         }
         Ok(false) => match &effective_scope {
             ReconciliationScope::System => {
@@ -2401,7 +2144,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     runtime_catalog,
                     progress,
                     &phase_log,
-                    shutdown,
                     options,
                     None,
                 )
@@ -2410,10 +2152,10 @@ async fn complete_reconciliation_job_with_progress_outcome(
             ReconciliationScope::Resource { name, .. }
                 if gateway_runtime_resource(name.as_str()) =>
             {
-                complete_gateway_reconciliation(paths, &phase_log, fallback_shutdown).await
+                complete_gateway_reconciliation(paths, &phase_log).await
             }
             ReconciliationScope::Resource { name, track } => {
-                complete_managed_resource_reconciliation_with_progress_and_fallback_shutdown(
+                complete_managed_resource_reconciliation_with_options(
                     paths,
                     name,
                     track,
@@ -2425,7 +2167,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
                 .await
             }
             ReconciliationScope::Project { id } => {
-                complete_project_reconciliation_with_progress_and_fallback(
+                complete_project_reconciliation_with_options(
                     paths,
                     id,
                     runtime_catalog,
@@ -2434,7 +2176,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     &mut failure_subject,
                     ReconciliationJobOptions {
                         pf_routing_state,
-                        fallback_shutdown,
                         hooks: options.hooks,
                         ..ReconciliationJobOptions::default()
                     },
@@ -2442,12 +2183,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
                 .await
             }
         },
-    };
-
-    let result = match result {
-        Ok(ReconciliationOutcome::Completed(completed)) => Ok(completed),
-        Ok(ReconciliationOutcome::Cancelled) => return ReconciliationJobCompletion::Cancelled,
-        Err(error) => Err(error),
     };
 
     let coverage_count = result
@@ -2548,30 +2283,13 @@ fn fail_reconciliation_job(
 async fn complete_gateway_reconciliation(
     paths: &PvPaths,
     phase_log: &ReconciliationPhaseLog,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let summary = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            match reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                paths,
-                phase_log,
-                fallback_shutdown,
-            )
-            .await?
-            {
-                ReconciliationOutcome::Completed(summary) => summary,
-                ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-            }
-        }
-        None => reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?,
-    };
+) -> Result<CompletedReconciliationJob, DaemonError> {
+    let summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob {
-            summary,
-            coverage: vec![JobDiagnosticSubject::GatewayRuntime],
-        },
-    ))
+    Ok(CompletedReconciliationJob {
+        summary,
+        coverage: vec![JobDiagnosticSubject::GatewayRuntime],
+    })
 }
 
 async fn complete_system_reconciliation_with_progress(
@@ -2579,15 +2297,9 @@ async fn complete_system_reconciliation_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
-    shutdown: Option<&oneshot::Receiver<()>>,
     options: ReconciliationJobOptions<'_>,
     mut failure_subject: Option<&mut JobDiagnosticSubject>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let fallback_shutdown = options.fallback_shutdown;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
-
+) -> Result<CompletedReconciliationJob, DaemonError> {
     // Worktree discovery links, moves, and unlinks Projects, so it runs before PV reads them.
     if let Some(context) = &options.hooks {
         context.stop_obsolete().await?;
@@ -2597,9 +2309,6 @@ async fn complete_system_reconciliation_with_progress(
     let discovery_result = discover_system_project_demand(paths);
     finish_demand_discovery_phase(discovery_timer, &discovery_result);
     let demand = discovery_result?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
 
     let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
     let mut resources_progress = progress.clone().suppressing_operation_phases();
@@ -2611,17 +2320,15 @@ async fn complete_system_reconciliation_with_progress(
     )
     .await;
     resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-    }
     // Retry the install once before applying the Projects. No Project Apply downloads, so a
     // retry after one could never recover the apply that needed the artifact. The retry is its
     // own timed phase and suppresses nested operation records, so the log stays coherent. If it
     // still fails, the later read-only check decides whether current applied demand still needs it.
     // Skip the retry when shutdown was already requested: a second blocking download would
     // hold the shutdown drain with no one left to consume its result.
-    let shutdown_requested = shutdown.is_some_and(|shutdown| !shutdown.is_empty())
-        || fallback_shutdown_requested(fallback_shutdown);
+    let shutdown_requested = options
+        .shutdown
+        .is_some_and(|shutdown| !shutdown.is_empty());
     if resources_result.is_err() && !shutdown_requested {
         let retry_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
         resources_progress = progress
@@ -2635,17 +2342,11 @@ async fn complete_system_reconciliation_with_progress(
         )
         .await;
         retry_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-        if fallback_shutdown_requested(fallback_shutdown) {
-            return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-        }
     }
     let mut resource_tracks = demand.resource_tracks;
     let mut project_demands = demand.project_demands;
     let has_late_resource_demand =
         discover_late_system_project_demand(paths, &mut resource_tracks, &mut project_demands)?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-    }
     if has_late_resource_demand {
         let late_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
         resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
@@ -2656,14 +2357,8 @@ async fn complete_system_reconciliation_with_progress(
         )
         .await;
         late_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-        if fallback_shutdown_requested(fallback_shutdown) {
-            return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-        }
     }
     let projects = linked_projects(paths)?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-    }
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
     let project_result = reconcile_system_projects_with_progress(
         paths,
@@ -2674,26 +2369,11 @@ async fn complete_system_reconciliation_with_progress(
         ProjectApplyStage::CompleteStagedApply,
         &projects,
         &BTreeSet::new(),
-        fallback_shutdown,
         options.hooks.as_ref(),
     )
     .await;
     finish_project_phase(project_timer, &project_result);
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_system_reconciliation_errors(
-            resources_result,
-            project_result,
-            Ok(()),
-        );
-    }
     let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_system_reconciliation_errors(
-            resources_result,
-            project_result,
-            cleanup_result,
-        );
-    }
     if resources_result.is_err()
         || project_result
             .as_ref()
@@ -2706,13 +2386,6 @@ async fn complete_system_reconciliation_with_progress(
             &progress,
         );
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_system_reconciliation_errors(
-            resources_result,
-            project_result,
-            cleanup_result,
-        );
-    }
     let has_system_failure = resources_result.is_err()
         || project_result
             .as_ref()
@@ -2721,33 +2394,17 @@ async fn complete_system_reconciliation_with_progress(
     if let Some(subject) = failure_subject.as_deref_mut() {
         *subject = JobDiagnosticSubject::GatewayRuntime;
     }
-    let gateway_result = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                paths,
-                phase_log,
-                fallback_shutdown,
-            )
-            .await
-        }
-        None => reconcile_gateway_runtimes_with_phase_log(paths, phase_log)
-            .await
-            .map(ReconciliationOutcome::Completed),
-    };
+    let gateway_result = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await;
     // The Gateway now runs without removed worktrees' routes, so their data can go. Cleanup keeps
     // its failures on the cleanup list instead of failing this job.
-    if matches!(gateway_result, Ok(ReconciliationOutcome::Completed(_))) {
+    if gateway_result.is_ok() {
         // Git or a terminal unlink may have changed since discovery's initial barrier.
         // A stopped group, not a removed Project row, admits allocation deletion.
         if let Some(context) = &options.hooks {
             context.stop_obsolete().await?;
         }
-        if let Err(error) = crate::managed_resources::clean_up_removed_allocations(
-            paths,
-            runtime_catalog,
-            fallback_shutdown,
-        )
-        .await
+        if let Err(error) =
+            crate::managed_resources::clean_up_removed_allocations(paths, runtime_catalog).await
         {
             structured_log::worktree_cleanup_failed(paths, &error.to_string());
         }
@@ -2758,23 +2415,8 @@ async fn complete_system_reconciliation_with_progress(
         cleanup_result,
         gateway_result,
     ) {
-        (
-            Ok(()),
-            Ok(project_report),
-            Ok(()),
-            Ok(ReconciliationOutcome::Completed(gateway_summary)),
-        ) => (project_report, gateway_summary),
-        (Ok(()), Ok(project_report), Ok(()), Ok(ReconciliationOutcome::Cancelled)) => {
-            if !project_report.failures.is_empty()
-                && let Some(subject) = failure_subject.as_deref_mut()
-            {
-                *subject = JobDiagnosticSubject::SystemReconciliation;
-            }
-            return cancel_or_preserve_system_reconciliation_errors(
-                Ok(()),
-                Ok(project_report),
-                Ok(()),
-            );
+        (Ok(()), Ok(project_report), Ok(()), Ok(gateway_summary)) => {
+            (project_report, gateway_summary)
         }
         (resources_result, project_result, cleanup_result, gateway_result) => {
             if has_system_failure && let Some(subject) = failure_subject.as_deref_mut() {
@@ -2801,37 +2443,7 @@ async fn complete_system_reconciliation_with_progress(
     }
     let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob { summary, coverage },
-    ))
-}
-
-fn cancel_or_preserve_system_reconciliation_errors(
-    resources_result: Result<(), DaemonError>,
-    project_result: Result<SystemProjectReconciliationReport, DaemonError>,
-    cleanup_result: Result<(), DaemonError>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let project_failures = match project_result {
-        Ok(report) => report.failures,
-        Err(error) => vec![error],
-    };
-    let failures = resources_result
-        .err()
-        .into_iter()
-        .chain(project_failures)
-        .chain(cleanup_result.err());
-    cancel_or_preserve_reconciliation_errors(failures)
-}
-
-fn cancel_or_preserve_reconciliation_errors<T>(
-    failures: impl IntoIterator<Item = DaemonError>,
-) -> Result<ReconciliationOutcome<T>, DaemonError> {
-    let failures = failures.into_iter().collect::<Vec<_>>();
-    if failures.is_empty() {
-        Ok(ReconciliationOutcome::Cancelled)
-    } else {
-        Err(combined_system_reconciliation_error(failures))
-    }
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 #[cfg(test)]
@@ -2844,7 +2456,7 @@ async fn complete_project_reconciliation_with_progress(
     pf_routing_state: Option<GatewayPfRoutingState>,
     failure_subject: &mut Option<JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    complete_project_reconciliation_with_progress_and_fallback(
+    complete_project_reconciliation_with_options(
         paths,
         id,
         runtime_catalog,
@@ -2856,11 +2468,10 @@ async fn complete_project_reconciliation_with_progress(
             ..ReconciliationJobOptions::default()
         },
     )
-    .await?
-    .into_completed()
+    .await
 }
 
-async fn complete_project_reconciliation_with_progress_and_fallback(
+async fn complete_project_reconciliation_with_options(
     paths: &PvPaths,
     id: &crate::reconciliation::ReconciliationScopeComponent,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -2868,44 +2479,22 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
     phase_log: &ReconciliationPhaseLog,
     failure_subject: &mut Option<JobDiagnosticSubject>,
     options: ReconciliationJobOptions<'_>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
+) -> Result<CompletedReconciliationJob, DaemonError> {
     let pf_routing_state = options.pf_routing_state;
-    let fallback_shutdown = options.fallback_shutdown;
-    let project_result =
-        reconcile_project_env_and_missing_resources_with_progress_and_fallback_shutdown(
-            paths,
-            id.as_str(),
-            runtime_catalog,
-            progress.clone(),
-            phase_log,
-            fallback_shutdown,
-            options.hooks.as_ref(),
-        )
-        .await;
+    let project_result = reconcile_project_env_and_missing_resources_with_progress(
+        paths,
+        id.as_str(),
+        runtime_catalog,
+        progress.clone(),
+        phase_log,
+        options.hooks.as_ref(),
+    )
+    .await;
     let project_env_summary = match project_result {
-        Ok(ReconciliationOutcome::Completed(summary)) => summary,
-        Ok(ReconciliationOutcome::Cancelled) => return Ok(ReconciliationOutcome::Cancelled),
+        Ok(summary) => summary,
         Err(project_error) => {
-            if fallback_shutdown_requested(fallback_shutdown) {
-                return Err(project_error);
-            }
-            let gateway_result = match fallback_shutdown {
-                Some(fallback_shutdown) => {
-                    reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                        paths,
-                        phase_log,
-                        fallback_shutdown,
-                    )
-                    .await
-                }
-                None => reconcile_gateway_runtimes_with_phase_log(paths, phase_log)
-                    .await
-                    .map(ReconciliationOutcome::Completed),
-            };
-            return match gateway_result {
-                Ok(ReconciliationOutcome::Completed(_) | ReconciliationOutcome::Cancelled) => {
-                    Err(project_error)
-                }
+            return match reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await {
+                Ok(_summary) => Err(project_error),
                 Err(gateway_error) => Err(combined_system_reconciliation_error(vec![
                     project_error,
                     gateway_error,
@@ -2913,31 +2502,13 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
             };
         }
     };
-    let gateway_outcome = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            match reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                paths,
-                id.as_str(),
-                pf_routing_state,
-                phase_log,
-                Some(fallback_shutdown),
-            )
-            .await?
-            {
-                ReconciliationOutcome::Completed(outcome) => outcome,
-                ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-            }
-        }
-        None => {
-            reconcile_project_gateway_runtimes_with_phase_log(
-                paths,
-                id.as_str(),
-                pf_routing_state,
-                phase_log,
-            )
-            .await?
-        }
-    };
+    let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
+        paths,
+        id.as_str(),
+        pf_routing_state,
+        phase_log,
+    )
+    .await?;
     let (gateway_summary, gateway_evaluated) = match gateway_outcome {
         ProjectGatewayReconciliationOutcome::Reconciled {
             summary,
@@ -2950,7 +2521,6 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
                 runtime_catalog,
                 progress,
                 phase_log,
-                None,
                 options,
                 None,
             )
@@ -2969,9 +2539,7 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
         coverage.push(JobDiagnosticSubject::GatewayRuntime);
     }
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob { summary, coverage },
-    ))
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 fn finish_project_phase(
@@ -3031,7 +2599,7 @@ async fn reconcile_project_env_and_missing_resources(
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
-    reconcile_project_env_and_missing_resources_with_progress_and_fallback_shutdown(
+    reconcile_project_env_and_missing_resources_with_progress(
         paths,
         project_id,
         runtime_catalog,
@@ -3043,52 +2611,34 @@ async fn reconcile_project_env_and_missing_resources(
             &format!("project:{project_id}"),
         ),
         None,
-        None,
     )
-    .await?
-    .into_completed()
+    .await
 }
 
-async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_shutdown(
+async fn reconcile_project_env_and_missing_resources_with_progress(
     paths: &PvPaths,
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
     hooks: Option<&DaemonHooks>,
-) -> Result<ReconciliationOutcome<crate::project_env::ProjectEnvReconciliationSummary>, DaemonError>
-{
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
-
+) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
     let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
-    let record_result = reconcile_project_env_with_runtime_catalog_and_progress_outcome(
+    let record_result = reconcile_project_env_with_runtime_catalog_and_progress(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
         progress.clone(),
-        ProjectApplyOptions::new(ProjectApplyStage::RecordRequirements, fallback_shutdown),
+        ProjectApplyOptions::new(ProjectApplyStage::RecordRequirements),
     )
     .await;
     record_timer.finish(
-        match &record_result {
-            Ok(ReconciliationOutcome::Completed(_)) => PhaseOutcome::Succeeded,
-            Ok(ReconciliationOutcome::Cancelled) => PhaseOutcome::Skipped,
-            Err(_) => PhaseOutcome::Failed,
-        },
+        PhaseOutcome::from_succeeded(record_result.is_ok()),
         &[("project_count", 1)],
     );
-    let recorded = match record_result? {
-        ReconciliationOutcome::Completed(recorded) => recorded,
-        ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-    };
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+    let recorded = record_result?;
     let requested_php_extensions = recorded.requested_php_extensions();
     let recorded_tracks = recorded.recorded_tracks().clone();
 
@@ -3112,39 +2662,25 @@ async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_
         &[],
     );
     let deferred_resources_error = resources_result?.deferred_error;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return match deferred_resources_error {
-            Some(error) => Err(error),
-            None => Ok(ReconciliationOutcome::Cancelled),
-        };
-    }
 
     let apply_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
-    let apply_result = reconcile_project_env_with_runtime_catalog_and_progress_outcome(
+    let apply_result = reconcile_project_env_with_runtime_catalog_and_progress(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
         progress,
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply, fallback_shutdown)
-            .with_hooks(hooks),
+        ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply).with_hooks(hooks),
     )
     .await;
     apply_timer.finish(
-        match &apply_result {
-            Ok(ReconciliationOutcome::Completed(_)) => PhaseOutcome::Succeeded,
-            Ok(ReconciliationOutcome::Cancelled) => PhaseOutcome::Skipped,
-            Err(_) => PhaseOutcome::Failed,
-        },
+        PhaseOutcome::from_succeeded(apply_result.is_ok()),
         &[("project_count", 1)],
     );
 
-    let result = match (apply_result, deferred_resources_error) {
-        (Ok(ReconciliationOutcome::Completed(summary)), None) => Ok(summary),
-        (Ok(ReconciliationOutcome::Cancelled), None) => {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
+    match (apply_result, deferred_resources_error) {
+        (Ok(summary), None) => Ok(summary),
         (Ok(_), Some(repair_error)) => Err(repair_error),
         (Err(apply_error), None) => Err(apply_error),
         // Both stages failed. The apply is reported as primary because it is the later,
@@ -3156,13 +2692,7 @@ async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_
                 repair: Box::new(repair_error),
             })
         }
-    };
-    let summary = result?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
     }
-
-    Ok(ReconciliationOutcome::Completed(summary))
 }
 
 /// Installs the Managed Resource tracks the Project declares, then, under the original
@@ -3285,7 +2815,6 @@ async fn reconcile_system_projects_with_progress(
     stage: ProjectApplyStage,
     projects: &[ProjectRecord],
     skip_project_ids: &BTreeSet<String>,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
     hooks: Option<&DaemonHooks>,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
     let mut report = SystemProjectReconciliationReport {
@@ -3296,29 +2825,25 @@ async fn reconcile_system_projects_with_progress(
     let empty_demand = ProjectDemand::default();
 
     for project in projects {
-        if fallback_shutdown_requested(fallback_shutdown) {
-            break;
-        }
         if skip_project_ids.contains(&project.id) {
             continue;
         }
-        match reconcile_project_env_with_runtime_catalog_and_progress_outcome(
+        match reconcile_project_env_with_runtime_catalog_and_progress(
             paths,
             &project.id,
             runtime_catalog,
             Some(project_demands.get(&project.id).unwrap_or(&empty_demand)),
             demanded_tracks,
             progress.clone(),
-            ProjectApplyOptions::new(stage, fallback_shutdown).with_hooks(hooks),
+            ProjectApplyOptions::new(stage).with_hooks(hooks),
         )
         .await
         {
-            Ok(ReconciliationOutcome::Completed(summary)) => {
+            Ok(summary) => {
                 report.succeeded += 1;
                 report.successful_project_ids.push(project.id.clone());
                 report.summaries.push(summary.as_str().to_owned());
             }
-            Ok(ReconciliationOutcome::Cancelled) => break,
             Err(error @ DaemonError::ProjectEnvFailureRecordingFailed { .. }) => {
                 return Err(error);
             }
@@ -3419,7 +2944,6 @@ async fn reconcile_system_projects_and_resources_with_progress(
         ProjectApplyStage::CompleteStagedApply,
         &linked_projects(paths)?,
         &BTreeSet::new(),
-        None,
         None,
     )
     .await;
@@ -3867,20 +3391,19 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::run_reconciliation_job;
     use super::{
-        BackgroundReconciliationError, DaemonDownloadProgress, FOREGROUND_JOB_HEARTBEAT_INTERVAL,
-        FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
-        ReconciliationJobCompletion, ReconciliationJobOptions, SystemProjectReconciliationReport,
-        abandon_reconciliation_job, cancel_or_preserve_system_reconciliation_errors,
+        DaemonDownloadProgress, FOREGROUND_JOB_HEARTBEAT_INTERVAL, FOREGROUND_JOB_PROGRESS_BUFFER,
+        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent, ReconciliationJobOptions,
+        SystemProjectReconciliationReport, abandon_reconciliation_job,
         complete_managed_resource_reconciliation_with_progress,
         complete_or_fail_background_reconciliation, complete_project_reconciliation_with_progress,
-        complete_queued_background_reconciliation_job, complete_reconciliation_job_with_progress,
-        complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
+        complete_reconciliation_job_with_progress, complete_streamed_job_with_heartbeat,
+        complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
-        complete_update_job_with_progress, completed_system_reconciliation_coverage,
-        discover_system_project_demand, enqueue_foreground_reconciliation_job,
-        enqueue_reconciliation_job, enqueue_startup_reconciliation_job, enqueue_update_job,
-        foreground_reconciliation_result, linked_projects, managed_resource_reconciliation_summary,
-        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
+        completed_system_reconciliation_coverage, discover_system_project_demand,
+        enqueue_foreground_reconciliation_job, enqueue_reconciliation_job,
+        enqueue_startup_reconciliation_job, enqueue_update_job, foreground_reconciliation_result,
+        linked_projects, managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
+        reconcile_project_env_and_missing_resources,
         reconcile_project_env_with_runtime_catalog_and_progress,
         reconcile_system_projects_and_resources_with_progress,
         reconcile_system_projects_with_progress,
@@ -5987,7 +5510,6 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
-                    None,
                     ReconciliationJobOptions::default(),
                     None,
                 )
@@ -6353,7 +5875,6 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
-                None,
                 ReconciliationJobOptions::default(),
                 None,
             )
@@ -6461,7 +5982,6 @@ mod tests {
             Some(&catalog),
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            None,
             ReconciliationJobOptions::default(),
             None,
         )
@@ -6596,7 +6116,7 @@ mod tests {
             None,
             &BTreeSet::new(),
             super::DaemonDownloadProgress::disabled(),
-            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply, None),
+            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply),
         )
         .await?;
         let verification = async {
@@ -6629,7 +6149,6 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
-                None,
                 ReconciliationJobOptions::default(),
                 None,
             )
@@ -6806,7 +6325,6 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
-                    None,
                     ReconciliationJobOptions::default(),
                     None,
                 )
@@ -7024,7 +6542,6 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
-                    None,
                     ReconciliationJobOptions::default(),
                     None,
                 )
@@ -7194,7 +6711,6 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
-                None,
                 ReconciliationJobOptions::default(),
                 None,
             )
@@ -7410,7 +6926,6 @@ mod tests {
             &linked_projects(&paths)?,
             &BTreeSet::new(),
             None,
-            None,
         )
         .await?;
         stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
@@ -7602,7 +7117,6 @@ mod tests {
                 ProjectApplyStage::CompleteStagedApply,
                 &linked_projects(&paths)?,
                 &BTreeSet::new(),
-                None,
                 None,
             )
             .await?;
@@ -8190,7 +7704,7 @@ mod tests {
             None,
             &BTreeSet::new(),
             DaemonDownloadProgress::disabled(),
-            ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply, None),
+            ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply),
         )
         .await;
 
@@ -8295,8 +7809,7 @@ mod tests {
             running.timing(),
             ReconciliationJobOptions::default(),
         )
-        .await
-        .into_result()?;
+        .await?;
         running.finish();
 
         let phases = reconciliation_phase_events(&paths, &job_id)?;
@@ -10252,7 +9765,6 @@ mod tests {
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(paths.db(), "not a database")?;
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
-        let (_fallback_shutdown_sender, fallback_shutdown_receiver) = watch::channel(false);
         shutdown_sender
             .send(())
             .map_err(|()| anyhow::anyhow!("startup shutdown receiver was dropped"))?;
@@ -10262,7 +9774,6 @@ mod tests {
             ReconciliationQueue::new(),
             None,
             shutdown_receiver,
-            fallback_shutdown_receiver,
         )
         .await;
 
@@ -10465,7 +9976,7 @@ mod tests {
         let (client, server) = duplex(1024);
         let task = tokio::spawn(async move {
             let mut transport = protocol::transport(server);
-            wait_for_foreground_turn(waiting, &mut transport, true, None).await
+            wait_for_foreground_turn(waiting, &mut transport, true).await
         });
         let mut reader = protocol::transport(client);
 
@@ -10487,9 +9998,7 @@ mod tests {
         }
 
         running.finish();
-        let (waiting_running, stream_is_open) = task
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("queued foreground job was cancelled"))?;
+        let (waiting_running, stream_is_open) = task.await?;
         assert!(stream_is_open);
         assert_eq!(waiting_running.job_id(), waiting_job_id);
         waiting_running.finish();
@@ -10515,7 +10024,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let mut transport =
                 protocol::transport(FailingWriteStream::with_signal(failed_write_sender));
-            wait_for_foreground_turn(waiting, &mut transport, true, None).await
+            wait_for_foreground_turn(waiting, &mut transport, true).await
         });
 
         clock
@@ -10525,9 +10034,7 @@ mod tests {
             .await?
             .map_err(|_error| anyhow::anyhow!("queued heartbeat writer dropped"))?;
         running.finish();
-        let (waiting_running, stream_is_open) = task
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("queued foreground job was cancelled"))?;
+        let (waiting_running, stream_is_open) = task.await?;
 
         assert!(!stream_is_open);
         assert_eq!(waiting_running.job_id(), waiting_job_id);
@@ -10548,7 +10055,6 @@ mod tests {
         let task_paths = paths.clone();
         let task_queue = queue.clone();
         let scope = ReconciliationScope::resource("caddy", "2")?;
-        let (_fallback_sender, fallback_receiver) = watch::channel(false);
         let task = tokio::spawn(async move {
             run_reconciliation_job(
                 task_paths,
@@ -10556,7 +10062,6 @@ mod tests {
                 protocol::transport(server),
                 scope,
                 None,
-                &fallback_receiver,
             )
             .await
         });
@@ -10601,393 +10106,6 @@ mod tests {
             Some("job_completed")
         );
         task.await??;
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn cancelled_queued_foreground_reconciliation_is_abandoned_before_its_turn()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let (client, server) = UnixStream::pair()?;
-        let mut client = protocol::transport(client);
-        let queue = ReconciliationQueue::new();
-        let active = queued(enqueue_update_job(&paths, &queue)?)?
-            .wait_for_turn()
-            .await;
-        let (fallback_sender, fallback_receiver) = watch::channel(false);
-        let task_paths = paths.clone();
-        let mut task = tokio::spawn(async move {
-            run_reconciliation_job(
-                task_paths,
-                queue,
-                protocol::transport(server),
-                ReconciliationScope::resource("caddy", "2")?,
-                None,
-                &fallback_receiver,
-            )
-            .await
-        });
-
-        let accepted = real::timeout(Duration::from_millis(300), client.next())
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("foreground stream ended before queue admission"))??;
-        let accepted = serde_json::from_str::<serde_json::Value>(&accepted)?;
-        assert_eq!(accepted["status"], "accepted");
-        assert!(!task.is_finished());
-        fallback_sender
-            .send(true)
-            .map_err(|_| anyhow::anyhow!("queued foreground reconciliation stopped early"))?;
-        let result = real::timeout(Duration::from_millis(300), &mut task).await??;
-
-        assert!(result.is_ok());
-        let job = Database::open(&paths)?
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.kind == "reconcile")
-            .ok_or_else(|| anyhow::anyhow!("missing queued reconciliation job"))?;
-        assert_eq!(job.status, JobStatus::Failed);
-        assert_eq!(
-            job.error.as_deref(),
-            Some("reconciliation was abandoned before completion")
-        );
-        let coverage_count = Connection::open(paths.db().as_std_path())?.query_row(
-            "SELECT COUNT(*) FROM job_diagnostic_outcomes WHERE job_id = ?1 AND outcome = 'success'",
-            [&job.id],
-            |row| row.get::<_, i64>(0),
-        )?;
-        assert_eq!(coverage_count, 0);
-        active.finish();
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cancelled_queued_background_reconciliation_is_abandoned() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let queue = ReconciliationQueue::new();
-        let active = queued(enqueue_update_job(&paths, &queue)?)?
-            .wait_for_turn()
-            .await;
-        let waiting = queued(enqueue_reconciliation_job(
-            &paths,
-            &queue,
-            ReconciliationScope::resource("caddy", "2")?,
-        )?)?;
-        let waiting_job_id = waiting.job_id().to_owned();
-        let (fallback_sender, fallback_receiver) = watch::channel(false);
-        let completion_paths = paths.clone();
-        let completion_task = tokio::spawn(async move {
-            complete_queued_background_reconciliation_job(
-                &completion_paths,
-                waiting,
-                None,
-                Some(&fallback_receiver),
-            )
-            .await
-        });
-
-        tokio::task::yield_now().await;
-        assert!(!completion_task.is_finished());
-        fallback_sender
-            .send(true)
-            .map_err(|_| anyhow::anyhow!("queued reconciliation stopped before cancellation"))?;
-        real::timeout(Duration::from_millis(300), completion_task)
-            .await??
-            .map_err(BackgroundReconciliationError::into_error)?;
-
-        let job = Database::open(&paths)?
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.id == waiting_job_id)
-            .ok_or_else(|| anyhow::anyhow!("missing queued reconciliation job"))?;
-        assert_eq!(job.status, JobStatus::Failed);
-        assert_eq!(
-            job.error.as_deref(),
-            Some("reconciliation was abandoned before completion")
-        );
-        active.finish();
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn fallback_shutdown_finishes_resource_phase_before_abandoning_system_job()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        let (client, _archive_size) = scripted_artifact_client(
-            tempdir.path(),
-            "composer",
-            COMPOSER_TEST_TRACK,
-            COMPOSER_TEST_ARTIFACT_VERSION,
-            COMPOSER_TEST_ARCHIVE_FILE_NAME,
-            "composer.phar",
-        )?;
-        let started = Arc::new(AtomicBool::new(false));
-        let (release_sender, release_receiver) = mpsc::channel();
-        let client = HeldManifestArtifactClient {
-            inner: client,
-            release_receiver: Mutex::new(release_receiver),
-            started: Some(Arc::clone(&started)),
-        };
-        Database::open(&paths)?.record_managed_resource_track_desired(
-            "composer",
-            COMPOSER_TEST_TRACK,
-            ManagedResourceDesiredState::Installed,
-        )?;
-        let catalog = Arc::new(
-            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-                OFFLINE_TEST_MANIFEST_URL,
-                client,
-            )?,
-        );
-        let queue = ReconciliationQueue::new();
-        let queued = queued(enqueue_reconciliation_job(
-            &paths,
-            &queue,
-            ReconciliationScope::System,
-        )?)?;
-        let job_id = queued.job_id().to_owned();
-        let (fallback_sender, fallback_receiver) = watch::channel(false);
-        let task_paths = paths.clone();
-        let task_catalog = Arc::clone(&catalog);
-        let mut completion_task = tokio::spawn(async move {
-            complete_queued_background_reconciliation_job(
-                &task_paths,
-                queued,
-                Some(task_catalog.as_ref()),
-                Some(&fallback_receiver),
-            )
-            .await
-        });
-        real::timeout(Duration::from_secs(5), async {
-            while !started.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await?;
-
-        fallback_sender
-            .send(true)
-            .map_err(|_| anyhow::anyhow!("system reconciliation stopped before cancellation"))?;
-        assert!(
-            real::timeout(Duration::from_millis(100), &mut completion_task)
-                .await
-                .is_err()
-        );
-        assert!(matches!(
-            JobsLock::acquire(&paths),
-            Err(StateError::CoordinationLockHeld { .. })
-        ));
-        release_sender.send(())?;
-        real::timeout(Duration::from_secs(5), completion_task)
-            .await??
-            .map_err(BackgroundReconciliationError::into_error)?;
-
-        let job = Database::open(&paths)?
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.id == job_id)
-            .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
-        assert_eq!(job.status, JobStatus::Failed);
-        assert_eq!(
-            job.error.as_deref(),
-            Some("reconciliation was abandoned before completion")
-        );
-        let completed_phases = reconciliation_phase_events(&paths, &job.id)?
-            .into_iter()
-            .filter_map(|event| event["phase"].as_str().map(str::to_owned))
-            .collect::<Vec<_>>();
-        assert_eq!(completed_phases, ["queue", "demand_discovery", "resources"]);
-        let coverage_count = Connection::open(paths.db().as_std_path())?.query_row(
-            "SELECT COUNT(*) FROM job_diagnostic_outcomes WHERE job_id = ?1 AND outcome = 'success'",
-            [&job.id],
-            |row| row.get::<_, i64>(0),
-        )?;
-        assert_eq!(coverage_count, 0);
-        assert!(!paths.gateway_runtime_metadata().exists());
-        assert!(!paths.gateway_root_config().exists());
-
-        Ok(())
-    }
-
-    #[test]
-    fn fallback_after_update_mutation_preserves_changed_and_no_op_boundaries() -> anyhow::Result<()>
-    {
-        for (artifact_version, archive_file_name, expected_summary) in [
-            ("2.8.1-pv1", "composer-2.8.1-pv1-any.tar.gz", None),
-            (
-                COMPOSER_TEST_ARTIFACT_VERSION,
-                COMPOSER_TEST_ARCHIVE_FILE_NAME,
-                Some("current"),
-            ),
-        ] {
-            let tempdir = tempdir()?;
-            let paths = PvPaths::for_home(tempdir.path().join("home"));
-            seed_installed_artifact(
-                &paths,
-                "composer",
-                COMPOSER_TEST_TRACK,
-                COMPOSER_TEST_ARTIFACT_VERSION,
-                "composer.phar",
-            )?;
-            let (client, _archive_size) = scripted_artifact_client(
-                tempdir.path(),
-                "composer",
-                COMPOSER_TEST_TRACK,
-                artifact_version,
-                archive_file_name,
-                "composer.phar",
-            )?;
-            let started = Arc::new(AtomicBool::new(false));
-            let (release_sender, release_receiver) = mpsc::channel();
-            let client = HeldManifestArtifactClient {
-                inner: client,
-                release_receiver: Mutex::new(release_receiver),
-                started: Some(Arc::clone(&started)),
-            };
-            let catalog = Arc::new(
-                crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-                    OFFLINE_TEST_MANIFEST_URL,
-                    client,
-                )?,
-            );
-            let queue = ReconciliationQueue::new();
-            let runtime = crate::build_runtime()?;
-            let waiting = queued(enqueue_update_job(&paths, &queue)?)?;
-            let running = runtime.block_on(waiting.wait_for_turn());
-            let job_id = running.job_id().to_owned();
-            let (fallback_sender, fallback_receiver) = watch::channel(false);
-            let completion_paths = paths.clone();
-            let completion_catalog = Arc::clone(&catalog);
-            let completion_job_id = job_id.clone();
-            let completion_thread = std::thread::Builder::new()
-                .name("held-update-fallback".to_owned())
-                .spawn(move || -> anyhow::Result<_> {
-                    let runtime = crate::build_runtime()?;
-                    let completion = runtime.block_on(complete_update_job_with_progress(
-                        &completion_paths,
-                        &completion_job_id,
-                        Some(completion_catalog.as_ref()),
-                        DaemonDownloadProgress::disabled(),
-                        running.timing(),
-                        ReconciliationJobOptions {
-                            fallback_shutdown: Some(&fallback_receiver),
-                            ..ReconciliationJobOptions::default()
-                        },
-                    ));
-                    if matches!(completion, ReconciliationJobCompletion::Cancelled) {
-                        drop(running);
-                    } else {
-                        running.finish();
-                    }
-
-                    Ok(completion)
-                })?;
-            let deadline = real::now() + Duration::from_secs(5);
-            while !started.load(Ordering::SeqCst) {
-                if real::now() >= deadline {
-                    return Err(anyhow::anyhow!(
-                        "update manifest request did not reach its test gate"
-                    ));
-                }
-                clock::poll_blocking(Duration::from_millis(10));
-            }
-            assert!(matches!(
-                JobsLock::acquire(&paths),
-                Err(StateError::CoordinationLockHeld { path }) if path == paths.jobs_lock()
-            ));
-
-            fallback_sender
-                .send(true)
-                .map_err(|_| anyhow::anyhow!("update stopped before fallback was signalled"))?;
-            assert!(
-                !completion_thread.is_finished(),
-                "update returned before its non-interruptible mutation completed"
-            );
-            release_sender
-                .send(())
-                .map_err(|_| anyhow::anyhow!("update dropped its manifest gate"))?;
-            let completion = completion_thread
-                .join()
-                .map_err(|_| anyhow::anyhow!("update completion thread panicked"))??;
-            let job = Database::open(&paths)?
-                .recent_jobs()?
-                .into_iter()
-                .find(|job| job.id == job_id)
-                .ok_or_else(|| anyhow::anyhow!("missing update job {job_id}"))?;
-
-            match (expected_summary, completion) {
-                (Some(expected_summary), ReconciliationJobCompletion::Succeeded(summary)) => {
-                    assert_eq!(summary, expected_summary);
-                    assert_eq!(job.status, JobStatus::Succeeded);
-                }
-                (None, ReconciliationJobCompletion::Cancelled) => {
-                    assert_eq!(job.status, JobStatus::Failed);
-                    assert_eq!(
-                        job.error.as_deref(),
-                        Some("Managed Resource update was abandoned before completion")
-                    );
-                    let current_path = state::fs::read_link(
-                        &paths
-                            .resources()
-                            .join("composer")
-                            .join(COMPOSER_TEST_TRACK)
-                            .join("current"),
-                    )?;
-                    assert_eq!(
-                        current_path,
-                        Utf8PathBuf::from(format!("releases/{artifact_version}"))
-                    );
-                    let phases = reconciliation_phase_events(&paths, &job_id)?;
-                    for phase in [
-                        "demand_discovery",
-                        "resources",
-                        "project_apply",
-                        "workers",
-                        "gateway",
-                    ] {
-                        assert!(
-                            !phases.iter().any(|event| event["phase"] == phase),
-                            "update entered {phase} after fallback: {phases:#?}"
-                        );
-                    }
-                }
-                (expected_summary, _completion) => {
-                    return Err(anyhow::anyhow!(
-                        "unexpected update completion for expected summary {expected_summary:?}"
-                    ));
-                }
-            }
-            let _jobs_lock = JobsLock::acquire(&paths)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn system_project_failures_outrank_gateway_cancellation() -> anyhow::Result<()> {
-        let sentinel = DaemonError::UnexpectedProtocolResponse {
-            reason: "project sentinel".to_owned(),
-        };
-        let result = cancel_or_preserve_system_reconciliation_errors(
-            Ok(()),
-            Ok(SystemProjectReconciliationReport {
-                failures: vec![sentinel],
-                ..SystemProjectReconciliationReport::default()
-            }),
-            Ok(()),
-        );
-        let error = result
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("cancellation replaced the Project failure"))?;
-        assert_eq!(error.to_string(), "daemon protocol error: project sentinel");
 
         Ok(())
     }
@@ -11465,8 +10583,7 @@ mod tests {
             ReconciliationJobTiming::immediate(),
             ReconciliationJobOptions::default(),
         )
-        .await
-        .into_result()?;
+        .await?;
 
         let mut reader = protocol::transport(client);
         let mut events = Vec::new();

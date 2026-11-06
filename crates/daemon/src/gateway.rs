@@ -1,11 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet, btree_map};
-use std::future::Future;
 use std::io;
-use std::pin::Pin;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicU8, AtomicU64, Ordering},
     mpsc,
 };
 use std::time::Duration;
@@ -25,7 +22,6 @@ use state::{
     StateError, fs,
 };
 use tokio::io::{AsyncRead, AsyncReadExt};
-use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::gateway_config::{
@@ -104,27 +100,6 @@ const RUNTIME_CONFIG_FINGERPRINT_SCHEME: &[u8] = b"pv-runtime-config:v1";
 pub(crate) const CADDY_NOT_INSTALLED: &str = "Gateway runtime skipped; Caddy is not installed";
 static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 static PUBLIC_PROBE_ROUTE: AtomicU8 = AtomicU8::new(PUBLIC_PROBE_ROUTE_PUBLIC_PORTS);
-
-/// Result of reconciliation while the daemon's test-only fallback shutdown is armed.
-///
-/// [`Self::Cancelled`] is emitted only by the nonblocking test fallback. Ordinary daemon
-/// shutdown keeps its separate task-specific drain and abort behavior.
-#[derive(Debug)]
-pub(crate) enum ReconciliationOutcome<T> {
-    Completed(T),
-    Cancelled,
-}
-
-impl<T> ReconciliationOutcome<T> {
-    pub(crate) fn into_completed(self) -> Result<T, DaemonError> {
-        match self {
-            Self::Completed(value) => Ok(value),
-            Self::Cancelled => Err(DaemonError::UnexpectedProtocolResponse {
-                reason: "reconciliation was cancelled without a shutdown signal".to_owned(),
-            }),
-        }
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaddyCliCommand {
@@ -274,61 +249,14 @@ pub fn promote_validated_config_for_test(
 }
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, None, None, None)
-        .await?
-        .into_completed()
+    reconcile_gateway_runtimes_with_pf_state(paths, None, None).await
 }
 
 pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, None, Some(phase_log), None)
-        .await?
-        .into_completed()
-}
-
-pub(crate) async fn reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-    paths: &PvPaths,
-    phase_log: &structured_log::ReconciliationPhaseLog,
-    fallback_shutdown: &watch::Receiver<bool>,
-) -> Result<ReconciliationOutcome<String>, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, None, Some(phase_log), Some(fallback_shutdown))
-        .await
-}
-
-pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
-    paths: &PvPaths,
-    project_id: &str,
-    pf_routing_state: Option<GatewayPfRoutingState>,
-    phase_log: &structured_log::ReconciliationPhaseLog,
-) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
-    reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-        paths,
-        project_id,
-        pf_routing_state,
-        phase_log,
-        None,
-    )
-    .await?
-    .into_completed()
-}
-
-pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-    paths: &PvPaths,
-    project_id: &str,
-    pf_routing_state: Option<GatewayPfRoutingState>,
-    phase_log: &structured_log::ReconciliationPhaseLog,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<ProjectGatewayReconciliationOutcome>, DaemonError> {
-    reconcile_project_gateway_runtimes(
-        paths,
-        project_id,
-        pf_routing_state,
-        phase_log,
-        fallback_shutdown,
-    )
-    .await
+    reconcile_gateway_runtimes_with_pf_state(paths, None, Some(phase_log)).await
 }
 
 #[doc(hidden)]
@@ -343,15 +271,13 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
         "reconcile",
         &format!("project:{project_id}"),
     );
-    match reconcile_project_gateway_runtimes(
+    match reconcile_project_gateway_runtimes_with_phase_log(
         paths,
         project_id,
         Some(pf_routing_state),
         &phase_log,
-        None,
     )
     .await?
-    .into_completed()?
     {
         ProjectGatewayReconciliationOutcome::Reconciled { summary, .. } => Ok(summary),
         ProjectGatewayReconciliationOutcome::PromoteSystem => {
@@ -359,50 +285,32 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
                 paths,
                 Some(pf_routing_state),
                 Some(&phase_log),
-                None,
             )
-            .await?
-            .into_completed()
+            .await
         }
     }
 }
 
-async fn reconcile_project_gateway_runtimes(
+pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
     project_id: &str,
     pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: &structured_log::ReconciliationPhaseLog,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<ProjectGatewayReconciliationOutcome>, DaemonError> {
-    if reconciliation_cancelled(shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
     let Some(gateway_command) = first_installed_caddy_command(paths)? else {
-        let summary = match reconcile_gateway_runtimes_with_pf_state(
-            paths,
-            pf_routing_state,
-            Some(phase_log),
-            shutdown,
-        )
-        .await?
-        {
-            ReconciliationOutcome::Completed(summary) => summary,
-            ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-        };
+        let summary =
+            reconcile_gateway_runtimes_with_pf_state(paths, pf_routing_state, Some(phase_log))
+                .await?;
 
-        return Ok(ReconciliationOutcome::Completed(
-            ProjectGatewayReconciliationOutcome::Reconciled {
-                summary,
-                gateway_evaluated: true,
-            },
-        ));
+        return Ok(ProjectGatewayReconciliationOutcome::Reconciled {
+            summary,
+            gateway_evaluated: true,
+        });
     };
     let mut targeted = match build_target_runtime_plan(paths, project_id) {
         Ok(Some(targeted)) => targeted,
         Ok(None) => {
-            return Ok(ReconciliationOutcome::Completed(
-                ProjectGatewayReconciliationOutcome::PromoteSystem,
-            ));
+            return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
         }
         Err(error) => {
             return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
@@ -418,15 +326,11 @@ async fn reconcile_project_gateway_runtimes(
     )? {
         Some(active_impact) => active_impact,
         None => {
-            return Ok(ReconciliationOutcome::Completed(
-                ProjectGatewayReconciliationOutcome::PromoteSystem,
-            ));
+            return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
         }
     };
     if failed_worker_outside_target(paths, &targeted, &target_active_impact)? {
-        return Ok(ReconciliationOutcome::Completed(
-            ProjectGatewayReconciliationOutcome::PromoteSystem,
-        ));
+        return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
     }
     if targeted.current_runtime_key.is_none()
         && !target_active_impact.served
@@ -450,9 +354,7 @@ async fn reconcile_project_gateway_runtimes(
             .await,
             Ok(Ok(()))
         ) {
-            return Ok(ReconciliationOutcome::Completed(
-                ProjectGatewayReconciliationOutcome::PromoteSystem,
-            ));
+            return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
         }
         record_gateway_runtime_observed(
             paths,
@@ -460,14 +362,10 @@ async fn reconcile_project_gateway_runtimes(
             RuntimeReadinessOutcome::Verified,
         )?;
 
-        return Ok(ReconciliationOutcome::Completed(
-            skipped_project_gateway_outcome(phase_log),
-        ));
+        return Ok(skipped_project_gateway_outcome(phase_log));
     }
     if !complete_targeted_runtime_plan(paths, project_id, &mut targeted)? {
-        return Ok(ReconciliationOutcome::Completed(
-            ProjectGatewayReconciliationOutcome::PromoteSystem,
-        ));
+        return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
     }
     let active_impact = match verified_active_project_gateway_impact(
         paths,
@@ -478,9 +376,7 @@ async fn reconcile_project_gateway_runtimes(
     )? {
         Some(active_impact) => active_impact,
         None => {
-            return Ok(ReconciliationOutcome::Completed(
-                ProjectGatewayReconciliationOutcome::PromoteSystem,
-            ));
+            return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
         }
     };
     let worker_timer = phase_log.start(
@@ -500,19 +396,14 @@ async fn reconcile_project_gateway_runtimes(
                 ),
             })?;
         let worker_runtime = required_installed_worker_runtime(paths, worker)?;
-        match reconcile_planned_worker(
+        reconcile_planned_worker(
             paths,
             worker,
             &worker_runtime,
             active_impact.worker_fragments.get(runtime_key),
             None,
-            shutdown,
         )
-        .await?
-        {
-            ReconciliationOutcome::Completed(()) => {}
-            ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-        }
+        .await?;
     }
 
     worker_timer.finish(
@@ -537,19 +428,14 @@ async fn reconcile_project_gateway_runtimes(
         "target_project",
     );
     if gateway_required {
-        match reconcile_planned_gateway(
+        reconcile_planned_gateway(
             paths,
             &targeted.plan,
             &gateway_command,
             pf_routing_state,
             Some(&active_impact.gateway_fragments),
-            shutdown,
         )
-        .await?
-        {
-            ReconciliationOutcome::Completed(()) => {}
-            ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-        }
+        .await?;
     }
     gateway_timer.finish(
         if gateway_required {
@@ -578,21 +464,14 @@ async fn reconcile_project_gateway_runtimes(
             .find(|worker| worker.runtime_key == *previous_runtime_key)
         {
             let worker_runtime = required_installed_worker_runtime(paths, worker)?;
-            match reconcile_planned_worker(
+            reconcile_planned_worker(
                 paths,
                 worker,
                 &worker_runtime,
                 active_impact.worker_fragments.get(previous_runtime_key),
                 None,
-                shutdown,
             )
-            .await?
-            {
-                ReconciliationOutcome::Completed(()) => {}
-                ReconciliationOutcome::Cancelled => {
-                    return Ok(ReconciliationOutcome::Cancelled);
-                }
-            }
+            .await?;
         } else {
             if let Err(error) =
                 stop_worker_if_undemanded(paths, &supervisor, previous_runtime_key).await
@@ -620,12 +499,10 @@ async fn reconcile_project_gateway_runtimes(
         "Gateway runtime unchanged; Project has no routes".to_owned()
     };
 
-    Ok(ReconciliationOutcome::Completed(
-        ProjectGatewayReconciliationOutcome::Reconciled {
-            summary,
-            gateway_evaluated: gateway_required,
-        },
-    ))
+    Ok(ProjectGatewayReconciliationOutcome::Reconciled {
+        summary,
+        gateway_evaluated: gateway_required,
+    })
 }
 
 pub fn probe_gateway_identity_blocking(
@@ -652,20 +529,14 @@ pub async fn reconcile_gateway_runtimes_with_pf_state_for_test(
     paths: &PvPaths,
     pf_routing_state: GatewayPfRoutingState,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, Some(pf_routing_state), None, None)
-        .await?
-        .into_completed()
+    reconcile_gateway_runtimes_with_pf_state(paths, Some(pf_routing_state), None).await
 }
 
 async fn reconcile_gateway_runtimes_with_pf_state(
     paths: &PvPaths,
     pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: Option<&structured_log::ReconciliationPhaseLog>,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<String>, DaemonError> {
-    if reconciliation_cancelled(shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+) -> Result<String, DaemonError> {
     let lookup_started_at = clock::now();
     let gateway_command = first_installed_caddy_command(paths).inspect_err(|_| {
         if let Some(phase_log) = phase_log {
@@ -680,9 +551,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         }
     })?;
     let Some(gateway_command) = gateway_command else {
-        if reconciliation_cancelled(shutdown) {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
         if let Some(phase_log) = phase_log {
             phase_log.report_progress(structured_log::ReconciliationPhase::Workers);
             phase_log.completed(
@@ -713,9 +581,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 );
             }
         })?;
-        if reconciliation_cancelled(shutdown) {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
         if let Some(phase_log) = phase_log {
             phase_log.completed(
                 structured_log::ReconciliationPhase::Gateway,
@@ -726,9 +591,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             );
         }
 
-        return Ok(ReconciliationOutcome::Completed(
-            CADDY_NOT_INSTALLED.to_owned(),
-        ));
+        return Ok(CADDY_NOT_INSTALLED.to_owned());
     };
 
     let worker_timer = phase_log.map(|phase_log| {
@@ -761,15 +624,11 @@ async fn reconcile_gateway_runtimes_with_pf_state(
                 None,
                 previous_gateway.as_ref(),
                 pf_routing_state,
-                shutdown,
             )
             .await;
             let mut failures = vec![("gateway".to_owned(), error)];
             if let Some(recording) = recording {
                 failures.push(("gateway".to_owned(), recording));
-            }
-            if matches!(recovery, Ok(ReconciliationOutcome::Cancelled)) {
-                return cancel_or_preserve_runtime_reconciliation_errors(failures);
             }
             let recovery = recovery.err();
             if let Some(recovery) = recovery {
@@ -881,29 +740,17 @@ async fn reconcile_gateway_runtimes_with_pf_state(
     let workers = bounded_runtime_readiness(worker_commands, |(worker, worker_runtime)| {
         let retained_fragments = retained_worker_fragments.get(&worker.runtime_key);
         async move {
-            let result = reconcile_planned_worker(
-                paths,
-                &worker,
-                &worker_runtime,
-                None,
-                retained_fragments,
-                shutdown,
-            )
-            .await;
+            let result =
+                reconcile_planned_worker(paths, &worker, &worker_runtime, None, retained_fragments)
+                    .await;
             (worker.runtime_key.clone(), result)
         }
     });
     tokio::pin!(workers);
-    let mut cancelled = false;
     while let Some((runtime_key, result)) = workers.next().await {
-        match result {
-            Ok(ReconciliationOutcome::Completed(())) => {}
-            Ok(ReconciliationOutcome::Cancelled) => cancelled = true,
-            Err(error) => worker_failures.push((runtime_key, error)),
+        if let Err(error) = result {
+            worker_failures.push((runtime_key, error));
         }
-    }
-    if cancelled {
-        return cancel_or_preserve_runtime_reconciliation_errors(worker_failures);
     }
     if !worker_failures.is_empty() {
         let recovery = recover_previous_gateway(
@@ -912,15 +759,10 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             Some(&plan),
             previous_gateway.as_ref(),
             pf_routing_state,
-            shutdown,
         )
         .await;
-        match recovery {
-            Ok(ReconciliationOutcome::Cancelled) => {
-                return cancel_or_preserve_runtime_reconciliation_errors(worker_failures);
-            }
-            Ok(ReconciliationOutcome::Completed(())) => {}
-            Err(error) => worker_failures.push(("gateway".to_owned(), error)),
+        if let Err(error) = recovery {
+            worker_failures.push(("gateway".to_owned(), error));
         }
         return Err(combined_runtime_reconciliation_error(worker_failures));
     }
@@ -942,18 +784,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
 
     let gateway_timer = phase_log
         .map(|phase_log| phase_log.start(structured_log::ReconciliationPhase::Gateway, "gateway"));
-    let gateway_outcome = reconcile_planned_gateway(
-        paths,
-        &plan,
-        &gateway_command,
-        pf_routing_state,
-        None,
-        shutdown,
-    )
-    .await?;
-    if matches!(gateway_outcome, ReconciliationOutcome::Cancelled) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+    reconcile_planned_gateway(paths, &plan, &gateway_command, pf_routing_state, None).await?;
     if let Some(gateway_timer) = gateway_timer {
         gateway_timer.finish(
             structured_log::PhaseOutcome::Succeeded,
@@ -968,25 +799,18 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         )
     });
     let mut cleanup_failures: Vec<(String, DaemonError)> = Vec::new();
-    let mut cleanup_cancelled = false;
     for worker in &plan.workers {
         if retained_worker_fragments.contains_key(&worker.runtime_key) {
             let result = match required_installed_worker_runtime(paths, worker) {
                 Ok(worker_runtime) => {
-                    reconcile_planned_worker(paths, worker, &worker_runtime, None, None, shutdown)
-                        .await
+                    reconcile_planned_worker(paths, worker, &worker_runtime, None, None).await
                 }
                 Err(error) => Err(error),
             };
-            match result {
-                Ok(ReconciliationOutcome::Completed(())) => {}
-                Ok(ReconciliationOutcome::Cancelled) => cleanup_cancelled = true,
-                Err(error) => cleanup_failures.push((worker.runtime_key.clone(), error)),
+            if let Err(error) = result {
+                cleanup_failures.push((worker.runtime_key.clone(), error));
             }
         }
-    }
-    if cleanup_cancelled {
-        return cancel_or_preserve_runtime_reconciliation_errors(cleanup_failures);
     }
     let mut cleanup_timer = cleanup_timer;
     if let Err(error) = stop_stale_worker_runtimes(paths, &supervisor, &plan)
@@ -1008,16 +832,11 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             &[],
         );
     }
-    if reconciliation_cancelled(shutdown) {
-        return cancel_or_preserve_runtime_reconciliation_errors(cleanup_failures);
-    }
     if !cleanup_failures.is_empty() {
         return Err(combined_runtime_reconciliation_error(cleanup_failures));
     }
 
-    Ok(ReconciliationOutcome::Completed(
-        GATEWAY_RUNTIME_RECONCILED.to_owned(),
-    ))
+    Ok(GATEWAY_RUNTIME_RECONCILED.to_owned())
 }
 
 async fn recover_previous_gateway(
@@ -1026,11 +845,7 @@ async fn recover_previous_gateway(
     plan: Option<&RuntimePlan>,
     snapshot: Option<&ActiveRuntimeConfigSnapshot>,
     pf_routing_state: Option<GatewayPfRoutingState>,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
-    if reconciliation_cancelled(shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let Some(snapshot) = snapshot else {
         // Prior bytes are unprovable: only a previously recorded Gateway that is now
@@ -1038,14 +853,14 @@ async fn recover_previous_gateway(
         // unverifiable, or never-installed Gateway is left untouched so recovery never
         // issues a competing load or materializes a Gateway the plan never ran.
         let Some(plan) = plan else {
-            return Ok(ReconciliationOutcome::Completed(()));
+            return Ok(());
         };
         let gateway_spec = gateway_process_spec(paths, gateway_command);
         if supervisor
             .recorded_config_fingerprint(&gateway_spec)?
             .is_none()
         {
-            return Ok(ReconciliationOutcome::Completed(()));
+            return Ok(());
         }
         match supervisor.verify_ownership(&gateway_spec) {
             Ok(None) => {
@@ -1055,11 +870,10 @@ async fn recover_previous_gateway(
                     gateway_command,
                     pf_routing_state,
                     None,
-                    shutdown,
                 )
                 .await;
             }
-            Ok(Some(_)) | Err(_) => return Ok(ReconciliationOutcome::Completed(())),
+            Ok(Some(_)) | Err(_) => return Ok(()),
         }
     };
     let active_dir = paths.gateway_projects_config_dir();
@@ -1095,15 +909,7 @@ async fn recover_previous_gateway(
             fragments,
         },
     };
-    reconcile_gateway_config(
-        paths,
-        &plan,
-        gateway_command,
-        pf_routing_state,
-        desired,
-        shutdown,
-    )
-    .await
+    reconcile_gateway_config(paths, &plan, gateway_command, pf_routing_state, desired).await
 }
 
 async fn reconcile_planned_gateway(
@@ -1112,8 +918,7 @@ async fn reconcile_planned_gateway(
     gateway_command: &CaddyCliCommand,
     pf_routing_state: Option<GatewayPfRoutingState>,
     preserved_fragments: Option<&BTreeMap<String, String>>,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
+) -> Result<(), DaemonError> {
     let desired_gateway_config = match desired_gateway_config(paths, plan, preserved_fragments) {
         Ok(desired_config) => desired_config,
         Err(error) => {
@@ -1126,7 +931,6 @@ async fn reconcile_planned_gateway(
         gateway_command,
         pf_routing_state,
         desired_gateway_config,
-        shutdown,
     )
     .await
 }
@@ -1137,8 +941,7 @@ async fn reconcile_gateway_config(
     gateway_command: &CaddyCliCommand,
     pf_routing_state: Option<GatewayPfRoutingState>,
     desired_gateway_config: DesiredGatewayConfig,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
+) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let pf_routing_state = match pf_routing_state {
         Some(pf_routing_state) => pf_routing_state,
@@ -1164,9 +967,6 @@ async fn reconcile_gateway_config(
             return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     } {
-        if reconciliation_cancelled(shutdown) {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
         outcome
     } else {
         let promoted_config = promote_runtime_config_tree(
@@ -1176,19 +976,8 @@ async fn reconcile_gateway_config(
             paths.gateway_root_config(),
             caddy_xdg_environment(paths),
             &desired_gateway_config.tree,
-            shutdown,
         )
         .await?;
-        let promoted_config = match promoted_config {
-            ReconciliationOutcome::Completed(promoted_config) => promoted_config,
-            ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-        };
-        if reconciliation_cancelled(shutdown) {
-            promoted_config
-                .rollback()
-                .map_err(|error| record_primary_error(paths, RuntimeSubject::Gateway, error))?;
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
         let runtime = prepare_promoted_runtime(
             paths,
             promoted_config,
@@ -1196,24 +985,13 @@ async fn reconcile_gateway_config(
             gateway_readiness,
             &desired_gateway_config.tree.fingerprint,
             RuntimeSubject::Gateway,
-            shutdown,
         )
         .await?;
-        match runtime {
-            ReconciliationOutcome::Completed(runtime) => {
-                match finish_promoted_runtime(runtime.wait(shutdown).await)? {
-                    ReconciliationOutcome::Completed(outcome) => outcome,
-                    ReconciliationOutcome::Cancelled => {
-                        return Ok(ReconciliationOutcome::Cancelled);
-                    }
-                }
-            }
-            ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-        }
+        finish_promoted_runtime(runtime.wait().await)?
     };
     record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
 
-    Ok(ReconciliationOutcome::Completed(()))
+    Ok(())
 }
 
 async fn reconcile_planned_worker(
@@ -1222,29 +1000,25 @@ async fn reconcile_planned_worker(
     worker_runtime: &InstalledFrankenphpRuntime,
     preserved_fragments: Option<&BTreeMap<String, String>>,
     retained_fragments: Option<&BTreeMap<String, String>>,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
+) -> Result<(), DaemonError> {
     let prepared = prepare_planned_worker(
         paths,
         worker,
         worker_runtime,
         preserved_fragments,
         retained_fragments,
-        shutdown,
     )
     .await?;
     match prepared {
-        PreparedWorkerReconciliation::Complete => Ok(ReconciliationOutcome::Completed(())),
-        PreparedWorkerReconciliation::Cancelled => Ok(ReconciliationOutcome::Cancelled),
+        PreparedWorkerReconciliation::Complete => Ok(()),
         PreparedWorkerReconciliation::Pending(worker) => {
-            finish_planned_worker(paths, (*worker).wait(shutdown).await).await
+            finish_planned_worker(paths, (*worker).wait().await).await
         }
     }
 }
 
 enum PreparedWorkerReconciliation {
     Complete,
-    Cancelled,
     Pending(Box<PendingPromotedRuntime>),
 }
 
@@ -1254,7 +1028,6 @@ async fn prepare_planned_worker(
     worker_runtime: &InstalledFrankenphpRuntime,
     preserved_fragments: Option<&BTreeMap<String, String>>,
     retained_fragments: Option<&BTreeMap<String, String>>,
-    shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<PreparedWorkerReconciliation, DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let subject = worker_runtime_subject(worker);
@@ -1300,9 +1073,6 @@ async fn prepare_planned_worker(
     .await
     {
         Ok(Some(_outcome)) => {
-            if reconciliation_cancelled(shutdown) {
-                return Ok(PreparedWorkerReconciliation::Cancelled);
-            }
             record_runtime_observed(
                 paths,
                 subject,
@@ -1323,21 +1093,8 @@ async fn prepare_planned_worker(
         paths.worker_root_config(&worker.runtime_key),
         private_environment,
         &desired_config,
-        shutdown,
     )
     .await?;
-    let promoted_config = match promoted_config {
-        ReconciliationOutcome::Completed(promoted_config) => promoted_config,
-        ReconciliationOutcome::Cancelled => {
-            return Ok(PreparedWorkerReconciliation::Cancelled);
-        }
-    };
-    if reconciliation_cancelled(shutdown) {
-        promoted_config
-            .rollback()
-            .map_err(|error| record_primary_error(paths, subject.clone(), error))?;
-        return Ok(PreparedWorkerReconciliation::Cancelled);
-    }
     let runtime = prepare_promoted_runtime(
         paths,
         promoted_config,
@@ -1345,28 +1102,18 @@ async fn prepare_planned_worker(
         readiness,
         &desired_config.fingerprint,
         subject.clone(),
-        shutdown,
     )
     .await?;
-    match runtime {
-        ReconciliationOutcome::Completed(runtime) => {
-            Ok(PreparedWorkerReconciliation::Pending(Box::new(runtime)))
-        }
-        ReconciliationOutcome::Cancelled => Ok(PreparedWorkerReconciliation::Cancelled),
-    }
+
+    Ok(PreparedWorkerReconciliation::Pending(Box::new(runtime)))
 }
 
 async fn finish_planned_worker(
     paths: &PvPaths,
     completed: CompletedPromotedRuntime,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
+) -> Result<(), DaemonError> {
     let subject = completed.subject.clone();
-    if matches!(
-        finish_promoted_runtime(completed)?,
-        ReconciliationOutcome::Cancelled
-    ) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+    finish_promoted_runtime(completed)?;
     record_runtime_observed(
         paths,
         subject,
@@ -1374,7 +1121,7 @@ async fn finish_planned_worker(
         Some(GATEWAY_RUNTIME_RECONCILED),
     )?;
 
-    Ok(ReconciliationOutcome::Completed(()))
+    Ok(())
 }
 
 fn combined_runtime_reconciliation_error(mut failures: Vec<(String, DaemonError)>) -> DaemonError {
@@ -1388,16 +1135,6 @@ fn combined_runtime_reconciliation_error(mut failures: Vec<(String, DaemonError)
             .into_iter()
             .map(|(runtime_key, error)| RuntimeReconciliationFailure::new(runtime_key, error))
             .collect(),
-    }
-}
-
-fn cancel_or_preserve_runtime_reconciliation_errors<T>(
-    failures: Vec<(String, DaemonError)>,
-) -> Result<ReconciliationOutcome<T>, DaemonError> {
-    if failures.is_empty() {
-        Ok(ReconciliationOutcome::Cancelled)
-    } else {
-        Err(combined_runtime_reconciliation_error(failures))
     }
 }
 
@@ -1765,33 +1502,20 @@ pub async fn validate_config(
     config_path: &Utf8Path,
     private_environment: &BTreeMap<String, String>,
 ) -> Result<(), DaemonError> {
-    validate_config_with_shutdown(command, config_path, private_environment, None, None)
-        .await?
-        .into_completed()
+    validate_config_with_cleanup(command, config_path, private_environment, None).await
 }
 
-async fn validate_config_with_shutdown(
+async fn validate_config_with_cleanup(
     command: &CaddyCliCommand,
     config_path: &Utf8Path,
     private_environment: &BTreeMap<String, String>,
-    shutdown: Option<&watch::Receiver<bool>>,
     cleanup_paths: Option<&PvPaths>,
-) -> Result<ReconciliationOutcome<()>, DaemonError> {
-    let output = match run_validation_command(
-        command,
-        config_path,
-        private_environment,
-        shutdown,
-        cleanup_paths,
-    )
-    .await?
-    {
-        ReconciliationOutcome::Completed(output) => output,
-        ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-    };
+) -> Result<(), DaemonError> {
+    let output =
+        run_validation_command(command, config_path, private_environment, cleanup_paths).await?;
 
     if output.status.success() {
-        return Ok(ReconciliationOutcome::Completed(()));
+        return Ok(());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -2216,12 +1940,8 @@ async fn run_validation_command(
     command: &CaddyCliCommand,
     config_path: &Utf8Path,
     private_environment: &BTreeMap<String, String>,
-    shutdown: Option<&watch::Receiver<bool>>,
     cleanup_paths: Option<&PvPaths>,
-) -> Result<ReconciliationOutcome<ValidationOutput>, DaemonError> {
-    if reconciliation_cancelled(shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+) -> Result<ValidationOutput, DaemonError> {
     let mut command_process = RuntimeProcessCommand::new(command.executable());
     command_process
         .args(command.validate_arguments(config_path))
@@ -2301,19 +2021,14 @@ async fn run_validation_command(
         command.runtime_label(),
         fallback_reaper,
     );
-    let status = match wait_for_transaction_step(
-        Box::pin(clock::timeout(&CONFIG_VALIDATION_TIMEOUT, process.wait())),
-        shutdown,
-    )
-    .await
-    {
-        ReconciliationOutcome::Completed(Ok(Ok(status))) => status,
-        ReconciliationOutcome::Completed(Ok(Err(error))) => {
+    let status = match clock::timeout(&CONFIG_VALIDATION_TIMEOUT, process.wait()).await {
+        Ok(Ok(status)) => status,
+        Ok(Err(error)) => {
             let cleanup_result = cleanup_validation_process(process, stdout, stderr).await;
 
             return Err(preserve_validation_error(error, cleanup_result));
         }
-        ReconciliationOutcome::Completed(Err(_elapsed)) => {
+        Err(_elapsed) => {
             let error = DaemonError::ProtocolTimedOut {
                 phase: command.validation_phase(),
             };
@@ -2321,19 +2036,14 @@ async fn run_validation_command(
 
             return Err(preserve_validation_error(error, cleanup_result));
         }
-        ReconciliationOutcome::Cancelled => {
-            cleanup_validation_process(process, stdout, stderr).await?;
-
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
     };
     let (stdout, stderr) = cleanup_validation_process(process, stdout, stderr).await?;
 
-    Ok(ReconciliationOutcome::Completed(ValidationOutput {
+    Ok(ValidationOutput {
         status,
         stdout,
         stderr,
-    }))
+    })
 }
 
 async fn cleanup_validation_process(
@@ -3590,40 +3300,25 @@ async fn promote_runtime_config_tree(
     config_path: Utf8PathBuf,
     private_environment: BTreeMap<String, String>,
     desired: &DesiredRuntimeConfigTree,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<PromotedConfigTree>, DaemonError> {
-    let validation_cancelled = Arc::new(AtomicBool::new(false));
+) -> Result<PromotedConfigTree, DaemonError> {
     let mut candidate_dir = CandidateConfigDirGuard::new(paths, desired.candidate_dir.clone());
     let result = candidate_dir
         .delete_current()
         .and_then(|()| write_project_config_fragments(&desired.candidate_dir, &desired.fragments));
     let result = match result {
         Ok(()) => {
-            let validation_cancelled_for_command = Arc::clone(&validation_cancelled);
             promote_validated_config_tree_async(
                 &config_path,
                 &desired.candidate_content,
                 &desired.active_content,
                 |candidate_path| async move {
-                    match validate_config_with_shutdown(
+                    validate_config_with_cleanup(
                         command,
                         &candidate_path,
                         &private_environment,
-                        shutdown,
                         Some(paths),
                     )
-                    .await?
-                    {
-                        ReconciliationOutcome::Completed(()) => Ok(()),
-                        ReconciliationOutcome::Cancelled => {
-                            delete_optional_file(&candidate_path)?;
-                            validation_cancelled_for_command.store(true, Ordering::SeqCst);
-
-                            Err(DaemonError::UnexpectedProtocolResponse {
-                                reason: "config validation was cancelled".to_owned(),
-                            })
-                        }
-                    }
+                    .await
                 },
                 || promote_config_dir(&desired.active_dir, &desired.candidate_dir),
             )
@@ -3631,12 +3326,6 @@ async fn promote_runtime_config_tree(
         }
         Err(error) => Err(error),
     };
-    if validation_cancelled.load(Ordering::SeqCst) {
-        return match candidate_dir.cleanup() {
-            Ok(()) => Ok(ReconciliationOutcome::Cancelled),
-            Err(error) => Err(record_primary_error(paths, subject, error)),
-        };
-    }
     let result = match result {
         Ok(promoted_config) => {
             candidate_dir.disarm();
@@ -3652,10 +3341,7 @@ async fn promote_runtime_config_tree(
         },
     };
 
-    match result {
-        Ok(promoted_config) => Ok(ReconciliationOutcome::Completed(promoted_config)),
-        Err(error) => Err(record_primary_error(paths, subject, error)),
-    }
+    result.map_err(|error| record_primary_error(paths, subject, error))
 }
 
 struct CandidateConfigDirGuard {
@@ -3785,7 +3471,7 @@ struct CompletedPromotedRuntime {
     spec: ProcessSpec,
     subject: RuntimeSubject,
     origin: PromotedRuntimeOrigin,
-    result: Result<ReconciliationOutcome<RuntimeReadinessOutcome>, RuntimeTransactionError>,
+    result: Result<RuntimeReadinessOutcome, RuntimeTransactionError>,
 }
 
 struct PromotedRuntimeRecovery {
@@ -3797,7 +3483,7 @@ struct PromotedRuntimeRecovery {
 }
 
 impl PendingPromotedRuntime {
-    async fn wait(self, shutdown: Option<&watch::Receiver<bool>>) -> CompletedPromotedRuntime {
+    async fn wait(self) -> CompletedPromotedRuntime {
         let Self {
             paths,
             promoted_config,
@@ -3816,7 +3502,6 @@ impl PendingPromotedRuntime {
             &readiness,
             &desired_fingerprint,
             started,
-            shutdown,
         )
         .await;
 
@@ -3838,8 +3523,7 @@ async fn prepare_promoted_runtime(
     readiness: RuntimeReadinessPlan,
     desired_fingerprint: &str,
     subject: RuntimeSubject,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<PendingPromotedRuntime>, DaemonError> {
+) -> Result<PendingPromotedRuntime, DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let matching_runtime = match supervisor.verify_ownership(&spec) {
         Ok(Some(runtime)) => (!runtime.replacement_required()
@@ -3873,17 +3557,10 @@ async fn prepare_promoted_runtime(
         &readiness,
         desired_fingerprint,
         matching_runtime,
-        shutdown,
     )
     .await
     {
-        Ok(ReconciliationOutcome::Completed(started)) => started,
-        Ok(ReconciliationOutcome::Cancelled) => {
-            promoted_config
-                .rollback()
-                .map_err(|error| record_primary_error(paths, subject, error))?;
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
+        Ok(started) => started,
         Err(error) => {
             let previous_fingerprint = match origin {
                 PromotedRuntimeOrigin::Fresh => None,
@@ -3913,12 +3590,12 @@ async fn prepare_promoted_runtime(
         origin,
         started,
     };
-    Ok(ReconciliationOutcome::Completed(pending))
+    Ok(pending)
 }
 
 fn finish_promoted_runtime(
     completed: CompletedPromotedRuntime,
-) -> Result<ReconciliationOutcome<RuntimeReadinessOutcome>, DaemonError> {
+) -> Result<RuntimeReadinessOutcome, DaemonError> {
     let CompletedPromotedRuntime {
         paths,
         promoted_config,
@@ -3928,7 +3605,7 @@ fn finish_promoted_runtime(
         result,
     } = completed;
     match result {
-        Ok(ReconciliationOutcome::Completed(outcome)) => {
+        Ok(outcome) => {
             if let Err(error) = promoted_config.cleanup() {
                 structured_log::runtime_config_cleanup_failed(
                     &paths,
@@ -3936,12 +3613,7 @@ fn finish_promoted_runtime(
                     &error.to_string(),
                 );
             }
-            Ok(ReconciliationOutcome::Completed(outcome))
-        }
-        Ok(ReconciliationOutcome::Cancelled) => {
-            cancel_promoted_runtime(paths, promoted_config, spec, subject, origin)?;
-
-            Ok(ReconciliationOutcome::Cancelled)
+            Ok(outcome)
         }
         Err(error) => {
             let previous_fingerprint = match origin {
@@ -3960,30 +3632,6 @@ fn finish_promoted_runtime(
                 },
                 error,
             ))
-        }
-    }
-}
-
-fn cancel_promoted_runtime(
-    paths: PvPaths,
-    promoted_config: PromotedConfigTree,
-    spec: ProcessSpec,
-    subject: RuntimeSubject,
-    origin: PromotedRuntimeOrigin,
-) -> Result<(), DaemonError> {
-    match origin {
-        PromotedRuntimeOrigin::Fresh => promoted_config
-            .rollback()
-            .map_err(|error| record_primary_error(&paths, subject, error)),
-        PromotedRuntimeOrigin::Matching { .. } => {
-            if let Err(error) = promoted_config.cleanup() {
-                structured_log::runtime_config_cleanup_failed(
-                    &paths,
-                    &spec.name,
-                    &error.to_string(),
-                );
-            }
-            Ok(())
         }
     }
 }
@@ -4093,12 +3741,8 @@ async fn begin_runtime_transaction(
     readiness: &RuntimeReadinessPlan,
     desired_fingerprint: &str,
     matching_runtime: bool,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<StartedRuntimeTransaction>, RuntimeTransactionError> {
+) -> Result<StartedRuntimeTransaction, RuntimeTransactionError> {
     if matching_runtime {
-        if reconciliation_cancelled(shutdown) {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
         if supervisor.verify_ownership(spec)?.is_none() {
             return Err(RuntimeTransactionError::new(
                 CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
@@ -4108,29 +3752,11 @@ async fn begin_runtime_transaction(
         let active_content = read_config_bytes(&spec.config_path)?;
         let client = CaddyAdminClient::new();
         mark_runtime_config_pending(supervisor, spec, desired_fingerprint)?;
-        let load_result = wait_for_transaction_step(
-            Box::pin(load_runtime_config(
-                client,
-                &readiness.admin_endpoint,
-                active_content,
-            )),
-            shutdown,
-        )
-        .await;
-        match load_result {
-            ReconciliationOutcome::Completed(result) => result?,
-            ReconciliationOutcome::Cancelled => {
-                return Ok(ReconciliationOutcome::Completed(
-                    StartedRuntimeTransaction::Matching,
-                ));
-            }
-        }
+        load_runtime_config(client, &readiness.admin_endpoint, active_content).await?;
         verify_runtime_ownership(supervisor, spec)
             .map_err(RuntimeTransactionError::pending_preserve)?;
 
-        return Ok(ReconciliationOutcome::Completed(
-            StartedRuntimeTransaction::Matching,
-        ));
+        return Ok(StartedRuntimeTransaction::Matching);
     }
     // Whatever monitor the subject still has, including one a cancelled start left with no record.
     let stopped_own_runtime = supervisor
@@ -4152,9 +3778,6 @@ async fn begin_runtime_transaction(
     }
 
     delete_optional_file(readiness.admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
-    if reconciliation_cancelled(shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
     let mut process = supervisor.start(spec.clone()).await?;
     let staging_error = match supervisor.mark_replacement_required(spec, desired_fingerprint) {
         Ok(true) => None,
@@ -4178,9 +3801,7 @@ async fn begin_runtime_transaction(
         .await);
     }
 
-    Ok(ReconciliationOutcome::Completed(
-        StartedRuntimeTransaction::Fresh(Box::new(process)),
-    ))
+    Ok(StartedRuntimeTransaction::Fresh(Box::new(process)))
 }
 
 async fn finish_runtime_transaction(
@@ -4190,8 +3811,7 @@ async fn finish_runtime_transaction(
     readiness: &RuntimeReadinessPlan,
     desired_fingerprint: &str,
     started: StartedRuntimeTransaction,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<RuntimeReadinessOutcome>, RuntimeTransactionError> {
+) -> Result<RuntimeReadinessOutcome, RuntimeTransactionError> {
     let RuntimeReadinessPlan {
         check,
         failure_policy,
@@ -4201,9 +3821,6 @@ async fn finish_runtime_transaction(
     } = readiness;
     let preserve_staged_config = *preserve_staged_config;
     let StartedRuntimeTransaction::Fresh(process) = started else {
-        if reconciliation_cancelled(shutdown) {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
         // The pf budget is shorter than a reload's and still applies.
         let reload_budget = if budget.duration() < RUNTIME_RELOAD_READINESS_TIMEOUT.duration() {
             budget
@@ -4211,46 +3828,23 @@ async fn finish_runtime_transaction(
             &RUNTIME_RELOAD_READINESS_TIMEOUT
         };
         let client = CaddyAdminClient::new();
-        let readiness_result = wait_for_transaction_step(
-            Box::pin(wait_for_owned_readiness(
-                check.clone(),
-                reload_budget,
-                || verify_runtime_ownership(supervisor, spec),
-            )),
-            shutdown,
-        )
+        let readiness_result = wait_for_owned_readiness(check.clone(), reload_budget, || {
+            verify_runtime_ownership(supervisor, spec)
+        })
         .await;
-        let readiness_result = match readiness_result {
-            ReconciliationOutcome::Completed(result) => result,
-            ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-        };
         if let Err(error) = readiness_result {
             if *failure_policy == ReadinessFailurePolicy::PreserveRuntime
                 && supervisor
                     .verify_ownership(spec)
                     .map_err(RuntimeTransactionError::pending_preserve)?
                     .is_some()
+                && client
+                    .wait_until_ready(admin_endpoint, reload_budget)
+                    .await
+                    .is_ok()
             {
-                let admin_result = wait_for_transaction_step(
-                    Box::pin(client.wait_until_ready(admin_endpoint, reload_budget)),
-                    shutdown,
-                )
-                .await;
-                match admin_result {
-                    ReconciliationOutcome::Cancelled => {
-                        return Ok(ReconciliationOutcome::Cancelled);
-                    }
-                    ReconciliationOutcome::Completed(Ok(())) => {
-                        if reconciliation_cancelled(shutdown) {
-                            return Ok(ReconciliationOutcome::Cancelled);
-                        }
-                        record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
-                        return Ok(ReconciliationOutcome::Completed(
-                            RuntimeReadinessOutcome::Unverified,
-                        ));
-                    }
-                    ReconciliationOutcome::Completed(Err(_error)) => {}
-                }
+                record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
+                return Ok(RuntimeReadinessOutcome::Unverified);
             }
 
             // Caddy accepted the config, so keep it. The marker stays set, and the next
@@ -4259,20 +3853,11 @@ async fn finish_runtime_transaction(
         }
         verify_runtime_ownership(supervisor, spec)
             .map_err(RuntimeTransactionError::pending_preserve)?;
-        if reconciliation_cancelled(shutdown) {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
         record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
 
-        return Ok(ReconciliationOutcome::Completed(
-            RuntimeReadinessOutcome::Verified,
-        ));
+        return Ok(RuntimeReadinessOutcome::Verified);
     };
     let mut process = *process;
-    if reconciliation_cancelled(shutdown) {
-        cancel_fresh_runtime_transaction(spec, process).await?;
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
     // A separate wait from the readiness wait below, with the same budget.
     let admin_budget = Limit::new(RUNTIME_ADMIN_READINESS_TIMEOUT.name(), budget.duration());
     let admin_readiness = async {
@@ -4281,23 +3866,13 @@ async fn finish_runtime_transaction(
             .await
             .map_err(DaemonError::from)
     };
-    let admin_result = wait_for_transaction_step(
-        Box::pin(wait_for_started_runtime_readiness(
-            &mut process,
-            &spec.name,
-            admin_readiness,
-            OWNED_READINESS_POLL_INTERVAL,
-        )),
-        shutdown,
+    let admin_result = wait_for_started_runtime_readiness(
+        &mut process,
+        &spec.name,
+        admin_readiness,
+        OWNED_READINESS_POLL_INTERVAL,
     )
     .await;
-    let admin_result = match admin_result {
-        ReconciliationOutcome::Completed(result) => result,
-        ReconciliationOutcome::Cancelled => {
-            cancel_fresh_runtime_transaction(spec, process).await?;
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
-    };
     if let Err(error) = admin_result {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
         return Err(cleanup_fresh_runtime(
@@ -4313,23 +3888,13 @@ async fn finish_runtime_transaction(
     let service_readiness = wait_for_owned_readiness(check.clone(), budget, || {
         verify_runtime_ownership(supervisor, spec)
     });
-    let service_result = wait_for_transaction_step(
-        Box::pin(wait_for_started_runtime_readiness(
-            &mut process,
-            &spec.name,
-            service_readiness,
-            OWNED_READINESS_POLL_INTERVAL,
-        )),
-        shutdown,
+    let service_result = wait_for_started_runtime_readiness(
+        &mut process,
+        &spec.name,
+        service_readiness,
+        OWNED_READINESS_POLL_INTERVAL,
     )
     .await;
-    let service_result = match service_result {
-        ReconciliationOutcome::Completed(result) => result,
-        ReconciliationOutcome::Cancelled => {
-            cancel_fresh_runtime_transaction(spec, process).await?;
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
-    };
     if let Err(error) = service_result {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
         if *failure_policy == ReadinessFailurePolicy::PreserveRuntime {
@@ -4350,18 +3915,8 @@ async fn finish_runtime_transaction(
             if !process_exited {
                 match supervisor.verify_ownership(spec) {
                     Ok(Some(_runtime)) => {
-                        if reconciliation_cancelled(shutdown) {
-                            cancel_fresh_runtime_transaction(spec, process).await?;
-                            return Ok(ReconciliationOutcome::Cancelled);
-                        }
                         record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
-                        if reconciliation_cancelled(shutdown) {
-                            cancel_fresh_runtime_transaction(spec, process).await?;
-                            return Ok(ReconciliationOutcome::Cancelled);
-                        }
-                        return Ok(ReconciliationOutcome::Completed(
-                            RuntimeReadinessOutcome::Unverified,
-                        ));
+                        return Ok(RuntimeReadinessOutcome::Unverified);
                     }
                     Ok(None) => {}
                     Err(error) => {
@@ -4415,56 +3970,9 @@ async fn finish_runtime_transaction(
         )
         .await);
     }
-    if reconciliation_cancelled(shutdown) {
-        cancel_fresh_runtime_transaction(spec, process).await?;
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
     record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
-    if reconciliation_cancelled(shutdown) {
-        cancel_fresh_runtime_transaction(spec, process).await?;
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
 
-    Ok(ReconciliationOutcome::Completed(
-        RuntimeReadinessOutcome::Verified,
-    ))
-}
-
-fn reconciliation_cancelled(shutdown: Option<&watch::Receiver<bool>>) -> bool {
-    shutdown.is_some_and(|shutdown| *shutdown.borrow())
-}
-
-async fn wait_for_transaction_step<Output>(
-    mut step: Pin<Box<dyn Future<Output = Output> + Send + '_>>,
-    shutdown: Option<&watch::Receiver<bool>>,
-) -> ReconciliationOutcome<Output> {
-    tokio::select! {
-        biased;
-        output = step.as_mut() => ReconciliationOutcome::Completed(output),
-        () = wait_for_reconciliation_cancellation(shutdown) => ReconciliationOutcome::Cancelled,
-    }
-}
-
-async fn wait_for_reconciliation_cancellation(shutdown: Option<&watch::Receiver<bool>>) {
-    let Some(shutdown) = shutdown else {
-        std::future::pending::<()>().await;
-        return;
-    };
-    let mut shutdown = shutdown.clone();
-    if shutdown.wait_for(|requested| *requested).await.is_err() {
-        std::future::pending::<()>().await;
-    }
-}
-
-async fn cancel_fresh_runtime_transaction(
-    spec: &ProcessSpec,
-    process: ManagedProcess,
-) -> Result<(), RuntimeTransactionError> {
-    process
-        .stop(Duration::from_secs(1))
-        .await
-        .map_err(RuntimeTransactionError::pending_preserve)?;
-    cleanup_fresh_runtime_files(spec).map_err(RuntimeTransactionError::new)
+    Ok(RuntimeReadinessOutcome::Verified)
 }
 
 fn record_applied_runtime_config(
@@ -5424,21 +4932,18 @@ mod tests {
     use platform::clock::real;
     use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
-    use tokio::sync::watch;
 
     use crate::gateway_config::GatewayProjectRoute;
     use crate::{DaemonError, ReadinessCheck};
 
     use super::{
-        CaddyCliCommand, GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan,
-        PF_PUBLIC_READINESS_TIMEOUT, PhpWorkerRuntimePlan, ReadinessFailurePolicy,
-        ReconciliationOutcome, RuntimePlan, RuntimeProject, build_target_runtime_plan,
-        cancel_or_preserve_runtime_reconciliation_errors, classify_gateway_pf_routing_state,
+        GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan,
+        PF_PUBLIC_READINESS_TIMEOUT, PhpWorkerRuntimePlan, ReadinessFailurePolicy, RuntimePlan,
+        RuntimeProject, build_target_runtime_plan, classify_gateway_pf_routing_state,
         combined_runtime_reconciliation_error, desired_worker_config, enforce_project_bind_policy,
         gateway_project_config_fragments, gateway_public_readiness_check,
         gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_plan,
-        gateway_readiness_ports, project_config_file_name, run_validation_command,
-        spawn_gateway_pf_inspection, wait_for_transaction_step,
+        gateway_readiness_ports, project_config_file_name, spawn_gateway_pf_inspection,
     };
     #[cfg(target_os = "macos")]
     use super::{
@@ -5480,67 +4985,6 @@ mod tests {
             }
             error => anyhow::bail!("expected aggregate runtime failure, got {error:?}"),
         }
-
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_reconciliation_errors_outrank_cancellation() -> Result<()> {
-        assert!(matches!(
-            cancel_or_preserve_runtime_reconciliation_errors::<()>(Vec::new()),
-            Ok(super::ReconciliationOutcome::Cancelled)
-        ));
-        let error = cancel_or_preserve_runtime_reconciliation_errors::<()>(vec![(
-            "gateway".to_owned(),
-            DaemonError::UnexpectedProtocolResponse {
-                reason: "sentinel failure".to_owned(),
-            },
-        )])
-        .err()
-        .ok_or_else(|| anyhow::anyhow!("cancellation replaced the sentinel failure"))?;
-        assert_eq!(error.to_string(), "daemon protocol error: sentinel failure");
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn completed_transaction_step_outranks_ready_cancellation() -> Result<()> {
-        let (_fallback_sender, fallback_receiver) = watch::channel(true);
-        let outcome = wait_for_transaction_step(
-            Box::pin(async {
-                Err::<(), DaemonError>(DaemonError::UnexpectedProtocolResponse {
-                    reason: "transaction sentinel".to_owned(),
-                })
-            }),
-            Some(&fallback_receiver),
-        )
-        .await;
-        let ReconciliationOutcome::Completed(Err(error)) = outcome else {
-            anyhow::bail!("ready cancellation replaced a completed transaction error");
-        };
-        assert_eq!(
-            error.to_string(),
-            "daemon protocol error: transaction sentinel"
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn pre_signalled_fallback_does_not_spawn_config_validator() -> Result<()> {
-        let tempdir = tempdir()?;
-        let (_fallback_sender, fallback_receiver) = watch::channel(true);
-
-        let outcome = run_validation_command(
-            &CaddyCliCommand::caddy(tempdir.path().join("missing-validator")),
-            &tempdir.path().join("Caddyfile"),
-            &Default::default(),
-            Some(&fallback_receiver),
-            None,
-        )
-        .await?;
-
-        assert!(matches!(outcome, ReconciliationOutcome::Cancelled));
 
         Ok(())
     }
