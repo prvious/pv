@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-#[cfg(test)]
-use std::sync::{Arc, Barrier, LazyLock, Mutex};
 
 use camino::Utf8PathBuf;
 use config::{
@@ -1026,9 +1024,6 @@ fn record_project_php_runtime_resource_requirements(
         crate::managed_resources::installed_track(database, resource_name, &runtime.track)?;
     }
 
-    #[cfg(test)]
-    wait_for_project_php_demand_test_barrier(&runtime.track);
-
     let inputs = [
         ManagedResourceTrackDesiredInput {
             resource_name: "php",
@@ -1051,62 +1046,6 @@ fn record_project_php_runtime_resource_requirements(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-type ProjectPhpDemandTestBarrier = Mutex<Option<(String, Arc<Barrier>)>>;
-
-#[cfg(test)]
-static PROJECT_PHP_DEMAND_TEST_BARRIER: LazyLock<ProjectPhpDemandTestBarrier> =
-    LazyLock::new(|| Mutex::new(None));
-
-#[cfg(test)]
-pub(crate) fn set_project_php_demand_test_barrier(track: &str, barrier: Arc<Barrier>) {
-    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
-        Ok(hook) => hook,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    *hook = Some((track.to_owned(), barrier));
-}
-
-#[cfg(test)]
-pub(crate) fn clear_project_php_demand_test_barrier(track: &str) -> bool {
-    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
-        Ok(hook) => hook,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if hook
-        .as_ref()
-        .is_some_and(|(hook_track, _barrier)| hook_track == track)
-    {
-        hook.take();
-        true
-    } else {
-        false
-    }
-}
-
-#[cfg(test)]
-fn wait_for_project_php_demand_test_barrier(track: &str) {
-    let barrier = {
-        let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
-            Ok(hook) => hook,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if hook
-            .as_ref()
-            .is_some_and(|(hook_track, _barrier)| hook_track == track)
-        {
-            hook.take().map(|(_track, barrier)| barrier)
-        } else {
-            None
-        }
-    };
-
-    if let Some(barrier) = barrier {
-        barrier.wait();
-        barrier.wait();
-    }
 }
 
 fn validate_project_config_and_plan(

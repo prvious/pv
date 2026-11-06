@@ -73,14 +73,6 @@ impl RunningDnsResolver {
     }
 
     #[cfg(test)]
-    pub(crate) fn aborted_for_test() -> Self {
-        let resolver = Self::pending_for_test();
-        resolver.task.abort();
-
-        resolver
-    }
-
-    #[cfg(test)]
     pub(crate) fn failed_for_test(error: io::Error) -> Self {
         let (shutdown, _shutdown_receiver) = oneshot::channel();
         let task = tokio::spawn(async { Err(DaemonError::Io(error)) });

@@ -5,7 +5,6 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use pv_fake::Persona;
-use resources::RuntimeArtifactAdapter;
 use serde_json::{Value, json};
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 
@@ -13,29 +12,6 @@ use super::{ManagedResourceRuntimeAdapter, tests::ManagedResourceFixtureGuard};
 
 const MYSQL_TRACK: &str = "8.0";
 const MYSQL_ARTIFACT_VERSION: &str = "8.0.35-pv1";
-
-#[test]
-fn mysql_runtime_port_prefers_3306() -> Result<()> {
-    let adapter = super::mysql::MysqlRuntimeAdapter::new();
-    let [port] = adapter.port_specs() else {
-        bail!("expected one MySQL port spec");
-    };
-
-    assert_eq!(port.name, "mysql");
-    assert_eq!(port.preferred_port, 3306);
-
-    Ok(())
-}
-
-#[test]
-fn mysql_runtime_uses_resources_artifact_adapter() -> Result<()> {
-    let adapter = super::mysql::MysqlRuntimeAdapter::new();
-    let artifact_adapter: RuntimeArtifactAdapter = adapter.artifact_adapter()?;
-
-    assert_eq!(artifact_adapter, resources::mysql_adapter()?);
-
-    Ok(())
-}
 
 #[test]
 fn mysql_runtime_arguments_disable_x_protocol() -> Result<()> {

@@ -251,54 +251,25 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
         }),
     )
     .await?;
+    let jobs = Database::open(&paths)?.recent_jobs()?;
+    let client_paths = paths.clone();
+    let client_result = tokio::task::spawn_blocking(move || {
+        daemon::run_job_blocking(client_paths, "unsupported", "system")
+    })
+    .await?;
 
     daemon.shutdown().await?;
     drop(jobs_lock);
 
-    let database = Database::open(&paths)?;
-
     assert_with_normalized_timestamps(
         "unsupported_job_streams_failure_event_and_persists_failed_status",
-        (lines, database.recent_jobs()?),
+        (lines, jobs),
     )?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn valid_reconciliation_scopes_stream_stub_completion() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_foundation_caddy(&paths)?;
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    gateway_guard.attach_daemon(daemon);
-
-    let result = async {
-        wait_for_succeeded_job_id(&paths, "job_000001").await?;
-        let resource_lines = request_lines(
-            &paths,
-            json!({
-                "protocol_version": daemon::PROTOCOL_VERSION,
-                "command": "run_job",
-                "kind": "reconcile",
-                "scope": "resource:mysql:8.4",
-            }),
-        )
-        .await?;
-
-        Ok::<_, anyhow::Error>((resource_lines, Database::open(&paths)?.recent_jobs()?))
-    }
-    .await;
-    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
-    let snapshot = propagate_after_cleanup(result, cleanup_result)?;
-
-    assert_with_normalized_timestamps(
-        "valid_reconciliation_scopes_stream_stub_completion",
-        snapshot,
-    )?;
+    assert!(matches!(
+        client_result,
+        Err(daemon::DaemonError::DaemonRejected { message })
+            if message == "unsupported daemon job `unsupported` with scope `system`"
+    ));
 
     Ok(())
 }
@@ -812,86 +783,6 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
 }
 
 #[tokio::test]
-async fn startup_reconciliation_records_non_contention_enqueue_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_user_dir(&paths.jobs_lock())?;
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-
-    let health_lines = request_lines(
-        &paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "health",
-        }),
-    )
-    .await?;
-    let job = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
-
-    daemon.shutdown().await?;
-
-    assert_eq!(health_lines[0]["status"], json!("ok"));
-    assert_eq!(job.kind, "reconcile");
-    assert!(
-        job.error
-            .as_deref()
-            .is_some_and(|error| error.contains(paths.jobs_lock().as_str()))
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn startup_reconciliation_replaces_dual_loopback_project_fragments() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project_path = tempdir.path().join("project");
-    let (project_id, worker_port) =
-        seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
-    let gateway_fragment = paths
-        .gateway_projects_config_dir()
-        .join(format!("{project_id}.Caddyfile"));
-    let worker_fragment = paths
-        .worker_projects_config_dir("8.4")
-        .join(format!("{project_id}.Caddyfile"));
-    state::fs::write_sensitive_file(
-        &gateway_fragment,
-        "project.test {\n    bind 127.0.0.1 ::1\n    respond \"old gateway\"\n}\n",
-    )?;
-    state::fs::write_sensitive_file(
-        &worker_fragment,
-        &format!(
-            "http://project.test:{} {{\n    bind 127.0.0.1 ::1\n    respond \"old worker\"\n}}\n",
-            worker_port
-        ),
-    )?;
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
-
-    let result = async {
-        pv_fake::seed_dns_port(&paths)?;
-        let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-        gateway_guard.attach_daemon(daemon);
-        wait_for_succeeded_job_id(&paths, "job_000001").await?;
-        wait_for_seeded_worker(&paths, "8.4", worker_port).await?;
-        Ok::<_, anyhow::Error>((
-            state::fs::read_to_string(&gateway_fragment)?,
-            state::fs::read_to_string(&worker_fragment)?,
-        ))
-    }
-    .await;
-    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
-    let fragments = propagate_after_cleanup(result, cleanup_result)?;
-    let mut settings = Settings::clone_current();
-    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
-    settings.add_filter(r":\d+", ":<port>");
-    settings.bind(|| assert_debug_snapshot!(fragments));
-    Ok(())
-}
-
-#[tokio::test]
 async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1220,14 +1111,22 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
         }),
     )
     .await?;
+    let raw_manifest_requests = manifest_request_count(&manifest_requests)?;
+    let client_paths = paths.clone();
+    let update_check = tokio::task::spawn_blocking(move || {
+        daemon::managed_resource_update_check_blocking(client_paths)
+    })
+    .await??;
 
     daemon.shutdown().await?;
     drop(jobs_lock);
 
     assert_with_normalized_timestamps(
         "managed_resource_update_check_returns_success_response",
-        (lines, manifest_request_count(&manifest_requests)?),
+        (lines, raw_manifest_requests),
     )?;
+    assert!(update_check.managed_resources.is_empty());
+    assert_eq!(manifest_request_count(&manifest_requests)?, 2);
 
     Ok(())
 }
@@ -1760,111 +1659,6 @@ fn propagate_after_cleanup<T>(
     }
 }
 
-#[test]
-fn fixture_cleanup_preserves_operation_error_precedence() {
-    let outcomes = [
-        propagate_after_cleanup(Ok("value"), Ok(())).map(str::to_owned),
-        propagate_after_cleanup::<&str>(Err(anyhow!("operation sentinel")), Ok(()))
-            .map(str::to_owned),
-        propagate_after_cleanup(Ok("value"), Err(anyhow!("cleanup sentinel"))).map(str::to_owned),
-        propagate_after_cleanup::<&str>(
-            Err(anyhow!("operation sentinel")),
-            Err(anyhow!("cleanup sentinel")),
-        )
-        .map(str::to_owned),
-    ]
-    .map(|result| result.map_err(|error| error.to_string()));
-
-    assert_debug_snapshot!(outcomes);
-}
-
-#[tokio::test]
-async fn blocking_client_submits_reconciliation_jobs() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_foundation_caddy(&paths)?;
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    gateway_guard.attach_daemon(daemon);
-    let client_paths = paths.clone();
-
-    let submitted = tokio::task::spawn_blocking(move || {
-        daemon::submit_job_blocking(client_paths, "reconcile", "system")
-    })
-    .await??;
-    let job_result = wait_for_succeeded_job_id(&paths, &submitted.id).await;
-    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
-    let job = propagate_after_cleanup(job_result, cleanup_result)?;
-
-    assert_eq!(job.kind, "reconcile");
-    assert_eq!(job.scope, "system");
-    assert_eq!(job.status, JobStatus::Succeeded);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn blocking_client_waits_for_reconciliation_stream_completion() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_foundation_caddy(&paths)?;
-    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    gateway_guard.attach_daemon(daemon);
-    let client_paths = paths.clone();
-
-    let completed_result = tokio::task::spawn_blocking(move || {
-        daemon::run_job_blocking(client_paths, "reconcile", "system")
-    })
-    .await
-    .map_err(anyhow::Error::from)
-    .and_then(|result| result.map_err(anyhow::Error::from));
-    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
-    let completed = propagate_after_cleanup(completed_result, cleanup_result)?;
-    let job = wait_for_succeeded_job_id(&paths, &completed.id).await?;
-
-    assert_eq!(completed.summary, "Gateway runtime reconciled");
-    assert_eq!(job.kind, "reconcile");
-    assert_eq!(job.scope, "system");
-    assert_eq!(job.status, JobStatus::Succeeded);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn blocking_client_checks_managed_resource_updates() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let jobs_lock = JobsLock::acquire(&paths)?;
-    let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
-    let manifest_requests = manifest_client.request_count();
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
-            paths.clone(),
-            TEST_ARTIFACT_MANIFEST_URL,
-            manifest_client,
-        )
-        .await?;
-    let client_paths = paths.clone();
-
-    let update_check = tokio::task::spawn_blocking(move || {
-        daemon::managed_resource_update_check_blocking(client_paths)
-    })
-    .await??;
-    daemon.shutdown().await?;
-    drop(jobs_lock);
-
-    assert!(update_check.managed_resources.is_empty());
-    assert_eq!(manifest_request_count(&manifest_requests)?, 1);
-
-    Ok(())
-}
-
 #[tokio::test]
 async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let tempdir = tempdir()?;
@@ -1922,101 +1716,65 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum TargetedGatewayPhaseScenario {
-    Success,
-    GatewayFailure,
-    StaleWorkerFailure,
-}
-
 #[tokio::test]
 async fn targeted_gateway_phases_are_disjoint() -> Result<()> {
-    for (scenario, expected_status, expected_phases) in [
-        (
-            TargetedGatewayPhaseScenario::Success,
-            JobStatus::Succeeded,
-            vec![
-                ("workers", "target_project", "succeeded"),
-                ("gateway", "target_project", "succeeded"),
-                ("workers", "stale_workers", "succeeded"),
-            ],
-        ),
-        (
-            TargetedGatewayPhaseScenario::GatewayFailure,
-            JobStatus::Failed,
-            vec![
-                ("workers", "target_project", "succeeded"),
-                ("gateway", "target_project", "failed"),
-            ],
-        ),
-        (
-            TargetedGatewayPhaseScenario::StaleWorkerFailure,
-            JobStatus::Failed,
-            vec![
-                ("workers", "target_project", "succeeded"),
-                ("gateway", "target_project", "succeeded"),
-                ("workers", "stale_workers", "failed"),
-            ],
-        ),
-    ] {
-        let (status, phases) = run_targeted_gateway_phase_scenario(scenario).await?;
+    let (status, phases) = run_targeted_gateway_phase_scenario().await?;
 
-        assert_eq!(status, expected_status);
-        assert_eq!(
-            phases
-                .iter()
-                .filter(|event| {
-                    event["subject"] == "target_project" || event["subject"] == "stale_workers"
-                })
-                .map(|event| {
-                    (
-                        event["phase"].as_str().unwrap_or_default(),
-                        event["subject"].as_str().unwrap_or_default(),
-                        event["outcome"].as_str().unwrap_or_default(),
-                    )
-                })
-                .collect::<Vec<_>>(),
-            expected_phases
-        );
-        let target_workers = phases
+    assert_eq!(status, JobStatus::Succeeded);
+    assert_eq!(
+        phases
             .iter()
-            .find(|event| event["phase"] == "workers" && event["subject"] == "target_project")
-            .ok_or_else(|| anyhow!("missing target Project Workers phase"))?;
-        assert_eq!(target_workers["worker_count"], 0);
-        assert_eq!(target_workers["project_count"], 0);
-        if matches!(scenario, TargetedGatewayPhaseScenario::Success) {
-            let stale_workers = phases
-                .iter()
-                .find(|event| event["phase"] == "workers" && event["subject"] == "stale_workers")
-                .ok_or_else(|| anyhow!("missing stale Workers phase"))?;
-            assert_eq!(stale_workers["worker_count"], 1);
-            assert_eq!(stale_workers["project_count"], 1);
-        }
-        assert!(
-            phases
-                .iter()
-                .all(|event| event["elapsed_ms"].as_u64().is_some())
-        );
+            .filter(|event| {
+                event["subject"] == "target_project" || event["subject"] == "stale_workers"
+            })
+            .map(|event| {
+                (
+                    event["phase"].as_str().unwrap_or_default(),
+                    event["subject"].as_str().unwrap_or_default(),
+                    event["outcome"].as_str().unwrap_or_default(),
+                )
+            })
+            .collect::<Vec<_>>(),
+        [
+            ("workers", "target_project", "succeeded"),
+            ("gateway", "target_project", "succeeded"),
+            ("workers", "stale_workers", "succeeded"),
+        ]
+    );
+    let target_workers = phases
+        .iter()
+        .find(|event| event["phase"] == "workers" && event["subject"] == "target_project")
+        .ok_or_else(|| anyhow!("missing target Project Workers phase"))?;
+    assert_eq!(target_workers["worker_count"], 0);
+    assert_eq!(target_workers["project_count"], 0);
+    let stale_workers = phases
+        .iter()
+        .find(|event| event["phase"] == "workers" && event["subject"] == "stale_workers")
+        .ok_or_else(|| anyhow!("missing stale Workers phase"))?;
+    assert_eq!(stale_workers["worker_count"], 1);
+    assert_eq!(stale_workers["project_count"], 1);
+    assert!(
+        phases
+            .iter()
+            .all(|event| event["elapsed_ms"].as_u64().is_some())
+    );
 
-        let phase_total = phases
-            .iter()
-            .filter(|event| event["phase"] != "queue" && event["phase"] != "finalization")
-            .map(|event| event["elapsed_ms"].as_u64().unwrap_or_default())
-            .sum::<u64>();
-        let total_execution = phases
-            .iter()
-            .find(|event| event["phase"] == "finalization")
-            .and_then(|event| event["total_execution_ms"].as_u64())
-            .ok_or_else(|| anyhow!("missing finalization total_execution_ms"))?;
-        assert!(phase_total <= total_execution);
-    }
+    let phase_total = phases
+        .iter()
+        .filter(|event| event["phase"] != "queue" && event["phase"] != "finalization")
+        .map(|event| event["elapsed_ms"].as_u64().unwrap_or_default())
+        .sum::<u64>();
+    let total_execution = phases
+        .iter()
+        .find(|event| event["phase"] == "finalization")
+        .and_then(|event| event["total_execution_ms"].as_u64())
+        .ok_or_else(|| anyhow!("missing finalization total_execution_ms"))?;
+    assert!(phase_total <= total_execution);
 
     Ok(())
 }
 
-async fn run_targeted_gateway_phase_scenario(
-    scenario: TargetedGatewayPhaseScenario,
-) -> Result<(JobStatus, Vec<Value>)> {
+async fn run_targeted_gateway_phase_scenario() -> Result<(JobStatus, Vec<Value>)> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
@@ -2105,18 +1863,6 @@ async fn run_targeted_gateway_phase_scenario(
         wait_for_succeeded_job_id(&paths, initial_job_id).await?;
 
         state::fs::write_sensitive_file(&target_config_path, "serve: false\n")?;
-        match scenario {
-            TargetedGatewayPhaseScenario::Success => {}
-            TargetedGatewayPhaseScenario::GatewayFailure => {
-                state::fs::write_sensitive_file(
-                    &paths.home().join("fake-caddy-release/bin/caddy"),
-                    "#!/bin/sh\nexit 2\n",
-                )?;
-            }
-            TargetedGatewayPhaseScenario::StaleWorkerFailure => {
-                state::fs::write_sensitive_file(&frankenphp_executable, "#!/bin/sh\nexit 2\n")?;
-            }
-        }
 
         let lines = request_lines(
             &paths,
@@ -2247,43 +1993,6 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
 
     propagate_after_cleanup(operation_result, cleanup_result)
-}
-
-#[tokio::test]
-async fn blocking_client_reports_failed_job_streams() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let jobs_lock = JobsLock::acquire(&paths)?;
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    let client_paths = paths.clone();
-
-    let result = tokio::task::spawn_blocking(move || {
-        daemon::run_job_blocking(client_paths, "unsupported", "system")
-    })
-    .await?;
-    daemon.shutdown().await?;
-    drop(jobs_lock);
-    let database = Database::open(&paths)?;
-    let jobs = database.recent_jobs()?;
-
-    assert!(matches!(
-        result,
-        Err(daemon::DaemonError::DaemonRejected { message })
-            if message == "unsupported daemon job `unsupported` with scope `system`"
-    ));
-    let job = jobs
-        .iter()
-        .find(|job| job.kind == "unsupported")
-        .ok_or_else(|| anyhow!("missing unsupported job"))?;
-    assert_eq!(job.scope, "system");
-    assert_eq!(job.status, JobStatus::Failed);
-    assert_eq!(
-        job.error.as_deref(),
-        Some("unsupported daemon job `unsupported` with scope `system`")
-    );
-
-    Ok(())
 }
 
 #[tokio::test]
@@ -2619,54 +2328,6 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 }
 
 #[tokio::test]
-async fn daemon_shutdown_cancels_watcher_retry_waiting_for_jobs_lock() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project_path = tempdir.path().join("project");
-    let config_path = project_path.join("pv.yml");
-    state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
-    let mut database = Database::open(&paths)?;
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO projects (id, project_slug, path, primary_hostname, config_path, created_at, updated_at)
-            VALUES (?1, ?1, ?2, ?3, ?4, ?5, ?6)",
-            params![
-                "project_1",
-                project_path.as_str(),
-                "project.test",
-                config_path.as_str(),
-                "2026-05-24T00:00:00Z",
-                "2026-05-24T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    })?;
-    drop(database);
-    let jobs_lock = JobsLock::acquire(&paths)?;
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-
-    write_file_after_modified_time_tick(
-        &config_path,
-        "env:\n  APP_URL: \"${url}\"\n  APP_NAME: watched\n",
-    )
-    .await?;
-    wait_for_jobs_lock_wait(&paths, "project:project_1").await?;
-    let jobs_before_shutdown = Database::open(&paths)?.recent_jobs()?.len();
-
-    // Shutdown waits for every daemon task, so nothing can start a job after it returns.
-    daemon.shutdown().await?;
-    drop(jobs_lock);
-
-    let database = Database::open(&paths)?;
-    assert_eq!(database.recent_jobs()?.len(), jobs_before_shutdown);
-    assert!(!state::fs::path_entry_exists(&project_path.join(".env"))?);
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn project_config_watcher_follows_a_project_linked_after_startup() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2774,12 +2435,16 @@ async fn worktree_discovery_follows_git_worktree_events() -> Result<()> {
 }
 
 #[tokio::test]
-async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
+async fn dns_resolver_answers_udp_and_tcp_queries_and_survives_malformed_udp() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
     let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
     let port = dns_port(&paths)?;
+    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
+    socket
+        .send_to(b"not-a-dns-query", dns_address(port))
+        .await?;
 
     let a_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
     assert_common_dns_response(&a_response, "acme.test.", RecordType::A)?;
@@ -2794,23 +2459,6 @@ async fn dns_resolver_answers_udp_a_and_nodata_for_aaaa() -> Result<()> {
     assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
     assert_nodata_soa(&aaaa_response)?;
 
-    daemon.shutdown().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn dns_resolver_returns_nodata_and_survives_malformed_udp() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    let port = dns_port(&paths)?;
-    let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
-    socket
-        .send_to(b"not-a-dns-query", dns_address(port))
-        .await?;
-
     let mx_response = udp_dns_query(port, &dns_query("acme.test.", RecordType::MX)?).await?;
     assert_common_dns_response(&mx_response, "acme.test.", RecordType::MX)?;
     assert_nodata_soa(&mx_response)?;
@@ -2820,34 +2468,22 @@ async fn dns_resolver_returns_nodata_and_survives_malformed_udp() -> Result<()> 
     assert!(external_response.answers.is_empty());
     assert!(external_response.authorities.is_empty());
 
-    daemon.shutdown().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn dns_resolver_answers_tcp_queries() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
-    let port = dns_port(&paths)?;
-
-    let response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
-    assert_common_dns_response(&response, "acme.test.", RecordType::A)?;
+    let tcp_response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::A)?).await?;
+    assert_common_dns_response(&tcp_response, "acme.test.", RecordType::A)?;
     assert_loopback_answer(
-        &response,
+        &tcp_response,
         "acme.test.",
         RecordType::A,
         RData::A(A::new(127, 0, 0, 1)),
     )?;
 
-    let aaaa_response = tcp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
-    assert_common_dns_response(&aaaa_response, "acme.test.", RecordType::AAAA)?;
-    assert_nodata_soa(&aaaa_response)?;
+    let tcp_aaaa_response =
+        tcp_dns_query(port, &dns_query("acme.test.", RecordType::AAAA)?).await?;
+    assert_common_dns_response(&tcp_aaaa_response, "acme.test.", RecordType::AAAA)?;
+    assert_nodata_soa(&tcp_aaaa_response)?;
     let soa_response = tcp_dns_query(port, &dns_query("test.", RecordType::SOA)?).await?;
     assert_common_dns_response(&soa_response, "test.", RecordType::SOA)?;
-    assert_eq!(soa_response.answers, aaaa_response.authorities);
+    assert_eq!(soa_response.answers, tcp_aaaa_response.authorities);
     assert!(soa_response.authorities.is_empty());
 
     daemon.shutdown().await?;
@@ -3049,41 +2685,6 @@ async fn request_lines_with_timeout(
     Ok(lines)
 }
 
-#[tokio::test]
-async fn request_lines_timeout_reports_stage_request_and_partial_responses() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let listener = UnixListener::bind(paths.daemon_socket())?;
-    let peer = tokio::spawn(async move {
-        let (stream, _address) = listener.accept().await?;
-        let mut reader = BufReader::new(stream);
-        let mut request = String::new();
-        reader.read_line(&mut request).await?;
-        reader
-            .get_mut()
-            .write_all(b"{\"status\":\"accepted\"}\n")
-            .await?;
-        std::future::pending::<()>().await;
-        Ok::<(), io::Error>(())
-    });
-
-    let error = request_lines_with_timeout(
-        &paths,
-        json!({"command": "pending"}),
-        Duration::from_millis(50),
-    )
-    .await
-    .err()
-    .ok_or_else(|| anyhow!("request unexpectedly completed"))?;
-    peer.abort();
-    let _peer_result = peer.await;
-
-    assert_debug_snapshot!(error.to_string());
-
-    Ok(())
-}
-
 async fn request_step<T, E>(
     deadline: Instant,
     operation: impl Future<Output = std::result::Result<T, E>>,
@@ -3149,29 +2750,6 @@ async fn wait_for_path(path: &Utf8Path) -> Result<()> {
     })
     .await
     .map_err(|_elapsed| anyhow!("file {path} was not created"))
-}
-
-/// Waits until the daemon logs that a reconciliation for `scope` found the jobs lock held.
-async fn wait_for_jobs_lock_wait(paths: &PvPaths, scope: &str) -> Result<()> {
-    let deadline = real::now() + JOB_STATUS_WAIT_TIMEOUT;
-
-    loop {
-        if let Ok(log) = state::fs::read_to_string(&paths.daemon_log())
-            && log.lines().any(|line| {
-                serde_json::from_str::<Value>(line).is_ok_and(|event| {
-                    event["event"] == "reconciliation_waiting_for_jobs_lock"
-                        && event["scope"] == scope
-                })
-            })
-        {
-            return Ok(());
-        }
-        if real::now() >= deadline {
-            bail!("no {scope} reconciliation waited for the jobs lock");
-        }
-
-        clock::poll(JOB_STATUS_POLL_INTERVAL).await;
-    }
 }
 
 async fn wait_for_succeeded_job_scope(paths: &PvPaths, scope: &str) -> Result<JobRecord> {

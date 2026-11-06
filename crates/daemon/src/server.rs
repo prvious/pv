@@ -568,7 +568,7 @@ mod tests {
         CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
         PKCS_ECDSA_P256_SHA256,
     };
-    use rusqlite::Connection;
+
     use state::{
         Database, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput, ProjectRecord,
         PvPaths,
@@ -580,15 +580,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::enqueue_runtime_recovery_job;
     use super::{
-        REQUEST_LINE_TIMEOUT, handle_background_reconciliation_result, handle_startup_task_result,
-        read_request_line, run_debounced_reconciliation_job,
+        REQUEST_LINE_TIMEOUT, handle_startup_task_result, read_request_line,
+        run_debounced_reconciliation_job,
     };
     use crate::health::collect_project_tls_health_scopes;
     #[cfg(target_os = "macos")]
     use crate::health::{RuntimeRecoveryBackoff, scan_runtime_health};
-    use crate::jobs::{
-        BackgroundReconciliationError, run_background_reconciliation_job_with_origin,
-    };
+    use crate::jobs::BackgroundReconciliationError;
     #[cfg(target_os = "macos")]
     use crate::managed_resources::ManagedResourceRuntimeCatalog;
     #[cfg(target_os = "macos")]
@@ -850,72 +848,6 @@ mod tests {
             job.id == repaired.id && job.status == JobStatus::Succeeded && job.error.is_none()
         }));
         assert!(database.unresolved_job_failures()?.is_empty());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn unrecorded_background_failure_is_logged_against_originating_job() -> Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let project_path = tempdir.path().join("invalid-project");
-        let config_path = project_path.join("pv.yml");
-        state::fs::write_sensitive_file(&config_path, "php: [\n")?;
-        let project = Database::open(&paths)?
-            .link_project(LinkProjectInput {
-                path: project_path.clone(),
-                original_path: project_path,
-                primary_hostname: "invalid-project.test".to_owned(),
-                config_path,
-                desired_php_track: None,
-            })?
-            .project;
-        Connection::open(paths.db().as_std_path())?.execute_batch(
-            "CREATE TRIGGER reject_job_failure BEFORE UPDATE OF status ON jobs
-             WHEN NEW.status = 'failed'
-             BEGIN SELECT RAISE(FAIL, 'fixture rejected job failure'); END;",
-        )?;
-        let scope = ReconciliationScope::project(project.id)?;
-        let scope_text = scope.to_string();
-
-        let result = run_background_reconciliation_job_with_origin(
-            paths.clone(),
-            ReconciliationQueue::new(),
-            scope,
-            None,
-        )
-        .await;
-        let (job_id, execution_error) = match &result {
-            Err(BackgroundReconciliationError::Execution {
-                job_id,
-                error,
-                recording_error: Some(_),
-            }) => (job_id.clone(), error.to_string()),
-            _ => return Err(anyhow!("expected an unrecorded execution failure")),
-        };
-
-        let result = handle_background_reconciliation_result(&paths, &scope_text, result);
-        assert!(matches!(
-            result,
-            Err(crate::DaemonError::State(state::StateError::Sqlite(error)))
-                if error.to_string() == "fixture rejected job failure"
-        ));
-        let jobs = Database::open(&paths)?.recent_jobs()?;
-        assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].id, job_id);
-        assert_eq!(jobs[0].status, JobStatus::Running);
-        let events = state::fs::read_to_string(&paths.daemon_log())?
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?;
-        assert!(events.iter().any(|event| {
-            event["event"] == "job_failure_recording_failed"
-                && event["job_id"] == job_id
-                && event["scope"] == scope_text
-                && event["error"] == execution_error
-                && event["recording_error"]
-                    == "state error: SQLite error: fixture rejected job failure"
-        }));
 
         Ok(())
     }

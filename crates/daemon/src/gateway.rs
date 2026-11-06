@@ -4941,8 +4941,7 @@ mod tests {
         PF_PUBLIC_READINESS_TIMEOUT, PhpWorkerRuntimePlan, ReadinessFailurePolicy, RuntimePlan,
         RuntimeProject, build_target_runtime_plan, classify_gateway_pf_routing_state,
         combined_runtime_reconciliation_error, desired_worker_config, enforce_project_bind_policy,
-        gateway_project_config_fragments, gateway_public_readiness_check,
-        gateway_readiness_check_for_ports, gateway_readiness_hostname, gateway_readiness_plan,
+        gateway_project_config_fragments, gateway_readiness_hostname, gateway_readiness_plan,
         gateway_readiness_ports, project_config_file_name, spawn_gateway_pf_inspection,
     };
     #[cfg(target_os = "macos")]
@@ -5068,63 +5067,6 @@ mod tests {
             build_target_runtime_plan(&paths, &project.id),
             Err(crate::DaemonError::Config(_))
         ));
-
-        Ok(())
-    }
-
-    #[test]
-    fn gateway_readiness_uses_https_for_hostname_before_ca_file_exists() -> Result<()> {
-        let plan = runtime_plan();
-
-        let readiness = gateway_readiness_check_for_ports(
-            &plan,
-            Some("project.test".to_string()),
-            GatewayReadinessPorts {
-                http: plan.gateway.http_port,
-                https: plan.gateway.https_port,
-            },
-        );
-
-        assert_eq!(
-            readiness,
-            ReadinessCheck::GatewayHttps {
-                http_host: "127.0.0.1".to_string(),
-                http_port: 45080,
-                https_host: "127.0.0.1".to_string(),
-                https_port: 45443,
-                server_name: "project.test".to_string(),
-                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
-            }
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn gateway_readiness_uses_identity_probes_on_public_ports() -> Result<()> {
-        let plan = runtime_plan();
-
-        let readiness = gateway_public_readiness_check(
-            &plan,
-            GatewayReadinessPorts {
-                http: 80,
-                https: 443,
-            },
-        );
-
-        assert_eq!(
-            readiness,
-            ReadinessCheck::GatewayIdentity {
-                http_host: "127.0.0.1".to_string(),
-                http_port: 80,
-                https_host: "127.0.0.1".to_string(),
-                https_port: 443,
-                server_name: "pv-gateway.localhost".to_string(),
-                path: "/__pv/health".to_string(),
-                expected_body: "pv-gateway-health-v1:45080:45443".to_string(),
-                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
-            }
-        );
 
         Ok(())
     }

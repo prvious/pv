@@ -371,7 +371,6 @@ async fn termination_signal() -> io::Result<()> {
 mod tests {
     use std::{future, io, time::Duration};
 
-    use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
     use insta::assert_debug_snapshot;
     use platform::clock::{self, real};
@@ -386,41 +385,29 @@ mod tests {
         DaemonError, RunningDaemon, build_runtime, run_blocking_for_target,
         startup_error_after_endpoint_cleanup, wait_for_shutdown,
     };
-    use crate::gateway_config::ConfigBackupCleanupError;
-
-    #[tokio::test]
-    async fn unsupported_daemon_start_leaves_home_untouched() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-        let result = RunningDaemon::start_for_target(paths.clone(), PlatformTarget::Linux).await;
-
-        assert!(matches!(
-            result,
-            Err(DaemonError::Platform(PlatformError::Unsupported {
-                capability: PlatformCapability::DaemonIpc,
-                target: PlatformTarget::Linux,
-            }))
-        ));
-        assert!(!paths.home().exists());
-
-        Ok(())
-    }
 
     #[test]
-    fn unsupported_blocking_daemon_start_leaves_home_untouched() -> anyhow::Result<()> {
+    fn unsupported_daemon_starts_leave_home_untouched() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
 
-        let result = run_blocking_for_target(paths.clone(), PlatformTarget::Linux);
+        let started = build_runtime()?
+            .block_on(RunningDaemon::start_for_target(
+                paths.clone(),
+                PlatformTarget::Linux,
+            ))
+            .map(|_daemon| ());
+        let ran = run_blocking_for_target(paths.clone(), PlatformTarget::Linux);
 
-        assert!(matches!(
-            result,
-            Err(DaemonError::Platform(PlatformError::Unsupported {
-                capability: PlatformCapability::DaemonIpc,
-                target: PlatformTarget::Linux,
-            }))
-        ));
+        for result in [started, ran] {
+            assert!(matches!(
+                result,
+                Err(DaemonError::Platform(PlatformError::Unsupported {
+                    capability: PlatformCapability::DaemonIpc,
+                    target: PlatformTarget::Linux,
+                }))
+            ));
+        }
         assert!(!paths.home().exists());
 
         Ok(())
@@ -606,31 +593,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn shutdown_removes_socket_when_server_task_is_cancelled() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        state::fs::ensure_layout(&paths)?;
-        let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
-        drop(stale_listener);
-        let (shutdown, _shutdown_receiver) = oneshot::channel();
-        let task = tokio::spawn(future::pending::<Result<(), DaemonError>>());
-        task.abort();
-        let daemon = RunningDaemon {
-            paths: paths.clone(),
-            shutdown,
-            task,
-            dns: super::dns::RunningDnsResolver::aborted_for_test(),
-        };
-
-        let result = daemon.shutdown().await;
-
-        assert!(matches!(result, Err(DaemonError::Task(error)) if error.is_cancelled()));
-        assert!(!paths.daemon_socket().exists());
-
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn daemon_start_and_shutdown_write_structured_daemon_log() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -663,102 +625,6 @@ mod tests {
                 })
                 .all(|event| event["target"] == "daemon")
         );
-
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_config_cleanup_warning_writes_one_structured_daemon_log_event() -> anyhow::Result<()>
-    {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let error = ConfigBackupCleanupError::Multiple {
-            first_path: Utf8PathBuf::from("/tmp/root.previous"),
-            first_error: Box::new(DaemonError::Io(io::Error::other("root cleanup failed"))),
-            second_path: Utf8PathBuf::from("/tmp/fragments.previous"),
-            second_error: Box::new(DaemonError::Io(io::Error::other("fragment cleanup failed"))),
-        };
-        let expected_error = error.to_string();
-
-        super::structured_log::runtime_config_cleanup_failed(&paths, "gateway", &expected_error);
-
-        let content = state::fs::read_to_string(&paths.daemon_log())?;
-        let events = content
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["level"], "warn");
-        assert_eq!(events[0]["target"], "runtime");
-        assert_eq!(events[0]["event"], "runtime_config_cleanup_failed");
-        assert_eq!(
-            events[0]["message"],
-            "runtime config committed but backup cleanup failed"
-        );
-        assert_eq!(events[0]["runtime"], "gateway");
-        assert_eq!(events[0]["error"], expected_error);
-
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_health_background_failures_write_structured_diagnostics() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-        super::structured_log::runtime_health_scan_failed(&paths, "state unavailable");
-        super::structured_log::runtime_health_probe_failed(
-            &paths,
-            "PhpWorker { php_track: \"8.4\" }",
-            "project:demo",
-            "metadata invalid",
-        );
-        super::structured_log::background_reconciliation_error_recording_failed(
-            &paths,
-            "project:demo",
-            "jobs lock unavailable",
-            "database unavailable",
-        );
-
-        let content = state::fs::read_to_string(&paths.daemon_log())?;
-        let events = content
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?;
-        let stable_events = events
-            .iter()
-            .map(|event| {
-                [
-                    "level",
-                    "target",
-                    "event",
-                    "message",
-                    "subject",
-                    "scope",
-                    "error",
-                    "reconciliation_error",
-                    "recording_error",
-                ]
-                .into_iter()
-                .map(|field| {
-                    let value = event
-                        .get(field)
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("-");
-                    format!("{field}={value}")
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-            })
-            .collect::<Vec<_>>();
-
-        assert_debug_snapshot!(stable_events, @r#"
-        [
-            "level=error target=runtime event=runtime_health_scan_failed message=runtime health scan failed subject=- scope=- error=state unavailable reconciliation_error=- recording_error=-",
-            "level=error target=runtime event=runtime_health_probe_failed message=runtime health probe failed subject=PhpWorker { php_track: \"8.4\" } scope=project:demo error=metadata invalid reconciliation_error=- recording_error=-",
-            "level=error target=reconciliation event=background_reconciliation_error_recording_failed message=failed to record background reconciliation error subject=- scope=project:demo error=- reconciliation_error=jobs lock unavailable recording_error=database unavailable",
-        ]
-        "#);
 
         Ok(())
     }

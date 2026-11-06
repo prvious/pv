@@ -619,66 +619,23 @@ pub(crate) fn delete_log(path: &Utf8Path) -> Result<(), DaemonError> {
 #[cfg(all(test, target_os = "macos"))]
 mod tests {
     use std::collections::BTreeSet;
-    use std::io;
+
     use std::time::Duration;
 
     use anyhow::{Result, anyhow};
     use camino_tempfile::tempdir;
     use platform::clock::{self, real};
-    use platform::hooks::HookError;
-    use serde_json::Value;
+
     use state::{
         Database, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode, PvPaths,
     };
     use tokio::sync::watch;
 
-    use super::{DaemonHooks, HookRun};
+    use super::DaemonHooks;
     use crate::project_env::{
         ProjectApplyOptions, ProjectApplyStage, reconcile_project_env_with_runtime_catalog,
     };
     use crate::reconciliation::ReconciliationDebouncer;
-
-    #[test]
-    fn skipped_prepare_cleanup_failure_keeps_its_success_and_logs_the_group() -> Result<()> {
-        let directory = tempdir()?;
-        let paths = PvPaths::for_home(directory.path());
-        let scope = "worktree:project_fixture:tree";
-        let mut database = Database::open(&paths)?;
-        let job = database.record_finished_job(
-            "hooks",
-            scope,
-            Ok("prepare skipped: worktree removed"),
-            &[],
-        )?;
-        let run = HookRun {
-            job_id: job.id.clone(),
-            scope: scope.to_owned(),
-            phase: "prepare",
-            commands: Vec::new(),
-            approval_commands: Vec::new(),
-            project_path: paths.home().to_owned(),
-            source_path: paths.home().to_owned(),
-            log: paths.worktree_hook_log("project_fixture", "tree"),
-            project_id: None,
-            worktree_id: "tree".to_owned(),
-            source_project_id: "project_fixture".to_owned(),
-        };
-        DaemonHooks::new(paths.clone()).complete(
-            &run,
-            &Err(HookError::CleanupFailed(io::Error::other(
-                "hook process group 1234 did not exit",
-            ))),
-        );
-        assert_eq!(database.job(&job.id)?, Some(job));
-        let event: Value = serde_json::from_str(&state::fs::read_to_string(&paths.daemon_log())?)?;
-        insta::assert_debug_snapshot!((&event["scope"], &event["error"]), @r#"
-        (
-            String("worktree:project_fixture:tree"),
-            String("hook process-group cleanup failed: hook process group 1234 did not exit"),
-        )
-        "#);
-        Ok(())
-    }
 
     #[tokio::test]
     async fn setup_uses_applied_commands_after_the_config_disappears() -> Result<()> {

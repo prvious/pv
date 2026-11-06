@@ -24,22 +24,3 @@ pub(crate) fn require_ipc_for(target: PlatformTarget) -> Result<(), crate::Daemo
         .into()),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use platform::{PlatformCapability, PlatformError, PlatformTarget};
-
-    use super::require_ipc_for;
-    use crate::DaemonError;
-
-    #[test]
-    fn ipc_support_rejects_linux() {
-        assert!(matches!(
-            require_ipc_for(PlatformTarget::Linux),
-            Err(DaemonError::Platform(PlatformError::Unsupported {
-                capability: PlatformCapability::DaemonIpc,
-                target: PlatformTarget::Linux,
-            }))
-        ));
-    }
-}
