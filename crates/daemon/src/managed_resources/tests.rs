@@ -13,10 +13,7 @@ use crate::{
     managed_resources::{
         ManagedResourceRuntimeAdapter, ManagedResourceRuntimeContext, RESOURCE_READINESS_TIMEOUT,
     },
-    project_env::{
-        DemandedResourceTrack, discover_project_demand,
-        reconcile_project_env_with_runtime_catalog_and_progress,
-    },
+    project_env::{DemandedResourceTrack, reconcile_project_env_with_runtime_catalog},
     reconciliation::{ReconciliationQueue, ReconciliationScope},
 };
 use anyhow::{Context, Result, anyhow, bail};
@@ -36,10 +33,10 @@ use resources::{
     ManagedResourceCommandError, ResourceAdapter, ResourceName, ResourcesError,
     RuntimeArtifactAdapter,
 };
-use rusqlite::{TransactionBehavior, params};
+use rusqlite::TransactionBehavior;
 use rustix::process::{Pid, test_kill_process, test_kill_process_group};
 use serde::Deserialize;
-use serde_json::{Value, json};
+
 use sqlx::postgres::PgPool;
 use state::{
     Database, EnvContextValues, JobDiagnosticSubject, JobStatus, LinkProjectInput, PortOwner,
@@ -53,19 +50,13 @@ use tokio::sync::Semaphore;
 const FAKE_MAILPIT_TRACK: &str = "1.0";
 const FAKE_MAILPIT_NEXT_TRACK: &str = "1.1";
 const FAKE_MAILPIT_ARTIFACT_VERSION: &str = "1.0.0-pv1";
-const FAKE_MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 const FAKE_SQL_TRACK: &str = "8.0";
 const FAKE_SQL_ARTIFACT_VERSION: &str = "8.0.0-pv1";
-const MAILPIT_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
 const REDIS_TRACK: &str = "7.2";
 const REDIS_ARTIFACT_VERSION: &str = "7.2.0-pv1";
-const REDIS_ARCHIVE_FILE_NAME: &str = "redis-7.2.0-pv1-any.tar.gz";
 const RUSTFS_TRACK: &str = "1.0";
 const RUSTFS_ARTIFACT_VERSION: &str = "1.0.0-pv1";
-const RUSTFS_ARCHIVE_FILE_NAME: &str = "rustfs-1.0.0-pv1-any.tar.gz";
 const POSTGRES_TRACK: &str = "16";
-const POSTGRES_ARTIFACT_VERSION: &str = "16.0-pv1";
-const POSTGRES_ARCHIVE_FILE_NAME: &str = "postgres-16.0-pv1-any.tar.gz";
 const SETUP_DEFAULT_PHP_TRACK: &str = "8.5";
 const SETUP_DEFAULT_PHP_ARTIFACT_VERSION: &str = "8.5.0-pv1";
 const SETUP_DEFAULT_CADDY_TRACK: &str = "2";
@@ -640,85 +631,6 @@ async fn cleanup_waits_for_an_uninstalled_track_unless_its_data_is_gone() -> Res
 
     assert_debug_snapshot!(waiting);
     assert_eq!(Database::open(&paths)?.pending_cleanups()?, []);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn postgres_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    seed_postgres_cached_fixture(&paths, tempdir.path())?;
-    reserve_postgres_port(&paths)?;
-
-    reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
-        &paths,
-        &project.id,
-        OFFLINE_TEST_MANIFEST_URL,
-    )
-    .await?;
-    let snapshot = {
-        let database = Database::open(&paths)?;
-
-        (
-            read_dotenv(&project)?,
-            database.managed_resource_track("postgres", POSTGRES_TRACK)?,
-            database.assigned_ports()?,
-            database.resource_allocations(&project.id, "postgres")?,
-            database.runtime_observed_states()?,
-        )
-    };
-
-    assert_with_normalized_postgres_runtime(
-        tempdir.path(),
-        "postgres_project_demand_installs_missing_fixture_track_before_start",
-        snapshot,
-    )?;
-    runtimes.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn postgres_project_demand_rejects_cached_fixture_missing_support_files() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project_with_postgres_database_env(&paths, &tempdir.path().join("project"))?;
-    seed_postgres_cached_fixture_without_support_files(&paths, tempdir.path())?;
-    let catalog = super::postgres_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
-    let mut database = Database::open(&paths)?;
-
-    let result = crate::project_env::reconcile_project_env_with_catalog(
-        &paths,
-        &mut database,
-        &project.id,
-        &catalog,
-    )
-    .await;
-
-    let Err(DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-        ResourcesError::InvalidArtifactLayout { resource, reason },
-    ))) = result
-    else {
-        bail!("expected missing Postgres support files to reject project-demand install");
-    };
-    let runtime_states = database.runtime_observed_states()?;
-
-    assert_eq!(resource, "postgres");
-    assert_eq!(reason, "missing required file `share/postgres.bki`");
-    assert_eq!(
-        read_optional_dotenv(&project)?,
-        None,
-        "expected rejected Postgres artifact to leave Project env withheld"
-    );
-    assert_runtime_status_for_resource(
-        &runtime_states,
-        "postgres",
-        POSTGRES_TRACK,
-        RuntimeObservedStatus::Failed,
-    );
 
     Ok(())
 }
@@ -1349,76 +1261,6 @@ async fn mailpit_reconciliation_records_smtp_and_dashboard_env() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn mailpit_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        r#"mailpit:
-  version: "1.0"
-  env:
-    MAIL_HOST: "${smtp_host}"
-    MAIL_PORT: "${smtp_port}"
-    MAILPIT_DASHBOARD: "${dashboard_url}"
-"#,
-    )?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    seed_mailpit_cached_fixture(&paths, tempdir.path())?;
-    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
-
-    mailpit_fixture_result(
-        &paths,
-        reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
-            &paths,
-            &project.id,
-            OFFLINE_TEST_MANIFEST_URL,
-        )
-        .await,
-    )?;
-    let snapshot = {
-        let database = Database::open(&paths)?;
-        let runtime_states = database.runtime_observed_states()?;
-
-        assert_runtime_status(
-            &runtime_states,
-            FAKE_MAILPIT_TRACK,
-            RuntimeObservedStatus::Running,
-        );
-
-        (
-            read_dotenv(&project)?,
-            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
-            database.assigned_ports()?,
-            runtime_states,
-        )
-    };
-
-    assert_with_normalized_runtime(
-        tempdir.path(),
-        "mailpit_project_demand_installs_missing_fixture_track_before_start",
-        snapshot,
-    )?;
-
-    write_project_config(
-        &project,
-        r#"env:
-  APP_URL: "${url}"
-"#,
-    )?;
-    reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
-        &paths,
-        &project.id,
-        OFFLINE_TEST_MANIFEST_URL,
-    )
-    .await?;
-    runtimes.cleanup().await?;
-
-    Ok(())
-}
-
 #[test]
 fn mailpit_process_spec_uses_persistent_database_and_disables_version_check() -> Result<()> {
     let tempdir = tempdir()?;
@@ -1956,15 +1798,14 @@ async fn system_resource_reconciliation_stops_unlinked_project_runtime() -> Resu
     let pid_before_apply =
         state::fs::read_to_string(&paths.resource_runtime_metadata("mailpit", FAKE_MAILPIT_TRACK))?;
 
-    reconcile_project_env_with_runtime_catalog_and_progress(
+    reconcile_project_env_with_runtime_catalog(
         &paths,
         &first_project.id,
         Some(&catalog),
         None,
         &demanded_tracks,
-        DaemonDownloadProgress::disabled(),
         crate::project_env::ProjectApplyOptions::new(
-            crate::project_env::ProjectApplyStage::CompleteApply,
+            crate::project_env::ProjectApplyStage::CompleteStagedApply,
         ),
     )
     .await?;
@@ -2197,309 +2038,6 @@ fn system_setup_default_downloads_are_parallel_and_bounded_at_four() -> Result<(
     Ok(())
 }
 
-#[test]
-fn project_scope_missing_installs_share_one_manifest_snapshot() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let fixtures = [
-        setup_default_fixture("mailpit")?,
-        setup_default_fixture("redis")?,
-    ];
-    let (manifest, archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
-    let manifest_requests = Arc::new(AtomicUsize::new(0));
-    let client = Arc::new(SequencedManifestArtifactClient {
-        manifests: Mutex::new(VecDeque::from([
-            manifest,
-            EMPTY_ARTIFACT_MANIFEST.to_owned(),
-        ])),
-        archives,
-        manifest_requests: Arc::clone(&manifest_requests),
-    });
-    let install_options = super::ManagedResourceInstallOptions {
-        manifest_url: TEST_ARTIFACT_MANIFEST_URL.to_owned(),
-        target_platform: resources::TargetPlatform::current()?,
-    };
-    let progress = crate::jobs::DaemonDownloadProgress::disabled();
-
-    let mut database = Database::open(&paths)?;
-    let removed =
-        database.record_managed_resource_track_removal_intent("mysql", "8.0", false, true)?;
-    let catalog = super::ManagedResourceRuntimeCatalog::production()?;
-    let plan = crate::project_env::ProjectResourcePlan {
-        resources: [
-            ("mysql", "8.0"),
-            ("mailpit", SETUP_DEFAULT_MAILPIT_TRACK),
-            ("unsupported", "1"),
-            ("redis", SETUP_DEFAULT_REDIS_TRACK),
-        ]
-        .into_iter()
-        .map(|(resource_name, track)| ProjectManagedResourceInput {
-            resource_name: resource_name.to_owned(),
-            track: track.to_owned(),
-        })
-        .collect(),
-        allocations: BTreeMap::new(),
-    };
-    let requests = super::missing_project_install_requests(&database, &plan, &catalog);
-    drop(database);
-    let http_client: Arc<dyn resources::ResourceHttpClient + Send + Sync> = client;
-    let mut prefetched = super::prefetch_missing_project_installs_blocking(
-        paths.clone(),
-        install_options,
-        Some(http_client),
-        requests,
-        progress.clone(),
-    )?;
-    assert_eq!(prefetched.len(), 4);
-    assert!(matches!(
-        prefetched.remove(&("mysql".to_owned(), "8.0".to_owned())),
-        Some(super::PrefetchedProjectInstall::Failed(
-            DaemonError::ManagedResourceTrackRemoved { resource, track }
-        )) if resource == "mysql" && track == "8.0"
-    ));
-    assert!(matches!(
-        prefetched.remove(&("unsupported".to_owned(), "1".to_owned())),
-        Some(super::PrefetchedProjectInstall::Failed(
-            DaemonError::UnsupportedManagedResourceRuntime { resource }
-        )) if resource == "unsupported"
-    ));
-    for (_key, install) in prefetched {
-        let super::PrefetchedProjectInstall::Ready {
-            adapter,
-            resolved,
-            download,
-        } = install
-        else {
-            bail!("expected resolved Project install");
-        };
-        super::install_prefetched_project_track_blocking(
-            paths.clone(),
-            adapter,
-            *resolved,
-            download,
-            progress.clone(),
-        )?;
-    }
-
-    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
-    let database = Database::open(&paths)?;
-    assert_eq!(database.managed_resource_track("mysql", "8.0")?, removed);
-    assert!(
-        database
-            .managed_resource_track("mailpit", SETUP_DEFAULT_MAILPIT_TRACK)?
-            .installed_version
-            .is_some()
-    );
-    assert!(
-        database
-            .managed_resource_track("redis", SETUP_DEFAULT_REDIS_TRACK)?
-            .installed_version
-            .is_some(),
-        "the second install should use snapshot A instead of fetching empty snapshot B"
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn project_allocation_failure_preserves_shared_runtime_health() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "serve: false\nmysql:\n  version: \"8.0\"\n  allocations:\n    main:\n      env:\n        DATABASE_URL: \"${url}\"\n",
-    )?;
-    seed_fake_sql_artifact(&paths, "mysql", FAKE_SQL_TRACK)?;
-    let generated = resources::generated_allocation_name("mysql", &project.slug, "main")?;
-    let mut database = Database::open(&paths)?;
-    database.replace_project_resource_allocations(
-        &project.id,
-        "mysql",
-        FAKE_SQL_TRACK,
-        &[ResourceAllocationInput {
-            allocation_name: "main".to_owned(),
-            generated_name: generated.generated_name().to_owned(),
-        }],
-    )?;
-    database.record_runtime_observed_snapshot(
-        RuntimeSubject::Resource {
-            name: "mysql".to_owned(),
-            track: FAKE_SQL_TRACK.to_owned(),
-        },
-        RuntimeObservedStatus::Running,
-        Some("fixture mysql readiness diagnostic"),
-    )?;
-    let healthy_before = Database::open(&paths)?
-        .runtime_observed_states()?
-        .into_iter()
-        .find(|state| {
-            state.subject
-                == RuntimeSubject::Resource {
-                    name: "mysql".to_owned(),
-                    track: FAKE_SQL_TRACK.to_owned(),
-                }
-        })
-        .ok_or_else(|| anyhow!("missing shared mysql runtime observation"))?;
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "UPDATE resource_allocations SET env_json = 'not-json' WHERE project_id = ?1",
-            params![project.id],
-        )?;
-
-        Ok(())
-    })?;
-    drop(database);
-
-    let hook_events = Arc::new(Mutex::new(Vec::new()));
-    let catalog = super::ManagedResourceRuntimeCatalog::with_adapter(
-        super::ManagedResourceInstallOptions {
-            manifest_url: OFFLINE_TEST_MANIFEST_URL.to_owned(),
-            target_platform: resources::TargetPlatform::current()?,
-        },
-        AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
-    );
-    let allocation = ResourceAllocationInput {
-        allocation_name: "main".to_owned(),
-        generated_name: generated.generated_name().to_owned(),
-    };
-    let plan = crate::project_env::ProjectResourcePlan {
-        resources: vec![ProjectManagedResourceInput {
-            resource_name: "mysql".to_owned(),
-            track: FAKE_SQL_TRACK.to_owned(),
-        }],
-        allocations: BTreeMap::from([(
-            "mysql".to_owned(),
-            crate::project_env::ProjectResourceAllocationPlan {
-                allocations: vec![allocation],
-            },
-        )]),
-    };
-    let mut database = Database::open(&paths)?;
-    let result = super::reconcile_project_resources_with_catalog_and_progress(
-        &paths,
-        &mut database,
-        &project,
-        &plan,
-        &catalog,
-        &BTreeSet::new(),
-        crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
-    )
-    .await;
-    let Err(DaemonError::State(StateError::InvalidEnvJson { .. })) = result else {
-        bail!("expected the corrupt allocation decode to fail the project, got {result:?}");
-    };
-    let healthy_after = Database::open(&paths)?
-        .runtime_observed_states()?
-        .into_iter()
-        .find(|state| {
-            state.subject
-                == RuntimeSubject::Resource {
-                    name: "mysql".to_owned(),
-                    track: FAKE_SQL_TRACK.to_owned(),
-                }
-        })
-        .ok_or_else(|| anyhow!("missing shared mysql runtime observation"))?;
-    assert_eq!(healthy_after, healthy_before);
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn project_download_failures_follow_original_plan_order() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "env: {}\n",
-    )?;
-    let fixtures = [
-        setup_default_fixture("mailpit")?,
-        setup_default_fixture("redis")?,
-    ];
-    let (manifest, _archives) = remote_setup_default_fixtures(tempdir.path(), &fixtures)?;
-    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
-    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
-    catalog.http_client = Some(Arc::new(SequencedManifestArtifactClient {
-        manifests: Mutex::new(VecDeque::from([manifest])),
-        archives: BTreeMap::new(),
-        manifest_requests: Arc::new(AtomicUsize::new(0)),
-    }));
-    let plan = crate::project_env::ProjectResourcePlan {
-        resources: fixtures
-            .iter()
-            .map(|fixture| ProjectManagedResourceInput {
-                resource_name: fixture.resource_name.to_owned(),
-                track: fixture.track.to_owned(),
-            })
-            .collect(),
-        allocations: BTreeMap::new(),
-    };
-    let mut database = Database::open(&paths)?;
-
-    let result = super::reconcile_project_resources_with_catalog_and_progress(
-        &paths,
-        &mut database,
-        &project,
-        &plan,
-        &catalog,
-        &BTreeSet::new(),
-        crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
-    )
-    .await;
-    let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
-        bail!("expected aggregated Project Managed Resource failures");
-    };
-    let failures = failures
-        .iter()
-        .map(|failure| {
-            (
-                failure.resource_name(),
-                failure.track(),
-                failure.error().to_string(),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    assert_debug_snapshot!(failures, @r###"
-    [
-        (
-            "mailpit",
-            "1",
-            "Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/mailpit-1.27.0-pv1-any.tar.gz`",
-        ),
-        (
-            "redis",
-            "8.8",
-            "Managed Resource command failed: HTTP status 404 for `https://artifacts.example.test/redis-8.8.0-pv1-any.tar.gz`",
-        ),
-    ]
-    "###);
-    assert!(
-        database
-            .managed_resource_tracks()?
-            .iter()
-            .all(|track| track.installed_version.is_none())
-    );
-
-    let states = database.runtime_observed_states()?;
-    for resource in &plan.resources {
-        assert_runtime_status_for_resource(
-            &states,
-            &resource.resource_name,
-            &resource.track,
-            RuntimeObservedStatus::Failed,
-        );
-    }
-
-    Ok(())
-}
-
 #[tokio::test]
 #[expect(
     clippy::disallowed_methods,
@@ -2544,13 +2082,12 @@ async fn project_php_demand_does_not_overwrite_concurrent_pair_removal() -> Resu
 
         result
     });
-    let result = crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress(
+    let result = crate::project_env::reconcile_project_env_with_runtime_catalog(
         &paths,
         &project.id,
         None,
         None,
         &BTreeSet::new(),
-        crate::jobs::DaemonDownloadProgress::disabled(),
         crate::project_env::ProjectApplyOptions::new(
             crate::project_env::ProjectApplyStage::RecordRequirements,
         ),
@@ -2584,246 +2121,6 @@ async fn project_php_demand_does_not_overwrite_concurrent_pair_removal() -> Resu
         assert!(record.removal_prune, "prune intent must survive");
         assert!(record.removal_force, "force intent must survive");
     }
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn project_manifest_failure_preserves_earlier_installed_resource_work() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "env: {}\n",
-    )?;
-    seed_mailpit_fixture_artifact(&paths, FAKE_MAILPIT_TRACK)?;
-    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
-    let manifest_requests = Arc::new(AtomicUsize::new(0));
-    let mut catalog = super::ManagedResourceRuntimeCatalog::production()?;
-    catalog.install_options.manifest_url = TEST_ARTIFACT_MANIFEST_URL.to_owned();
-    catalog.http_client = Some(Arc::new(SequencedManifestArtifactClient {
-        manifests: Mutex::new(VecDeque::new()),
-        archives: BTreeMap::new(),
-        manifest_requests: Arc::clone(&manifest_requests),
-    }));
-    let plan = crate::project_env::ProjectResourcePlan {
-        resources: [
-            ("mailpit", FAKE_MAILPIT_TRACK),
-            ("redis", SETUP_DEFAULT_REDIS_TRACK),
-            ("postgres", SETUP_DEFAULT_POSTGRES_TRACK),
-        ]
-        .into_iter()
-        .map(|(resource_name, track)| ProjectManagedResourceInput {
-            resource_name: resource_name.to_owned(),
-            track: track.to_owned(),
-        })
-        .collect(),
-        allocations: BTreeMap::new(),
-    };
-    let mut database = Database::open(&paths)?;
-    let result = super::reconcile_project_resources_with_catalog_and_progress(
-        &paths,
-        &mut database,
-        &project,
-        &plan,
-        &catalog,
-        &BTreeSet::new(),
-        crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
-    )
-    .await;
-    let states = database.runtime_observed_states()?;
-    let empty_plan = crate::project_env::ProjectResourcePlan {
-        resources: Vec::new(),
-        allocations: BTreeMap::new(),
-    };
-    super::reconcile_project_resources_with_catalog_and_progress(
-        &paths,
-        &mut database,
-        &project,
-        &empty_plan,
-        &catalog,
-        &BTreeSet::new(),
-        crate::jobs::DaemonDownloadProgress::disabled(),
-        super::ResourceReconciliationOptions::new(super::ArtifactInstall::Allowed),
-    )
-    .await?;
-    let Err(DaemonError::ManagedResourceProjectFailures { failures }) = result else {
-        bail!("expected aggregated Project manifest failures");
-    };
-    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
-    assert_runtime_status_for_resource(
-        &states,
-        "mailpit",
-        FAKE_MAILPIT_TRACK,
-        RuntimeObservedStatus::Running,
-    );
-    assert_runtime_status_for_resource(
-        &states,
-        "redis",
-        SETUP_DEFAULT_REDIS_TRACK,
-        RuntimeObservedStatus::Failed,
-    );
-    assert_runtime_status_for_resource(
-        &states,
-        "postgres",
-        SETUP_DEFAULT_POSTGRES_TRACK,
-        RuntimeObservedStatus::Failed,
-    );
-    let failure_messages = failures
-        .iter()
-        .map(|failure| {
-            let subject = RuntimeSubject::Resource {
-                name: failure.resource_name().to_owned(),
-                track: failure.track().to_owned(),
-            };
-            let observed_message = states
-                .iter()
-                .find(|state| state.subject == subject)
-                .and_then(|state| state.message.as_deref());
-            (
-                failure.resource_name(),
-                failure.track(),
-                failure.error().to_string(),
-                observed_message,
-            )
-        })
-        .collect::<Vec<_>>();
-    assert_with_normalized_runtime(
-        tempdir.path(),
-        "project_manifest_failure_preserves_installed_work",
-        failure_messages,
-    )?;
-    assert_eq!(failures.len(), 2);
-    for failure in &failures {
-        let DaemonError::ManagedResourceCommand(ManagedResourceCommandError::Resources(
-            ResourcesError::ManifestUnavailable { url, .. },
-        )) = failure.error()
-        else {
-            bail!("expected original manifest failure: {:?}", failure.error());
-        };
-        assert_eq!(url, TEST_ARTIFACT_MANIFEST_URL);
-    }
-    runtimes.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn project_application_pins_resource_track_until_selector_changes() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        "serve: false\nmailpit: {}\n",
-    )?;
-    let mut refreshed: Value = serde_json::from_str(&state::fs::read_to_string(
-        &paths.downloads().join("manifest.json"),
-    )?)?;
-    let resource = &mut refreshed["resources"][0];
-    let mut next_track = resource["tracks"][0].clone();
-    next_track["name"] = json!(FAKE_MAILPIT_NEXT_TRACK);
-    resource["tracks"]
-        .as_array_mut()
-        .ok_or_else(|| anyhow!("expected fixture tracks"))?
-        .push(next_track);
-    resource["default_track"] = json!(FAKE_MAILPIT_NEXT_TRACK);
-    let manifest_requests = Arc::new(AtomicUsize::new(0));
-    let catalog = super::fake_runtime_catalog_with_manifest_client(
-        TEST_ARTIFACT_MANIFEST_URL,
-        SequencedManifestArtifactClient {
-            manifests: Mutex::new(VecDeque::from([serde_json::to_string(&refreshed)?])),
-            archives: BTreeMap::new(),
-            manifest_requests: Arc::clone(&manifest_requests),
-        },
-    )?;
-    let database = Database::open(&paths)?;
-    let demand = discover_project_demand(&paths, &database, &project)?;
-    drop(database);
-    let progress = DaemonDownloadProgress::disabled();
-    super::install_missing_resource_demands_with_catalog_and_progress(
-        &paths,
-        &catalog,
-        &demand.resource_tracks,
-        progress.clone(),
-    )
-    .await?;
-    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
-    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_NEXT_TRACK)?;
-    state::fs::write_sensitive_file(
-        &project.config_path,
-        "serve: false\nmailpit:\n  version: latest\n",
-    )?;
-
-    let first_result = reconcile_project_env_with_runtime_catalog_and_progress(
-        &paths,
-        &project.id,
-        Some(&catalog),
-        Some(&demand),
-        &demand.resource_tracks,
-        progress.clone(),
-        crate::project_env::ProjectApplyOptions::new(
-            crate::project_env::ProjectApplyStage::CompleteApply,
-        ),
-    )
-    .await;
-    let database = Database::open(&paths)?;
-    let initial_resources = database
-        .project_managed_resources(&project.id)?
-        .into_iter()
-        .map(|resource| (resource.resource_name, resource.track))
-        .collect::<Vec<_>>();
-    let initial_installs = database
-        .managed_resource_tracks()?
-        .into_iter()
-        .filter(|track| track.current_artifact_path.is_some())
-        .map(|track| (track.resource_name, track.track))
-        .collect::<Vec<_>>();
-    drop(database);
-    state::fs::write_sensitive_file(
-        &project.config_path,
-        "serve: false\nmailpit:\n  version: \"1.1\"\n",
-    )?;
-    let changed_result = reconcile_project_env_with_runtime_catalog_and_progress(
-        &paths,
-        &project.id,
-        Some(&catalog),
-        Some(&demand),
-        &demand.resource_tracks,
-        progress,
-        crate::project_env::ProjectApplyOptions::new(
-            crate::project_env::ProjectApplyStage::CompleteApply,
-        ),
-    )
-    .await;
-    let mut database = Database::open(&paths)?;
-    let changed_resources = database
-        .project_managed_resources(&project.id)?
-        .into_iter()
-        .map(|resource| (resource.resource_name, resource.track))
-        .collect::<Vec<_>>();
-    database.replace_project_managed_resources(&project.id, &[])?;
-    drop(database);
-    super::stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
-
-    first_result?;
-    changed_result?;
-    assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        initial_installs,
-        [("mailpit".to_owned(), FAKE_MAILPIT_TRACK.to_owned())]
-    );
-    assert_eq!(initial_resources, initial_installs);
-    assert_eq!(
-        changed_resources,
-        [("mailpit".to_owned(), FAKE_MAILPIT_NEXT_TRACK.to_owned())]
-    );
 
     Ok(())
 }
@@ -3439,81 +2736,6 @@ async fn demanded_resource_reassigns_persisted_port_when_non_pv_listener_occupie
 }
 
 #[tokio::test]
-async fn demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_before_env_rendering()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        r#"mailpit:
-  version: "1.0"
-  env:
-    MAIL_HOST: "${smtp_host}"
-    MAIL_PORT: "${smtp_port}"
-    MAILPIT_DASHBOARD: "${dashboard_url}"
-"#,
-    )?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
-    seed_mailpit_runtime_ports(&paths, FAKE_MAILPIT_TRACK)?;
-
-    reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
-        &paths,
-        &project.id,
-        OFFLINE_TEST_MANIFEST_URL,
-    )
-    .await?;
-    let installed_snapshot = {
-        let database = Database::open(&paths)?;
-
-        (
-            read_dotenv(&project)?,
-            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
-            database.assigned_ports()?,
-            database.runtime_observed_states()?,
-        )
-    };
-
-    write_project_config(
-        &project,
-        r#"env:
-  APP_URL: "${url}"
-"#,
-    )?;
-    reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
-        &paths,
-        &project.id,
-        OFFLINE_TEST_MANIFEST_URL,
-    )
-    .await?;
-    let stopped_snapshot = {
-        let database = Database::open(&paths)?;
-
-        (
-            database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?,
-            database.assigned_ports()?,
-            database.runtime_observed_states()?,
-        )
-    };
-    runtimes.cleanup().await?;
-
-    assert_with_normalized_runtime(
-        tempdir.path(),
-        "demanded_resource_installs_fake_multi_port_runtime_from_cached_fixture_before_env_rendering",
-        installed_snapshot,
-    )?;
-    assert_with_normalized_runtime(
-        tempdir.path(),
-        "cached_fake_multi_port_runtime_stops_when_project_demand_is_removed",
-        stopped_snapshot,
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -3551,50 +2773,6 @@ async fn rustfs_reconciliation_creates_bucket_and_renders_env() -> Result<()> {
     assert_with_normalized_runtime(
         tempdir.path(),
         "rustfs_reconciliation_creates_bucket_and_renders_env",
-        snapshot,
-    )?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn rustfs_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project_with_rustfs_bucket_env(&paths, &tempdir.path().join("project"))?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    seed_rustfs_cached_fixture(&paths, tempdir.path())?;
-    reserve_available_rustfs_ports(&paths)?;
-
-    reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
-        &paths,
-        &project.id,
-        OFFLINE_TEST_MANIFEST_URL,
-    )
-    .await?;
-    let snapshot = {
-        let database = Database::open(&paths)?;
-
-        (
-            read_dotenv(&project)?,
-            database.managed_resource_track("rustfs", RUSTFS_TRACK)?,
-            database.resource_allocations(&project.id, "rustfs")?,
-            database.assigned_ports()?,
-            database.runtime_observed_states()?,
-        )
-    };
-
-    write_project_config(
-        &project,
-        r#"env:
-  APP_URL: "${url}"
-"#,
-    )?;
-    runtimes.cleanup().await?;
-
-    assert_with_normalized_runtime(
-        tempdir.path(),
-        "rustfs_project_demand_installs_missing_fixture_track_before_start",
         snapshot,
     )?;
 
@@ -3886,12 +3064,12 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
         };
         let verification: Result<_> = async {
             write_project_config(&broken, &format!("{config}    retired: {{}}\n"))?;
-            crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &broken.id, &catalog).await?;
+            crate::project_env::reconcile_project_env_with_catalog(&paths, &broken.id, &catalog).await?;
             write_project_config(&broken, config)?;
-            crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &broken.id, &catalog).await?;
-            crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &healthy.id, &catalog).await?;
+            crate::project_env::reconcile_project_env_with_catalog(&paths, &broken.id, &catalog).await?;
+            crate::project_env::reconcile_project_env_with_catalog(&paths, &healthy.id, &catalog).await?;
             if let Some(project) = &already_failing {
-                crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &project.id, &catalog).await?;
+                crate::project_env::reconcile_project_env_with_catalog(&paths, &project.id, &catalog).await?;
             }
             let already_failing_initial = already_failing.as_ref().map(|project| -> Result<_> {
                 Ok((database.resource_allocations(&project.id, "rustfs")?, read_dotenv(project)?, database.project_env_observed_state(&project.id)?))
@@ -3911,7 +3089,7 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             }
             let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
             let result = if mode == "project" {
-                crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &broken.id, &catalog)
+                crate::project_env::reconcile_project_env_with_catalog(&paths, &broken.id, &catalog)
                     .await.map(|_| ())
             } else {
                 crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
@@ -3985,7 +3163,7 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
                 return Ok(phase_checks);
             }
             if mode == "project" {
-                crate::project_env::reconcile_project_env_with_catalog(&paths, &mut database, &healthy.id, &catalog).await?;
+                crate::project_env::reconcile_project_env_with_catalog(&paths, &healthy.id, &catalog).await?;
             }
             let before_mailpit = capture()?;
             phase_checks.push(("healthy same-track verification restores runtime only", before_mailpit.4.as_ref().is_some_and(|state| state.status == RuntimeObservedStatus::Running)
@@ -4189,7 +3367,6 @@ async fn demanded_resource_records_failed_runtime_when_readiness_fails_before_en
         result.is_err(),
         "expected readiness failure, got {result:#?}"
     );
-    assert_failed_mailpit_runtime(&failure_snapshot.4);
     assert_eq!(
         failure_snapshot.5,
         RuntimeFilePresence {
@@ -4385,55 +3562,6 @@ async fn system_reconciliation_preserves_removed_demanded_tracks() -> Result<()>
 }
 
 #[tokio::test]
-async fn project_reconciliation_rejects_removed_track_without_artifact() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    seed_fake_mailpit_cached_fixture(&paths, tempdir.path())?;
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "project.test",
-        "serve: false\nmailpit:\n  version: \"1.0\"\n",
-    )?;
-    let mut database = Database::open(&paths)?;
-    let before = database.record_managed_resource_track_removal_intent(
-        "mailpit",
-        FAKE_MAILPIT_TRACK,
-        false,
-        true,
-    )?;
-
-    let result = reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
-        &paths,
-        &project.id,
-        OFFLINE_TEST_MANIFEST_URL,
-    )
-    .await;
-
-    let Err(error) = result else {
-        write_project_config(&project, "serve: false\n")?;
-        reconcile_project_env_with_fake_runtime_catalog(&paths, &project.id).await?;
-        bail!("removed track unexpectedly reconciled");
-    };
-    assert!(
-        matches!(
-            error.downcast_ref::<DaemonError>(),
-            Some(DaemonError::ManagedResourceTrackRemoved { resource, track })
-                if resource == "mailpit" && track == FAKE_MAILPIT_TRACK
-        ),
-        "unexpected reconciliation error: {error:#?}"
-    );
-    let after = database.managed_resource_track("mailpit", FAKE_MAILPIT_TRACK)?;
-    assert_eq!(after.desired_state, before.desired_state);
-    assert_eq!((after.removal_prune, after.removal_force), (false, true));
-    assert!(after.current_artifact_path.is_none());
-    assert!(after.installed_version.is_none());
-    assert!(!project.path.join(".env").exists());
-    assert_failed_mailpit_runtime(&database.runtime_observed_states()?);
-    Ok(())
-}
-
-#[tokio::test]
 async fn demanded_removed_track_fails_without_starting_runtime() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -4490,7 +3618,6 @@ async fn demanded_removed_track_fails_without_starting_runtime() -> Result<()> {
         result.is_err(),
         "expected removed track to fail before runtime start, got {result:#?}"
     );
-    assert_failed_mailpit_runtime(&failure_snapshot.4);
     assert_with_normalized_runtime(
         tempdir.path(),
         "demanded_removed_track_fails_without_starting_runtime",
@@ -4516,15 +3643,10 @@ async fn demanded_resource_records_failed_runtime_when_named_port_assignment_fai
     )?;
     seed_fake_mailpit_artifact(&paths, FAKE_MAILPIT_TRACK)?;
     let catalog = invalid_default_port_runtime_catalog()?;
-    let mut database = Database::open(&paths)?;
+    let database = Database::open(&paths)?;
 
-    let result = crate::project_env::reconcile_project_env_with_catalog(
-        &paths,
-        &mut database,
-        &project.id,
-        &catalog,
-    )
-    .await;
+    let result =
+        crate::project_env::reconcile_project_env_with_catalog(&paths, &project.id, &catalog).await;
     let failure_snapshot = (
         format!("{result:#?}"),
         read_optional_dotenv(&project)?,
@@ -4566,14 +3688,8 @@ async fn production_demanded_resource_without_adapter_fails_before_env_rendering
     )?;
 
     let catalog = empty_runtime_catalog()?;
-    let mut database = Database::open(&paths)?;
-    let result = crate::project_env::reconcile_project_env_with_catalog(
-        &paths,
-        &mut database,
-        &project.id,
-        &catalog,
-    )
-    .await;
+    let result =
+        crate::project_env::reconcile_project_env_with_catalog(&paths, &project.id, &catalog).await;
     let failure_snapshot = {
         let database = Database::open(&paths)?;
 
@@ -4697,15 +3813,9 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
     );
-    let mut database = Database::open(&paths)?;
+    let database = Database::open(&paths)?;
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        &paths,
-        &mut database,
-        &project.id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(&paths, &project.id, &catalog).await?;
     let started_snapshot = (
         read_dotenv(&project)?,
         database.resource_allocations(&project.id, "mysql")?,
@@ -4719,13 +3829,7 @@ async fn demanded_resource_uses_async_readiness_and_allocation_hooks() -> Result
   APP_URL: "${url}"
 "#,
     )?;
-    crate::project_env::reconcile_project_env_with_catalog(
-        &paths,
-        &mut database,
-        &project.id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(&paths, &project.id, &catalog).await?;
     runtimes.cleanup().await?;
 
     assert_with_normalized_runtime(
@@ -4777,15 +3881,10 @@ async fn resource_readiness_slots_include_start_and_poll_during_preparation() ->
         allocations: BTreeMap::new(),
     };
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let progress = crate::jobs::DaemonDownloadProgress::disabled();
     let mut database = Database::open(&paths)?;
-    let mut prefetched_installs = BTreeMap::new();
     let mut context = super::ResourceTrackReconciliationContext {
         catalog: &catalog,
         supervisor: &supervisor,
-        progress: &progress,
-        prefetched_installs: &mut prefetched_installs,
-        artifact_install: super::ArtifactInstall::Allowed,
     };
     let reconciliation =
         super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
@@ -4890,16 +3989,11 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         allocations: BTreeMap::new(),
     };
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let progress = crate::jobs::DaemonDownloadProgress::disabled();
     let mut database = Database::open(&paths)?;
     {
-        let mut prefetched_installs = BTreeMap::new();
         let mut context = super::ResourceTrackReconciliationContext {
             catalog: &cancelled_catalog,
             supervisor: &supervisor,
-            progress: &progress,
-            prefetched_installs: &mut prefetched_installs,
-            artifact_install: super::ArtifactInstall::Allowed,
         };
         let reconciliation =
             super::reconcile_resource_tracks(&paths, &mut database, &mut context, &project, &plan);
@@ -4970,13 +4064,9 @@ async fn resource_readiness_wave_recovers_after_cancellation_and_stays_db_free()
         },
         adapter,
     );
-    let mut prefetched_installs = BTreeMap::new();
     let mut context = super::ResourceTrackReconciliationContext {
         catalog: &catalog,
         supervisor: &supervisor,
-        progress: &progress,
-        prefetched_installs: &mut prefetched_installs,
-        artifact_install: super::ArtifactInstall::Allowed,
     };
     let result = {
         let reconciliation =
@@ -5150,15 +4240,8 @@ async fn demanded_resource_persists_env_before_runtime_side_effects() -> Result<
         },
         AsyncSqlHookRuntimeAdapter::new(Arc::clone(&hook_events))?,
     );
-    let mut database = Database::open(&paths)?;
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        &paths,
-        &mut database,
-        &project.id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(&paths, &project.id, &catalog).await?;
     let hook_events = cloned_hook_events(&hook_events)?;
     runtimes.cleanup().await?;
 
@@ -5212,13 +4295,7 @@ async fn async_readiness_reassigns_unowned_persisted_port_before_resource_readin
         |_port| true,
     )?;
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        &paths,
-        &mut database,
-        &project.id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(&paths, &project.id, &catalog).await?;
     let assigned_ports = database.assigned_ports()?;
     let resource_allocations = database.resource_allocations(&project.id, "mysql")?;
     let assigned_mysql_port = assigned_mysql_port(&assigned_ports)?;
@@ -5550,51 +4627,6 @@ async fn redis_port_reassignment_refreshes_ready_allocation_env() -> Result<()> 
     Ok(())
 }
 
-#[tokio::test]
-async fn redis_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project(
-        &paths,
-        &tempdir.path().join("project"),
-        "acme.test",
-        redis_project_config(),
-    )?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    seed_redis_cached_fixture(&paths, tempdir.path())?;
-    seed_redis_runtime_port(&paths)?;
-
-    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
-    let snapshot = {
-        let database = Database::open(&paths)?;
-
-        (
-            read_dotenv(&project)?,
-            database.managed_resource_track("redis", REDIS_TRACK)?,
-            database.resource_allocations(&project.id, "redis")?,
-            database.assigned_ports()?,
-            database.runtime_observed_states()?,
-        )
-    };
-
-    write_project_config(
-        &project,
-        r#"env:
-  APP_URL: "${url}"
-"#,
-    )?;
-    crate::project_env::reconcile_project_env(&paths, &project.id).await?;
-    runtimes.cleanup().await?;
-
-    assert_with_normalized_runtime(
-        tempdir.path(),
-        "redis_project_demand_installs_missing_fixture_track_before_start",
-        snapshot,
-    )?;
-
-    Ok(())
-}
-
 async fn reconcile_project_env_with_fake_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
@@ -5613,34 +4645,8 @@ async fn reconcile_project_env_with_fake_runtime_catalog_and_manifest_url(
     manifest_url: &str,
 ) -> Result<()> {
     let catalog = super::fake_runtime_catalog(manifest_url)?;
-    let mut database = Database::open(paths)?;
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        project_id,
-        &catalog,
-    )
-    .await?;
-
-    Ok(())
-}
-
-async fn reconcile_project_env_with_mailpit_runtime_catalog_and_manifest_url(
-    paths: &PvPaths,
-    project_id: &str,
-    manifest_url: &str,
-) -> Result<()> {
-    let catalog = super::mailpit_runtime_catalog(manifest_url)?;
-    let mut database = Database::open(paths)?;
-
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        project_id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(paths, project_id, &catalog).await?;
 
     Ok(())
 }
@@ -5663,15 +4669,8 @@ async fn reconcile_project_env_with_rustfs_runtime_catalog_and_manifest_url(
     manifest_url: &str,
 ) -> Result<()> {
     let catalog = super::rustfs_runtime_catalog(manifest_url)?;
-    let mut database = Database::open(paths)?;
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        project_id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(paths, project_id, &catalog).await?;
 
     Ok(())
 }
@@ -5681,16 +4680,9 @@ async fn reconcile_project_env_with_unready_fake_runtime_catalog(
     project_id: &str,
 ) -> Result<(), DaemonError> {
     let catalog = super::fake_unready_runtime_catalog(resources::default_artifact_manifest_url())?;
-    let mut database = Database::open(paths)?;
     clock::install_fake_for_test().advance_when_waiting_in_background(&RESOURCE_READINESS_TIMEOUT);
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        project_id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(paths, project_id, &catalog).await?;
 
     Ok(())
 }
@@ -5706,34 +4698,8 @@ async fn reconcile_project_env_with_fast_exit_fake_runtime_catalog(
         },
         super::fake::FakeMailpitRuntimeAdapter::new()?,
     );
-    let mut database = Database::open(paths)?;
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        project_id,
-        &catalog,
-    )
-    .await?;
-
-    Ok(())
-}
-
-async fn reconcile_project_env_with_postgres_runtime_catalog_and_manifest_url(
-    paths: &PvPaths,
-    project_id: &str,
-    manifest_url: &str,
-) -> Result<()> {
-    let catalog = super::postgres_runtime_catalog(manifest_url)?;
-    let mut database = Database::open(paths)?;
-
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        project_id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(paths, project_id, &catalog).await?;
 
     Ok(())
 }
@@ -5758,16 +4724,9 @@ async fn reconcile_project_env_with_unready_postgres_runtime_catalog(
     project_id: &str,
 ) -> Result<()> {
     let catalog = super::postgres_runtime_catalog(resources::default_artifact_manifest_url())?;
-    let mut database = Database::open(paths)?;
     clock::install_fake_for_test().advance_when_waiting_in_background(&RESOURCE_READINESS_TIMEOUT);
 
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        project_id,
-        &catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(paths, project_id, &catalog).await?;
 
     Ok(())
 }
@@ -6540,43 +5499,6 @@ fn resource_runtime_metadata_pid(paths: &PvPaths, resource_name: &str, track: &s
         .ok_or_else(|| anyhow!("runtime metadata is missing numeric pid"))
 }
 
-fn seed_postgres_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
-    pv_fake::install_monitor(paths)?;
-    let archive_path = tempdir.join(POSTGRES_ARCHIVE_FILE_NAME);
-
-    create_postgres_archive(tempdir, &archive_path)?;
-    seed_postgres_cached_fixture_from_archive(paths, &archive_path)
-}
-
-fn seed_postgres_cached_fixture_without_support_files(
-    paths: &PvPaths,
-    tempdir: &Utf8Path,
-) -> Result<()> {
-    let archive_path = tempdir.join(POSTGRES_ARCHIVE_FILE_NAME);
-
-    create_postgres_archive_without_support_files(tempdir, &archive_path)?;
-    seed_postgres_cached_fixture_from_archive(paths, &archive_path)
-}
-
-fn seed_postgres_cached_fixture_from_archive(
-    paths: &PvPaths,
-    archive_path: &Utf8Path,
-) -> Result<()> {
-    pv_fake::install_monitor(paths)?;
-    let sha256 = sha256_file(archive_path)?;
-    let cache_path = paths
-        .downloads()
-        .join(format!("{sha256}-{POSTGRES_ARCHIVE_FILE_NAME}"));
-
-    copy_file(archive_path, &cache_path)?;
-    let size = file_size(&cache_path)?;
-    let manifest = postgres_fixture_manifest(&sha256, size);
-
-    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
-
-    Ok(())
-}
-
 fn seed_redis_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     let release_path = paths
         .resources()
@@ -6645,82 +5567,6 @@ fn empty_runtime_catalog() -> Result<super::ManagedResourceRuntimeCatalog> {
     })
 }
 
-fn seed_fake_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
-    pv_fake::install_monitor(paths)?;
-    let archive_path = tempdir.join(FAKE_MAILPIT_ARCHIVE_FILE_NAME);
-
-    create_fake_mailpit_archive(tempdir, &archive_path)?;
-    let sha256 = sha256_file(&archive_path)?;
-    let cache_path = paths
-        .downloads()
-        .join(format!("{sha256}-{FAKE_MAILPIT_ARCHIVE_FILE_NAME}"));
-
-    copy_file(&archive_path, &cache_path)?;
-    let size = file_size(&cache_path)?;
-    let manifest = fake_mailpit_manifest(&sha256, size);
-
-    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
-
-    Ok(())
-}
-
-fn seed_mailpit_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
-    pv_fake::install_monitor(paths)?;
-    let archive_path = tempdir.join(MAILPIT_ARCHIVE_FILE_NAME);
-
-    create_mailpit_archive(tempdir, &archive_path)?;
-    let sha256 = sha256_file(&archive_path)?;
-    let cache_path = paths
-        .downloads()
-        .join(format!("{sha256}-{MAILPIT_ARCHIVE_FILE_NAME}"));
-
-    copy_file(&archive_path, &cache_path)?;
-    let size = file_size(&cache_path)?;
-    let manifest = mailpit_manifest(&sha256, size);
-
-    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
-
-    Ok(())
-}
-
-fn seed_redis_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
-    pv_fake::install_monitor(paths)?;
-    let archive_path = tempdir.join(REDIS_ARCHIVE_FILE_NAME);
-
-    create_redis_archive(tempdir, &archive_path)?;
-    let sha256 = sha256_file(&archive_path)?;
-    let cache_path = paths
-        .downloads()
-        .join(format!("{sha256}-{REDIS_ARCHIVE_FILE_NAME}"));
-
-    copy_file(&archive_path, &cache_path)?;
-    let size = file_size(&cache_path)?;
-    let manifest = redis_manifest(&sha256, size);
-
-    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
-
-    Ok(())
-}
-
-fn seed_rustfs_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
-    pv_fake::install_monitor(paths)?;
-    let archive_path = tempdir.join(RUSTFS_ARCHIVE_FILE_NAME);
-
-    create_rustfs_archive(tempdir, &archive_path)?;
-    let sha256 = sha256_file(&archive_path)?;
-    let cache_path = paths
-        .downloads()
-        .join(format!("{sha256}-{RUSTFS_ARCHIVE_FILE_NAME}"));
-
-    copy_file(&archive_path, &cache_path)?;
-    let size = file_size(&cache_path)?;
-    let manifest = rustfs_manifest(&sha256, size);
-
-    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
-
-    Ok(())
-}
-
 fn seed_redis_runtime_port(paths: &PvPaths) -> Result<u16> {
     let port = pv_fake::port()?;
     let mut database = Database::open(paths)?;
@@ -6730,27 +5576,6 @@ fn seed_redis_runtime_port(paths: &PvPaths) -> Result<u16> {
     )?;
 
     Ok(port)
-}
-
-fn create_postgres_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
-    let archive_parent = tempdir.join("postgres-archive-root");
-    let root_name = format!("postgres-{POSTGRES_ARTIFACT_VERSION}");
-    let root = archive_parent.join(&root_name);
-
-    write_postgres_fixture_binaries(&root)?;
-    create_archive(&archive_parent, archive_path, &root_name)
-}
-
-fn create_postgres_archive_without_support_files(
-    tempdir: &Utf8Path,
-    archive_path: &Utf8Path,
-) -> Result<()> {
-    let archive_parent = tempdir.join("postgres-archive-root-missing-support");
-    let root_name = format!("postgres-{POSTGRES_ARTIFACT_VERSION}");
-    let root = archive_parent.join(&root_name);
-
-    write_postgres_fixture_binaries_without_support_files(&root)?;
-    create_archive(&archive_parent, archive_path, &root_name)
 }
 
 fn create_archive(
@@ -6774,112 +5599,9 @@ fn create_archive(
     Ok(())
 }
 
-fn create_fake_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
-    let archive_parent = tempdir.join("archive-root");
-    let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
-    let root = archive_parent.join(&root_name);
-    // The archive carries the fake and its scenario file, which PV extracts next to each other.
-    pv_fake::install(&root.join("bin/pv-fake-mailpit"), Persona::PvFakeMailpit)?;
-    run_fixture_command(
-        "/usr/bin/tar",
-        &[
-            "--use-compress-program",
-            "gzip -1",
-            "-cf",
-            archive_path.as_str(),
-            "-C",
-            archive_parent.as_str(),
-            &root_name,
-        ],
-    )?;
-
-    Ok(())
-}
-
-fn create_mailpit_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
-    let archive_parent = tempdir.join("archive-root");
-    let root_name = format!("mailpit-{FAKE_MAILPIT_ARTIFACT_VERSION}");
-    let root = archive_parent.join(&root_name);
-    // The archive carries the fake and its scenario file, which PV extracts next to each other.
-    pv_fake::install(&root.join("bin/mailpit"), Persona::Mailpit)?;
-    run_fixture_command(
-        "/usr/bin/tar",
-        &[
-            "--use-compress-program",
-            "gzip -1",
-            "-cf",
-            archive_path.as_str(),
-            "-C",
-            archive_parent.as_str(),
-            &root_name,
-        ],
-    )?;
-
-    Ok(())
-}
-
-fn create_redis_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
-    let archive_parent = tempdir.join("redis-archive-root");
-    let root_name = format!("redis-{REDIS_ARTIFACT_VERSION}");
-    let root = archive_parent.join(&root_name);
-    // The archive carries the fake and its scenario file, which PV extracts next to each other.
-    pv_fake::install(&root.join("bin/redis-server"), Persona::RedisServer)?;
-    run_fixture_command(
-        "/usr/bin/tar",
-        &[
-            "--use-compress-program",
-            "gzip -1",
-            "-cf",
-            archive_path.as_str(),
-            "-C",
-            archive_parent.as_str(),
-            &root_name,
-        ],
-    )?;
-
-    Ok(())
-}
-
-fn create_rustfs_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
-    let archive_parent = tempdir.join("rustfs-archive-root");
-    let root_name = format!("rustfs-{RUSTFS_ARTIFACT_VERSION}");
-    let root = archive_parent.join(&root_name);
-    // The archive carries the fake and its scenario file, which PV extracts next to each other.
-    pv_fake::install(&root.join("bin/rustfs"), Persona::Rustfs)?;
-    run_fixture_command(
-        "/usr/bin/tar",
-        &[
-            "--use-compress-program",
-            "gzip -1",
-            "-cf",
-            archive_path.as_str(),
-            "-C",
-            archive_parent.as_str(),
-            &root_name,
-        ],
-    )?;
-
-    Ok(())
-}
-
-fn write_postgres_fixture_binaries(release_path: &Utf8Path) -> Result<()> {
-    write_postgres_fixture_binaries_with(release_path, Persona::Postgres)
-}
-
 fn write_postgres_fixture_binaries_with(release_path: &Utf8Path, postgres: Persona) -> Result<()> {
     install_postgres_fakes(release_path, postgres)?;
     write_postgres_support_files(release_path)
-}
-
-/// Stubs, not fakes: PV rejects the artifact before it runs anything.
-fn write_postgres_fixture_binaries_without_support_files(release_path: &Utf8Path) -> Result<()> {
-    for binary in ["bin/initdb", "bin/postgres"] {
-        let path = release_path.join(binary);
-        state::fs::write_sensitive_file(&path, "#!/bin/sh\nexit 1\n")?;
-        set_executable(&path)?;
-    }
-
-    Ok(())
 }
 
 /// The fakes and their scenario files, which an archive carries and PV extracts together.
@@ -6909,391 +5631,6 @@ fn write_postgres_support_files(release_path: &Utf8Path) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn fake_mailpit_manifest(sha256: &str, size: u64) -> String {
-    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
-
-    format!(
-        r#"{{
-  "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
-  "resources": [
-    {{
-      "name": "mailpit",
-      "default_track": "{FAKE_MAILPIT_TRACK}",
-      "tracks": [
-        {{
-          "name": "{FAKE_MAILPIT_TRACK}",
-          "artifacts": [
-            {{
-              "artifact_version": "{FAKE_MAILPIT_ARTIFACT_VERSION}",
-              "upstream_version": "1.0.0",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/{FAKE_MAILPIT_ARCHIVE_FILE_NAME}",
-              "sha256": "{sha256}",
-              "size": {size},
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "php",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "frankenphp",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
-}}
-"#
-    )
-}
-
-fn mailpit_manifest(sha256: &str, size: u64) -> String {
-    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
-
-    format!(
-        r#"{{
-  "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
-  "resources": [
-    {{
-      "name": "mailpit",
-      "default_track": "{FAKE_MAILPIT_TRACK}",
-      "tracks": [
-        {{
-          "name": "{FAKE_MAILPIT_TRACK}",
-          "artifacts": [
-            {{
-              "artifact_version": "{FAKE_MAILPIT_ARTIFACT_VERSION}",
-              "upstream_version": "1.0.0",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/{MAILPIT_ARCHIVE_FILE_NAME}",
-              "sha256": "{sha256}",
-              "size": {size},
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "php",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "frankenphp",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
-}}
-"#
-    )
-}
-
-fn redis_manifest(sha256: &str, size: u64) -> String {
-    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
-
-    format!(
-        r#"{{
-  "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
-  "resources": [
-    {{
-      "name": "redis",
-      "default_track": "{REDIS_TRACK}",
-      "tracks": [
-        {{
-          "name": "{REDIS_TRACK}",
-          "artifacts": [
-            {{
-              "artifact_version": "{REDIS_ARTIFACT_VERSION}",
-              "upstream_version": "7.2.0",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/{REDIS_ARCHIVE_FILE_NAME}",
-              "sha256": "{sha256}",
-              "size": {size},
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "php",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "frankenphp",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
-}}
-"#
-    )
-}
-
-fn rustfs_manifest(sha256: &str, size: u64) -> String {
-    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
-
-    format!(
-        r#"{{
-  "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
-  "resources": [
-    {{
-      "name": "rustfs",
-      "default_track": "{RUSTFS_TRACK}",
-      "tracks": [
-        {{
-          "name": "{RUSTFS_TRACK}",
-          "artifacts": [
-            {{
-              "artifact_version": "{RUSTFS_ARTIFACT_VERSION}",
-              "upstream_version": "1.0.0",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/{RUSTFS_ARCHIVE_FILE_NAME}",
-              "sha256": "{sha256}",
-              "size": {size},
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "php",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "frankenphp",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
-}}
-"#
-    )
-}
-
-fn postgres_fixture_manifest(sha256: &str, size: u64) -> String {
-    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
-
-    format!(
-        r#"{{
-  "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
-  "resources": [
-    {{
-      "name": "postgres",
-      "default_track": "{POSTGRES_TRACK}",
-      "tracks": [
-        {{
-          "name": "{POSTGRES_TRACK}",
-          "artifacts": [
-            {{
-              "artifact_version": "{POSTGRES_ARTIFACT_VERSION}",
-              "upstream_version": "16.0",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/{POSTGRES_ARCHIVE_FILE_NAME}",
-              "sha256": "{sha256}",
-              "size": {size},
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "php",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "frankenphp",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
-}}
-"#
-    )
 }
 
 #[derive(Clone, Debug)]

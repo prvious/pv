@@ -633,10 +633,8 @@ mod tests {
     use tokio::sync::watch;
 
     use super::{DaemonHooks, HookRun};
-    use crate::jobs::DaemonDownloadProgress;
     use crate::project_env::{
-        ProjectApplyOptions, ProjectApplyStage,
-        reconcile_project_env_with_runtime_catalog_and_progress,
+        ProjectApplyOptions, ProjectApplyStage, reconcile_project_env_with_runtime_catalog,
     };
     use crate::reconciliation::ReconciliationDebouncer;
 
@@ -724,14 +722,14 @@ mod tests {
             mode: ProjectMode::ResourceOnly,
         })?;
         let hooks = DaemonHooks::new(paths.clone());
-        reconcile_project_env_with_runtime_catalog_and_progress(
+        reconcile_project_env_with_runtime_catalog(
             &paths,
             &project.id,
             None,
             None,
             &BTreeSet::new(),
-            DaemonDownloadProgress::disabled(),
-            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply).with_hooks(Some(&hooks)),
+            ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply)
+                .with_hooks(Some(&hooks)),
         )
         .await?;
         state::fs::delete_file(&config_path)?;

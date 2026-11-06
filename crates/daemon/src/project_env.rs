@@ -22,7 +22,6 @@ use state::{
 use crate::DaemonError;
 
 use crate::hooks::DaemonHooks;
-use crate::jobs::DaemonDownloadProgress;
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::structured_log;
 
@@ -59,12 +58,12 @@ impl ProjectEnvRender {
     }
 }
 
-/// Which half of a Project Apply to run, and whether that half may install artifacts.
+/// Which half of a Project Apply to run.
 ///
-/// A job-orchestrated apply runs [`ProjectApplyStage::RecordRequirements`], then the Resources
-/// phase, then [`ProjectApplyStage::CompleteStagedApply`]. The staged variant cannot install,
-/// so artifact work can only ever be timed and attributed to Resources even when the Project
-/// config gains a resource after requirements were recorded.
+/// An apply runs [`ProjectApplyStage::RecordRequirements`], then the Resources phase, then
+/// [`ProjectApplyStage::CompleteStagedApply`]. Neither stage installs, so artifact work can only
+/// ever be timed and attributed to Resources even when the Project config gains a resource after
+/// requirements were recorded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProjectApplyStage {
     /// Validate the config and record what the Project needs. This may read cached manifest
@@ -74,11 +73,6 @@ pub(crate) enum ProjectApplyStage {
     /// to be installed already. A missing artifact fails with
     /// [`DaemonError::ManagedResourceArtifactMissing`] before any manifest read or install.
     CompleteStagedApply,
-    /// Reconcile the Project's resources and render its environment, installing any missing
-    /// artifact. Only direct test helpers apply without a preceding Resources phase, so no
-    /// job-orchestrated path constructs this.
-    #[cfg(test)]
-    CompleteApply,
 }
 
 #[derive(Clone, Copy)]
@@ -95,29 +89,6 @@ impl<'a> ProjectApplyOptions<'a> {
     pub(crate) fn with_hooks(mut self, hooks: Option<&'a DaemonHooks>) -> Self {
         self.hooks = hooks;
         self
-    }
-}
-
-impl ProjectApplyStage {
-    fn artifact_install(self) -> crate::managed_resources::ArtifactInstall {
-        match self {
-            // Never consulted, because this stage returns before reconciling resources, but
-            // fail closed so a stage that must not install can never gain permission.
-            Self::RecordRequirements => crate::managed_resources::ArtifactInstall::Forbidden,
-            Self::CompleteStagedApply => crate::managed_resources::ArtifactInstall::Forbidden,
-            #[cfg(test)]
-            Self::CompleteApply => crate::managed_resources::ArtifactInstall::Allowed,
-        }
-    }
-
-    /// Whether this stage may install missing artifacts inline. Only applies without a
-    /// preceding Resources phase, so every job-orchestrated staged flow answers false.
-    fn may_install_artifacts(self) -> bool {
-        match self {
-            Self::RecordRequirements | Self::CompleteStagedApply => false,
-            #[cfg(test)]
-            Self::CompleteApply => true,
-        }
     }
 }
 
@@ -221,30 +192,22 @@ impl ProjectEnvReconciliationSummary {
     }
 }
 
+/// Applies one Project the way a Project job does: record its requirements, install them, then
+/// complete the staged apply.
 #[cfg(test)]
 pub(crate) async fn reconcile_project_env(
     paths: &PvPaths,
     project_id: &str,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
-    reconcile_project_env_with_runtime_catalog_and_progress(
-        paths,
-        project_id,
-        None,
-        None,
-        &BTreeSet::new(),
-        DaemonDownloadProgress::disabled(),
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteApply),
-    )
-    .await
+    crate::jobs::reconcile_project_env_and_missing_resources(paths, project_id, None).await
 }
 
-pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
+pub(crate) async fn reconcile_project_env_with_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
     discovered_demand: Option<&ProjectDemand>,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
     options: ProjectApplyOptions<'_>,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let mut database = Database::open(paths)?;
@@ -262,7 +225,6 @@ pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
             catalog,
             discovered_demand,
             demanded_tracks,
-            progress,
             options,
         )
         .await
@@ -364,40 +326,14 @@ pub(crate) fn reconcile_project_env_from_persisted_state(
     }
 }
 
+/// [`reconcile_project_env`] with a runtime catalog.
 #[cfg(test)]
 pub(crate) async fn reconcile_project_env_with_catalog(
     paths: &PvPaths,
-    database: &mut Database,
     project_id: &str,
     catalog: &ManagedResourceRuntimeCatalog,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
-    let project =
-        database
-            .project_by_id(project_id)?
-            .ok_or_else(|| StateError::ProjectNotFound {
-                target: project_id.to_string(),
-            })?;
-
-    match reconcile_loaded_project(
-        paths,
-        database,
-        &project,
-        Some(catalog),
-        None,
-        &BTreeSet::new(),
-        DaemonDownloadProgress::disabled(),
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteApply),
-    )
-    .await
-    {
-        Ok(summary) => Ok(summary),
-        Err(error) => {
-            let message = error.to_string();
-            record_project_env_failure(database, &project.id, &message)?;
-
-            Err(error)
-        }
-    }
+    crate::jobs::reconcile_project_env_and_missing_resources(paths, project_id, Some(catalog)).await
 }
 
 pub(crate) fn validate_project_config_for_gateway(
@@ -538,12 +474,6 @@ fn persisted_project_demand(
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "`discovered_demand` is this Project's own resolved demand and may be absent, while \
-              `demanded_tracks` is the system-wide union every Project shares; valid callers pass \
-              `None` with a non-empty union, so neither can be derived from the other."
-)]
 async fn reconcile_loaded_project(
     paths: &PvPaths,
     database: &mut Database,
@@ -551,7 +481,6 @@ async fn reconcile_loaded_project(
     catalog: Option<&ManagedResourceRuntimeCatalog>,
     discovered_demand: Option<&ProjectDemand>,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
     options: ProjectApplyOptions<'_>,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
     let ProjectApplyOptions { stage, hooks } = options;
@@ -612,26 +541,7 @@ async fn reconcile_loaded_project(
             source: Box::new(error),
         });
     }
-    if discovered_demand.is_some()
-        && stage.may_install_artifacts()
-        && let Err(error) = install_project_resources(
-            paths,
-            catalog,
-            &plan,
-            php_track.as_deref(),
-            progress.clone(),
-        )
-        .await
-    {
-        maintain_existing_project_tls_after_config_error(
-            paths,
-            project,
-            config_file.config.uses_tls_placeholders(),
-        );
-        return Err(DaemonError::ProjectResourceInstallation {
-            source: Box::new(error),
-        });
-    }
+
     let resolved_php_runtime = match php_track
         .map(|track| {
             resolve_project_php_runtime_for_track(database, config_file.config.php.as_ref(), track)
@@ -668,42 +578,30 @@ async fn reconcile_loaded_project(
         if stage != ProjectApplyStage::RecordRequirements {
             // Fail before replacing usage when an artifact the Resources phase should have
             // installed is missing, so the runtime this apply would replace stays demanded.
-            if stage.artifact_install() == crate::managed_resources::ArtifactInstall::Forbidden {
-                ensure_planned_artifacts_installed(database, &plan, catalog).map_err(|error| {
-                    DaemonError::ProjectResourceInstallation {
-                        source: Box::new(error),
-                    }
-                })?;
-            }
+            ensure_planned_artifacts_installed(database, &plan, catalog).map_err(|error| {
+                DaemonError::ProjectResourceInstallation {
+                    source: Box::new(error),
+                }
+            })?;
             apply_project_resource_plan(database, &candidate_project.id, &plan)?;
 
-            // The Resources phase owns artifact work, so a staged apply refuses to install and
-            // an unstaged apply installs what its caller never provisioned.
             if let Some(catalog) = catalog {
-                crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
+                crate::managed_resources::reconcile_project_resources_with_catalog(
                     paths,
                     database,
                     &candidate_project,
                     &plan,
                     catalog,
                     demanded_tracks,
-                    progress,
-                    crate::managed_resources::ResourceReconciliationOptions::new(
-                        stage.artifact_install(),
-                    ),
                 )
                 .await?;
             } else {
-                crate::managed_resources::reconcile_project_resources_with_progress(
+                crate::managed_resources::reconcile_project_resources(
                     paths,
                     database,
                     &candidate_project,
                     &plan,
                     demanded_tracks,
-                    progress,
-                    crate::managed_resources::ResourceReconciliationOptions::new(
-                        stage.artifact_install(),
-                    ),
                 )
                 .await?;
             }
@@ -878,41 +776,6 @@ fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError>
         }
         Err(error) => Err(error.into()),
     }
-}
-
-async fn install_project_resources(
-    paths: &PvPaths,
-    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    plan: &ProjectResourcePlan,
-    php_track: Option<&str>,
-    progress: DaemonDownloadProgress,
-) -> Result<(), DaemonError> {
-    let production_catalog;
-    let catalog = if let Some(catalog) = runtime_catalog {
-        catalog
-    } else {
-        production_catalog = ManagedResourceRuntimeCatalog::production()?;
-        &production_catalog
-    };
-    let mut demanded_tracks = plan
-        .resources
-        .iter()
-        .map(|resource| {
-            DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
-        })
-        .collect::<BTreeSet<_>>();
-    if let Some(track) = php_track {
-        demanded_tracks.insert(DemandedResourceTrack::new("php", track));
-        demanded_tracks.insert(DemandedResourceTrack::new("frankenphp", track));
-    }
-
-    crate::managed_resources::install_missing_resource_demands_with_catalog_and_progress(
-        paths,
-        catalog,
-        &demanded_tracks,
-        progress,
-    )
-    .await
 }
 
 fn maybe_resolve_project_php_track(

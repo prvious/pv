@@ -361,70 +361,34 @@ impl ManagedResourceRuntimeCatalog {
     }
 }
 
-/// Whether reconciling a Project's resources may install a missing artifact, or must treat it
-/// as a failure because an earlier Resources phase was responsible for installing it.
-///
-/// Only direct test helpers apply without a preceding Resources phase, so
-/// [`ArtifactInstall::Allowed`] is constructed solely by those test-only callers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum ArtifactInstall {
-    #[cfg(test)]
-    Allowed,
-    Forbidden,
-}
-
-#[derive(Clone, Copy)]
-pub(crate) struct ResourceReconciliationOptions {
-    artifact_install: ArtifactInstall,
-}
-
-impl ResourceReconciliationOptions {
-    pub(crate) fn new(artifact_install: ArtifactInstall) -> Self {
-        Self { artifact_install }
-    }
-}
-
-pub(crate) async fn reconcile_project_resources_with_progress(
+pub(crate) async fn reconcile_project_resources(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
-    options: ResourceReconciliationOptions,
 ) -> Result<(), DaemonError> {
     let catalog = ManagedResourceRuntimeCatalog::production()?;
 
-    reconcile_project_resources_with_catalog_and_progress(
+    reconcile_project_resources_with_catalog(
         paths,
         database,
         project,
         plan,
         &catalog,
         demanded_tracks,
-        progress,
-        options,
     )
     .await
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "`demanded_tracks` is the system-wide union that decides which runtimes stay, while \
-              `artifact_install` is this stage's install permission. Neither is derivable from the \
-              Project's own plan, so bundling them would hide two independent inputs."
-)]
-pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
+pub(crate) async fn reconcile_project_resources_with_catalog(
     paths: &PvPaths,
     database: &mut Database,
     project: &ProjectRecord,
     plan: &crate::project_env::ProjectResourcePlan,
     catalog: &ManagedResourceRuntimeCatalog,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
-    options: ResourceReconciliationOptions,
 ) -> Result<(), DaemonError> {
-    let ResourceReconciliationOptions { artifact_install } = options;
     let supervisor = ProcessSupervisor::new(paths.clone());
     let mut demanded_tracks = demanded_tracks.clone();
     demanded_tracks.extend(plan.resources.iter().map(|resource| {
@@ -433,16 +397,9 @@ pub(crate) async fn reconcile_project_resources_with_catalog_and_progress(
 
     stop_undemanded_catalog_runtimes(paths, database, catalog, &supervisor, &demanded_tracks)
         .await?;
-    let install_requests = missing_project_install_requests(database, plan, catalog);
-    let mut prefetched_installs =
-        prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
-            .await?;
     let mut context = ResourceTrackReconciliationContext {
         catalog,
         supervisor: &supervisor,
-        progress: &progress,
-        prefetched_installs: &mut prefetched_installs,
-        artifact_install,
     };
 
     reconcile_resource_tracks(paths, database, &mut context, project, plan).await
@@ -541,20 +498,9 @@ pub(crate) async fn reconcile_persisted_resource_track_for_projects_with_progres
             resource_name: resource_name.to_owned(),
             track: track.to_owned(),
         };
-        let plan = crate::project_env::ProjectResourcePlan {
-            resources: vec![resource.clone()],
-            allocations: BTreeMap::new(),
-        };
-        let install_requests = missing_project_install_requests(&database, &plan, catalog);
-        let mut prefetched_installs =
-            prefetch_missing_project_installs(paths, catalog, install_requests, progress.clone())
-                .await?;
         let mut context = ResourceTrackReconciliationContext {
             catalog,
             supervisor: &supervisor,
-            progress: &progress,
-            prefetched_installs: &mut prefetched_installs,
-            artifact_install: ArtifactInstall::Forbidden,
         };
 
         reconcile_resource_track(paths, &mut database, &mut context, &resource, &[]).await?;
@@ -868,27 +814,6 @@ pub(crate) async fn reconcile_system_resources_with_catalog_and_progress(
     .await
 }
 
-pub(crate) async fn install_missing_resource_demands_with_catalog_and_progress(
-    paths: &PvPaths,
-    catalog: &ManagedResourceRuntimeCatalog,
-    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
-) -> Result<(), DaemonError> {
-    let installs = {
-        let database = Database::open(paths)?;
-        missing_resource_installs(&database, catalog, demanded_tracks)?
-    };
-
-    install_missing_desired_resource_tracks(
-        paths,
-        catalog.install_options.clone(),
-        catalog.http_client.clone(),
-        installs,
-        progress,
-    )
-    .await
-}
-
 pub(crate) fn verify_system_resource_installations(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -1024,14 +949,9 @@ async fn clean_up_track(
         }
         .into());
     };
-    let progress = DaemonDownloadProgress::disabled();
-    let mut prefetched_installs = BTreeMap::new();
     let mut reconciliation = ResourceTrackReconciliationContext {
         catalog,
         supervisor,
-        progress: &progress,
-        prefetched_installs: &mut prefetched_installs,
-        artifact_install: ArtifactInstall::Forbidden,
     };
     reconcile_resource_track(paths, database, &mut reconciliation, resource, &[]).await?;
     let context = persisted_resource_runtime_context(paths, database, adapter, resource)?;
@@ -1709,38 +1629,9 @@ fn resolved_download_failures(
 struct ResourceTrackReconciliationContext<'context> {
     catalog: &'context ManagedResourceRuntimeCatalog,
     supervisor: &'context ProcessSupervisor,
-    progress: &'context DaemonDownloadProgress,
-    prefetched_installs: &'context mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
-    artifact_install: ArtifactInstall,
 }
 
 type ProjectTrackKey = (String, String);
-
-enum PrefetchedProjectInstall {
-    Ready {
-        adapter: resources::RuntimeArtifactAdapter,
-        resolved: Box<resources::ManagedResourceInstallArtifact>,
-        download: Option<resources::ArtifactDownload>,
-    },
-    Failed(DaemonError),
-}
-
-struct ResolvedProjectInstall {
-    key: ProjectTrackKey,
-    adapter: resources::RuntimeArtifactAdapter,
-    resolved: resources::ManagedResourceInstallArtifact,
-}
-
-enum ProjectInstallRequest {
-    Resolve {
-        key: ProjectTrackKey,
-        adapter: resources::RuntimeArtifactAdapter,
-    },
-    Failed {
-        key: ProjectTrackKey,
-        error: DaemonError,
-    },
-}
 
 async fn reconcile_resource_track(
     paths: &PvPaths,
@@ -1908,15 +1799,14 @@ async fn prepare_resource_track(
             resource: resource.resource_name.clone(),
         });
     };
-    let track_record = ensure_track_artifact(
-        paths,
-        database,
-        resource,
-        reconciliation.progress,
-        reconciliation.prefetched_installs,
-        reconciliation.artifact_install,
-    )
-    .await?;
+    // The Resources phase installs every artifact, so a missing one here is a failure.
+    let Some(track_record) = installed_track(database, &resource.resource_name, &resource.track)?
+    else {
+        return Err(DaemonError::ManagedResourceArtifactMissing {
+            resource: resource.resource_name.clone(),
+            track: resource.track.clone(),
+        });
+    };
     let Some(artifact_path) = track_record.current_artifact_path else {
         return Err(DaemonError::ManagedResourceArtifactMissing {
             resource: resource.resource_name.clone(),
@@ -2078,52 +1968,6 @@ fn unsupported_resource_has_seeded_env_context(
     Ok(has_context)
 }
 
-fn missing_project_install_requests(
-    database: &Database,
-    plan: &crate::project_env::ProjectResourcePlan,
-    catalog: &ManagedResourceRuntimeCatalog,
-) -> Vec<ProjectInstallRequest> {
-    let mut requests = Vec::new();
-    for resource in &plan.resources {
-        let key = (resource.resource_name.clone(), resource.track.clone());
-        match installed_track(database, &resource.resource_name, &resource.track) {
-            Ok(Some(_installed)) => continue,
-            Ok(None) => {}
-            Err(error) => {
-                requests.push(ProjectInstallRequest::Failed { key, error });
-                continue;
-            }
-        }
-        let Some(adapter) = catalog.adapter(&resource.resource_name) else {
-            match unsupported_resource_has_seeded_env_context(database, resource) {
-                Ok(true) => continue,
-                Ok(false) => {
-                    requests.push(ProjectInstallRequest::Failed {
-                        key,
-                        error: DaemonError::UnsupportedManagedResourceRuntime {
-                            resource: resource.resource_name.clone(),
-                        },
-                    });
-                    continue;
-                }
-                Err(error) => {
-                    requests.push(ProjectInstallRequest::Failed { key, error });
-                    continue;
-                }
-            }
-        };
-        match adapter.artifact_adapter() {
-            Ok(adapter) => requests.push(ProjectInstallRequest::Resolve { key, adapter }),
-            Err(error) => {
-                requests.push(ProjectInstallRequest::Failed { key, error });
-                continue;
-            }
-        }
-    }
-
-    requests
-}
-
 fn combined_project_resource_error(
     mut failures: Vec<ManagedResourceProjectFailure>,
 ) -> DaemonError {
@@ -2132,208 +1976,6 @@ fn combined_project_resource_error(
     }
 
     DaemonError::ManagedResourceProjectFailures { failures }
-}
-
-async fn prefetch_missing_project_installs(
-    paths: &PvPaths,
-    catalog: &ManagedResourceRuntimeCatalog,
-    requests: Vec<ProjectInstallRequest>,
-    progress: DaemonDownloadProgress,
-) -> Result<BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>, DaemonError> {
-    if requests.is_empty() {
-        return Ok(BTreeMap::new());
-    }
-
-    let install_paths = paths.clone();
-    let install_options = catalog.install_options.clone();
-    let http_client = catalog.http_client.clone();
-    tokio::task::spawn_blocking(move || {
-        prefetch_missing_project_installs_blocking(
-            install_paths,
-            install_options,
-            http_client,
-            requests,
-            progress,
-        )
-    })
-    .await?
-}
-
-fn prefetch_missing_project_installs_blocking(
-    paths: PvPaths,
-    install_options: ManagedResourceInstallOptions,
-    http_client: Option<Arc<dyn resources::ResourceHttpClient + Send + Sync>>,
-    requests: Vec<ProjectInstallRequest>,
-    progress: DaemonDownloadProgress,
-) -> Result<BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>, DaemonError> {
-    let downloads_dir = paths.downloads().to_path_buf();
-    let commands = ManagedResourceCommands::new(
-        paths,
-        install_options.manifest_url,
-        install_options.target_platform,
-    );
-    let default_client = resources::UreqResourceHttpClient::default();
-    let client: &(dyn resources::ResourceHttpClient + Send + Sync) =
-        http_client.as_deref().unwrap_or(&default_client);
-    let mut prefetched = BTreeMap::new();
-    let mut resolve_requests = Vec::new();
-    for request in requests {
-        match request {
-            ProjectInstallRequest::Resolve { key, adapter } => {
-                resolve_requests.push((key, adapter));
-            }
-            ProjectInstallRequest::Failed { key, error } => {
-                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
-            }
-        }
-    }
-    if resolve_requests.is_empty() {
-        return Ok(prefetched);
-    }
-    let mut resolved_installs = Vec::new();
-    for (key, adapter) in resolve_requests {
-        let manifest_snapshot = match progress.manifest_snapshot(&commands, client) {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
-                continue;
-            }
-        };
-        let (resource_name, track) = (&key.0, &key.1);
-        if adapter.resource_name().as_str() != resource_name {
-            let reason = format!(
-                "runtime adapter resolved `{}` while reconciling `{resource_name}`",
-                adapter.resource_name()
-            );
-            prefetched.insert(
-                key,
-                PrefetchedProjectInstall::Failed(DaemonError::UnexpectedProtocolResponse {
-                    reason,
-                }),
-            );
-            continue;
-        }
-        let resolved = match TrackName::new(track)
-            .map_err(DaemonError::from)
-            .and_then(|track| {
-                commands
-                    .resolve_install_artifact(&adapter, track, &manifest_snapshot)
-                    .map_err(Into::into)
-            }) {
-            Ok(resolved) => resolved,
-            Err(error) => {
-                prefetched.insert(key, PrefetchedProjectInstall::Failed(error));
-                continue;
-            }
-        };
-        resolved_installs.push(ResolvedProjectInstall {
-            key,
-            adapter,
-            resolved,
-        });
-    }
-
-    let mut artifacts = BTreeMap::new();
-    for install in &resolved_installs {
-        insert_required_artifact(&mut artifacts, &install.resolved);
-    }
-    let downloads = prefetch_artifacts(&downloads_dir, client, artifacts, &progress);
-    for install in resolved_installs {
-        let download = if install.resolved.download_required() {
-            downloads
-                .get(&artifact_download_key(install.resolved.artifact()))
-                .cloned()
-                .unwrap_or_else(|| {
-                    Err(resources::ResourcesError::MissingArtifactDownload {
-                        resource: install
-                            .resolved
-                            .artifact()
-                            .resource_name()
-                            .as_str()
-                            .to_string(),
-                        artifact_version: install
-                            .resolved
-                            .artifact()
-                            .artifact_version()
-                            .as_str()
-                            .to_string(),
-                    })
-                })
-                .map(Some)
-        } else {
-            Ok(None)
-        };
-        let prefetched_install = match download {
-            Ok(download) => PrefetchedProjectInstall::Ready {
-                adapter: install.adapter,
-                resolved: Box::new(install.resolved),
-                download,
-            },
-            Err(error) => PrefetchedProjectInstall::Failed(
-                resources::ManagedResourceCommandError::from(error).into(),
-            ),
-        };
-        prefetched.insert(install.key, prefetched_install);
-    }
-
-    Ok(prefetched)
-}
-
-async fn ensure_track_artifact(
-    paths: &PvPaths,
-    database: &mut Database,
-    resource: &state::ProjectManagedResourceInput,
-    progress: &DaemonDownloadProgress,
-    prefetched_installs: &mut BTreeMap<ProjectTrackKey, PrefetchedProjectInstall>,
-    artifact_install: ArtifactInstall,
-) -> Result<ManagedResourceTrackRecord, DaemonError> {
-    if let Some(record) = installed_track(database, &resource.resource_name, &resource.track)? {
-        return Ok(record);
-    }
-    if artifact_install == ArtifactInstall::Forbidden {
-        return Err(DaemonError::ManagedResourceArtifactMissing {
-            resource: resource.resource_name.clone(),
-            track: resource.track.clone(),
-        });
-    }
-
-    let install_paths = paths.clone();
-    let progress = progress.clone();
-    let key = (resource.resource_name.clone(), resource.track.clone());
-    let prefetched = prefetched_installs.remove(&key).ok_or_else(|| {
-        DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "missing prefetched install for {} track {}",
-                resource.resource_name, resource.track
-            ),
-        }
-    })?;
-    let (artifact_adapter, resolved, download) = match prefetched {
-        PrefetchedProjectInstall::Ready {
-            adapter,
-            resolved,
-            download,
-        } => (adapter, *resolved, download),
-        PrefetchedProjectInstall::Failed(error) => return Err(error),
-    };
-
-    tokio::task::spawn_blocking(move || {
-        install_prefetched_project_track_blocking(
-            install_paths,
-            artifact_adapter,
-            resolved,
-            download,
-            progress,
-        )
-    })
-    .await??;
-
-    installed_track(database, &resource.resource_name, &resource.track)?.ok_or_else(|| {
-        DaemonError::ManagedResourceArtifactMissing {
-            resource: resource.resource_name.clone(),
-            track: resource.track.clone(),
-        }
-    })
 }
 
 pub(crate) fn installed_track(
@@ -2376,28 +2018,6 @@ pub(crate) fn ensure_installed_php_pair(
             });
         }
     }
-
-    Ok(())
-}
-
-fn install_prefetched_project_track_blocking(
-    paths: PvPaths,
-    adapter: resources::RuntimeArtifactAdapter,
-    resolved: resources::ManagedResourceInstallArtifact,
-    download: Option<resources::ArtifactDownload>,
-    progress: DaemonDownloadProgress,
-) -> Result<(), DaemonError> {
-    let commands = ManagedResourceCommands::new(
-        paths,
-        resources::default_artifact_manifest_url(),
-        resolved.target_platform(),
-    );
-    commands.install_resolved_artifact_with_progress(
-        &adapter,
-        resolved,
-        download.as_ref(),
-        &progress,
-    )?;
 
     Ok(())
 }
@@ -2782,20 +2402,6 @@ pub(crate) fn fake_unready_runtime_catalog(
             target_platform: resources::TargetPlatform::current()?,
         },
         fake::FakeMailpitRuntimeAdapter::unready()?,
-    ))
-}
-
-#[cfg(test)]
-#[doc(hidden)]
-pub(crate) fn mailpit_runtime_catalog(
-    manifest_url: &str,
-) -> Result<ManagedResourceRuntimeCatalog, DaemonError> {
-    Ok(ManagedResourceRuntimeCatalog::with_adapter(
-        ManagedResourceInstallOptions {
-            manifest_url: manifest_url.to_string(),
-            target_platform: resources::TargetPlatform::current()?,
-        },
-        mailpit::MailpitRuntimeAdapter::new(),
     ))
 }
 

@@ -16,7 +16,7 @@ expression: snapshot
             "<tempdir>/home/.pv/resources/mailpit/1.0/releases/1.0.0-pv1",
         ),
         env: {},
-        usage_count: 1,
+        usage_count: 0,
         removal_prune: false,
         removal_force: true,
         updated_at: "<timestamp>",
@@ -41,28 +41,6 @@ expression: snapshot
             updated_at: "<timestamp>",
         },
     ],
-    [
-        RuntimeObservedStateRecord {
-            subject: Resource {
-                name: "mailpit",
-                track: "1.0",
-            },
-            status: Failed,
-            message: Some(
-                "Managed Resource runtime `mailpit` track `1.0` is marked removed",
-            ),
-            observed_at: "<timestamp>",
-        },
-    ],
-    Some(
-        ProjectEnvObservedStateRecord {
-            project_id: "<project_id>",
-            status: Failed,
-            message: Some(
-                "Managed Resource runtime `mailpit` track `1.0` is marked removed",
-            ),
-            observed_at: "<timestamp>",
-            warnings: [],
-        },
-    ),
+    [],
+    None,
 )

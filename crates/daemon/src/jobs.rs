@@ -19,7 +19,7 @@ use crate::managed_resources::{
 };
 use crate::project_env::{
     DemandedResourceTrack, ProjectApplyOptions, ProjectApplyStage, ProjectDemand,
-    discover_project_demand, reconcile_project_env_with_runtime_catalog_and_progress,
+    discover_project_demand, reconcile_project_env_with_runtime_catalog,
     record_project_env_failure,
 };
 use crate::reconciliation::{
@@ -1857,12 +1857,11 @@ async fn complete_managed_resource_reconciliation_with_options(
     }
 
     let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let record_result = reconcile_system_projects_with_progress(
+    let record_result = reconcile_system_projects(
         paths,
         runtime_catalog,
         &BTreeSet::new(),
         &BTreeMap::new(),
-        &progress,
         ProjectApplyStage::RecordRequirements,
         &linked_projects(paths)?,
         &skip_projects,
@@ -1906,12 +1905,11 @@ async fn complete_managed_resource_reconciliation_with_options(
     // The staged apply covers established dependents only: Projects that never
     // demanded this track have no persisted state for it, and recording their
     // requirements above must not pull them into this scope's apply.
-    let project_result = reconcile_system_projects_with_progress(
+    let project_result = reconcile_system_projects(
         paths,
         runtime_catalog,
         &BTreeSet::new(),
         &BTreeMap::new(),
-        &progress,
         ProjectApplyStage::CompleteStagedApply,
         &dependent_projects,
         &skip_projects,
@@ -2360,12 +2358,11 @@ async fn complete_system_reconciliation_with_progress(
     }
     let projects = linked_projects(paths)?;
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let project_result = reconcile_system_projects_with_progress(
+    let project_result = reconcile_system_projects(
         paths,
         runtime_catalog,
         &resource_tracks,
         &project_demands,
-        &progress,
         ProjectApplyStage::CompleteStagedApply,
         &projects,
         &BTreeSet::new(),
@@ -2594,7 +2591,7 @@ fn usize_as_u64(value: usize) -> u64 {
 }
 
 #[cfg(test)]
-async fn reconcile_project_env_and_missing_resources(
+pub(crate) async fn reconcile_project_env_and_missing_resources(
     paths: &PvPaths,
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -2624,13 +2621,12 @@ async fn reconcile_project_env_and_missing_resources_with_progress(
     hooks: Option<&DaemonHooks>,
 ) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
     let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
-    let record_result = reconcile_project_env_with_runtime_catalog_and_progress(
+    let record_result = reconcile_project_env_with_runtime_catalog(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
-        progress.clone(),
         ProjectApplyOptions::new(ProjectApplyStage::RecordRequirements),
     )
     .await;
@@ -2664,13 +2660,12 @@ async fn reconcile_project_env_and_missing_resources_with_progress(
     let deferred_resources_error = resources_result?.deferred_error;
 
     let apply_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
-    let apply_result = reconcile_project_env_with_runtime_catalog_and_progress(
+    let apply_result = reconcile_project_env_with_runtime_catalog(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
-        progress,
         ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply).with_hooks(hooks),
     )
     .await;
@@ -2806,12 +2801,11 @@ impl SystemProjectReconciliationReport {
               `skip_project_ids` carries established-demand failures that must be reported \
               without being re-applied; neither is derivable from the other."
 )]
-async fn reconcile_system_projects_with_progress(
+async fn reconcile_system_projects(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     project_demands: &BTreeMap<String, ProjectDemand>,
-    progress: &DaemonDownloadProgress,
     stage: ProjectApplyStage,
     projects: &[ProjectRecord],
     skip_project_ids: &BTreeSet<String>,
@@ -2828,13 +2822,12 @@ async fn reconcile_system_projects_with_progress(
         if skip_project_ids.contains(&project.id) {
             continue;
         }
-        match reconcile_project_env_with_runtime_catalog_and_progress(
+        match reconcile_project_env_with_runtime_catalog(
             paths,
             &project.id,
             runtime_catalog,
             Some(project_demands.get(&project.id).unwrap_or(&empty_demand)),
             demanded_tracks,
-            progress.clone(),
             ProjectApplyOptions::new(stage).with_hooks(hooks),
         )
         .await
@@ -2881,104 +2874,6 @@ fn discover_late_system_project_demand(
     }
 
     Ok(has_late_resource_demand)
-}
-
-#[cfg(test)]
-async fn reconcile_system_projects_and_resources_with_progress(
-    paths: &PvPaths,
-    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    progress: DaemonDownloadProgress,
-    phase_log: &ReconciliationPhaseLog,
-) -> Result<SystemProjectReconciliationReport, DaemonError> {
-    let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
-    let discovery_result = discover_system_project_demand(paths);
-    finish_demand_discovery_phase(discovery_timer, &discovery_result);
-    let SystemProjectDemandReport {
-        mut resource_tracks,
-        mut project_demands,
-        ..
-    } = discovery_result?;
-
-    let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
-    let mut resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
-        paths,
-        runtime_catalog,
-        &resource_tracks,
-        progress.clone(),
-    )
-    .await;
-    resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    // Retry the install once before applying the Projects, for the same reason as the logged
-    // flow: no Project Apply downloads, so a later retry could not recover this apply.
-    if resources_result.is_err() {
-        let retry_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
-        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
-            paths,
-            runtime_catalog,
-            &resource_tracks,
-            progress.retrying_manifest_snapshot(),
-        )
-        .await;
-        retry_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    }
-    let has_late_resource_demand =
-        discover_late_system_project_demand(paths, &mut resource_tracks, &mut project_demands)?;
-    if has_late_resource_demand {
-        let late_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
-        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
-            paths,
-            runtime_catalog,
-            &resource_tracks,
-            progress.clone(),
-        )
-        .await;
-        late_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    }
-    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let project_result = reconcile_system_projects_with_progress(
-        paths,
-        runtime_catalog,
-        &resource_tracks,
-        &project_demands,
-        &progress,
-        ProjectApplyStage::CompleteStagedApply,
-        &linked_projects(paths)?,
-        &BTreeSet::new(),
-        None,
-    )
-    .await;
-    finish_project_phase(project_timer, &project_result);
-    let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
-    if resources_result.is_err()
-        || project_result
-            .as_ref()
-            .is_ok_and(|report| !report.failures.is_empty())
-    {
-        resources_result = verify_system_resources_after_project_application(
-            paths,
-            runtime_catalog,
-            project_result.as_ref().ok(),
-            &progress,
-        );
-    }
-
-    match (resources_result, project_result, cleanup_result) {
-        (Ok(()), Ok(report), Ok(())) => Ok(report),
-        (resources_result, project_result, cleanup_result) => {
-            let project_failures = match project_result {
-                Ok(report) => report.failures,
-                Err(error) => vec![error],
-            };
-            Err(combined_system_reconciliation_error(
-                resources_result
-                    .err()
-                    .into_iter()
-                    .chain(project_failures)
-                    .chain(cleanup_result.err())
-                    .collect(),
-            ))
-        }
-    }
 }
 
 fn verify_system_resources_after_project_application(
@@ -3403,17 +3298,14 @@ mod tests {
         enqueue_foreground_reconciliation_job, enqueue_reconciliation_job,
         enqueue_startup_reconciliation_job, enqueue_update_job, foreground_reconciliation_result,
         linked_projects, managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
-        reconcile_project_env_and_missing_resources,
-        reconcile_project_env_with_runtime_catalog_and_progress,
-        reconcile_system_projects_and_resources_with_progress,
-        reconcile_system_projects_with_progress,
-        reconcile_system_resources_with_runtime_catalog_and_progress,
+        reconcile_project_env_and_missing_resources, reconcile_project_env_with_runtime_catalog,
+        reconcile_system_projects, reconcile_system_resources_with_runtime_catalog_and_progress,
         record_background_reconciliation_error, run_background_reconciliation_job,
         run_startup_reconciliation_job, start_reconciliation_job, start_update_job,
         stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
-        stream_started_update_job, system_project_summary, unready_established_resource_projects,
-        wait_for_foreground_turn, wait_for_startup_reconciliation_turn,
-        write_coalesced_update_response, write_foreground_terminal_event,
+        stream_started_update_job, unready_established_resource_projects, wait_for_foreground_turn,
+        wait_for_startup_reconciliation_turn, write_coalesced_update_response,
+        write_foreground_terminal_event,
     };
     use crate::project_env::{ProjectApplyOptions, ProjectApplyStage};
     use crate::reconciliation::{
@@ -5371,22 +5263,13 @@ mod tests {
     async fn system_reconciliation_verifies_php_for_project_linked_after_discovery()
     -> anyhow::Result<()> {
         let mut mixed_errors = Vec::new();
-        for (update_path, fail_install, fail_env) in [
-            (true, false, false),
-            (false, false, false),
-            (true, true, false),
-            (false, true, false),
-            (true, true, true),
-            (false, true, true),
-        ] {
+        for (fail_install, fail_env) in [(false, false), (true, false), (true, true)] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
             let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-            if !update_path {
-                seed_gateway_ports(&mut Database::open(&paths)?)?;
-                seed_local_ca(&paths)?;
-            }
+            seed_gateway_ports(&mut Database::open(&paths)?)?;
+            seed_local_ca(&paths)?;
             if fail_install {
                 let sha256 = sha256_file(&tempdir.path().join(PHP_TEST_ARCHIVE_FILE_NAME))?;
                 state::fs::remove_file(
@@ -5449,7 +5332,7 @@ mod tests {
                     .all(|project| project.path != project_path)
             );
 
-            let job_id = if !update_path && fail_env {
+            let job_id = if fail_env {
                 start_reconciliation_job(&paths, "system")?
             } else {
                 "system-late-project-test".to_owned()
@@ -5462,21 +5345,7 @@ mod tests {
             );
             let progress = super::DaemonDownloadProgress::disabled();
             let mut streamed_error = None;
-            let result = if update_path {
-                reconcile_system_projects_and_resources_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                )
-                .await
-                .map(|report| {
-                    if !fail_install {
-                        assert_eq!((report.total, report.succeeded), (1, 1));
-                        assert!(report.failures.is_empty());
-                    }
-                })
-            } else if fail_env {
+            let result = if fail_env {
                 let (client, daemon) = duplex(64 * 1024);
                 stream_started_reconciliation_job(
                     paths.clone(),
@@ -5528,28 +5397,26 @@ mod tests {
                 .into_iter()
                 .find(|project| project.path == project_path)
                 .ok_or_else(|| anyhow::anyhow!("expected late Project"))?;
-            if !update_path {
-                let phases = reconciliation_phase_events(&paths, &job_id)?;
-                let expected = if fail_install {
-                    [
-                        "resources/desired_resources/succeeded",
-                        "resources/desired_resources/failed",
-                        "project_apply/linked_projects/failed",
-                    ]
-                } else {
-                    [
-                        "resources/desired_resources/succeeded",
-                        "resources/desired_resources/succeeded",
-                        "project_apply/linked_projects/succeeded",
-                    ]
-                };
-                assert_eq!(
-                    project_resource_phases(&phases, &project.id),
-                    expected,
-                    "phases were {:?}",
-                    job_phase_outcomes(&phases)
-                );
-            }
+            let phases = reconciliation_phase_events(&paths, &job_id)?;
+            let expected = if fail_install {
+                [
+                    "resources/desired_resources/succeeded",
+                    "resources/desired_resources/failed",
+                    "project_apply/linked_projects/failed",
+                ]
+            } else {
+                [
+                    "resources/desired_resources/succeeded",
+                    "resources/desired_resources/succeeded",
+                    "project_apply/linked_projects/succeeded",
+                ]
+            };
+            assert_eq!(
+                project_resource_phases(&phases, &project.id),
+                expected,
+                "phases were {:?}",
+                job_phase_outcomes(&phases)
+            );
             if fail_install {
                 if let Some(env_project) = env_project {
                     let message = if let Some(message) = streamed_error {
@@ -5595,7 +5462,7 @@ mod tests {
                         ));
                         error.to_string()
                     };
-                    mixed_errors.push((update_path, message));
+                    mixed_errors.push(message);
                     assert_eq!(
                         state::fs::read_to_string(&env_project.path.join(".env"))?,
                         malformed_env
@@ -5656,17 +5523,19 @@ mod tests {
                     Some(ProjectEnvObservedStatus::Failed)
                 );
                 assert!(!state::fs::path_exists(&project_path.join(".env")));
-                if !update_path {
-                    let phases = reconciliation_phase_events(&paths, &job_id)?;
-                    assert!(
-                        phases.iter().any(|phase| phase["phase"] == "resources"
+                let phases = reconciliation_phase_events(&paths, &job_id)?;
+                assert!(
+                    phases
+                        .iter()
+                        .any(|phase| phase["phase"] == "resources"
                             && phase["outcome"] == "succeeded")
-                    );
-                    assert!(
-                        phases.iter().any(|phase| phase["phase"] == "project_apply"
+                );
+                assert!(
+                    phases
+                        .iter()
+                        .any(|phase| phase["phase"] == "project_apply"
                             && phase["outcome"] == "failed")
-                    );
-                }
+                );
                 caddy_guard.cleanup().await?;
                 continue;
             }
@@ -5698,67 +5567,9 @@ mod tests {
         }
         assert_debug_snapshot!(mixed_errors, @r#"
         [
-            (
-                true,
-                "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
-            ),
-            (
-                false,
-                "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
-            ),
+            "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
         ]
         "#);
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn system_reconciliation_retains_partial_project_env_failure() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths)?;
-        let project_path = tempdir.path().join("project");
-        let config_path = project_path.join("pv.yml");
-        state::fs::write_sensitive_file(&config_path, "serve: false\nenv:\n  APP_NAME: project\n")?;
-        let env_path = project_path.join(".env");
-        let env_before = "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_NAME=old\n";
-        state::fs::write_sensitive_file(&env_path, env_before)?;
-        let linked = Database::open(&paths)?.link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path,
-            primary_hostname: "project.test".to_owned(),
-            config_path,
-            desired_php_track: None,
-        })?;
-        let catalog = crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
-
-        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
-            &paths,
-            "system-partial-project-env-test",
-            "reconcile",
-            "system",
-        );
-
-        let report = reconcile_system_projects_and_resources_with_progress(
-            &paths,
-            Some(&catalog),
-            super::DaemonDownloadProgress::disabled(),
-            &phase_log,
-        )
-        .await?;
-
-        assert_eq!((report.total, report.succeeded), (1, 0));
-        assert_debug_snapshot!(system_project_summary(&report), @r#"
-        Some(
-            "Project env reconciled for 0 of 1 Projects; failures: project.test: Project config error: malformed PV-managed .env block: start marker without end marker",
-        )
-        "#);
-        assert_eq!(state::fs::read_to_string(&env_path)?, env_before);
-        assert_eq!(
-            Database::open(&paths)?
-                .project_env_observed_state(&linked.project.id)?
-                .map(|state| state.status),
-            Some(ProjectEnvObservedStatus::Failed)
-        );
         Ok(())
     }
 
@@ -6109,16 +5920,8 @@ mod tests {
         }
         let smtp_address = SocketAddr::from((Ipv4Addr::LOCALHOST, smtp_port));
         drop(database);
-        reconcile_project_env_with_runtime_catalog_and_progress(
-            &paths,
-            &linked.project.id,
-            Some(&catalog),
-            None,
-            &BTreeSet::new(),
-            super::DaemonDownloadProgress::disabled(),
-            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply),
-        )
-        .await?;
+        reconcile_project_env_and_missing_resources(&paths, &linked.project.id, Some(&catalog))
+            .await?;
         let verification = async {
             let previous_env = state::fs::read_to_string(&project_path.join(".env"))?;
             let previous_metadata = state::fs::read_to_string(
@@ -6261,7 +6064,7 @@ mod tests {
     #[tokio::test]
     async fn system_reconciliation_recovers_initial_artifact_download_failure() -> anyhow::Result<()>
     {
-        for (update_path, download_failures) in [(false, 1), (true, 1), (false, 2), (true, 2)] {
+        for download_failures in [1, 2] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
@@ -6307,47 +6110,32 @@ mod tests {
                 "system",
             );
             let progress = super::DaemonDownloadProgress::disabled();
-            let result = if update_path {
-                reconcile_system_projects_and_resources_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                )
-                .await
-                .map(|report| {
-                    assert!(report.failures.is_empty());
-                    assert_eq!(report.succeeded, 1);
-                })
-            } else {
-                let result = complete_system_reconciliation_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                    ReconciliationJobOptions::default(),
-                    None,
-                )
-                .await
-                .map(|_| ());
-                if download_failures == 1 {
-                    // The retry is a second timed Resources phase that runs before Project Apply,
-                    // and it suppresses nested operation records so artifact work is counted only
-                    // by its owning phase.
-                    let events = reconciliation_phase_events(&paths, job_id)?;
-                    assert_eq!(
-                        project_resource_phases(&events, &linked.project.id),
-                        [
-                            "resources/desired_resources/failed",
-                            "resources/desired_resources/succeeded",
-                            "project_apply/linked_projects/succeeded",
-                        ],
-                        "phases were {:?}",
-                        job_phase_outcomes(&events)
-                    );
-                }
-                result
-            };
+            let result = complete_system_reconciliation_with_progress(
+                &paths,
+                Some(&catalog),
+                progress,
+                &phase_log,
+                ReconciliationJobOptions::default(),
+                None,
+            )
+            .await
+            .map(|_| ());
+            if download_failures == 1 {
+                // The retry is a second timed Resources phase that runs before Project Apply,
+                // and it suppresses nested operation records so artifact work is counted only
+                // by its owning phase.
+                let events = reconciliation_phase_events(&paths, job_id)?;
+                assert_eq!(
+                    project_resource_phases(&events, &linked.project.id),
+                    [
+                        "resources/desired_resources/failed",
+                        "resources/desired_resources/succeeded",
+                        "project_apply/linked_projects/succeeded",
+                    ],
+                    "phases were {:?}",
+                    job_phase_outcomes(&events)
+                );
+            }
             assert_eq!(download_attempts.load(Ordering::SeqCst), 2);
             assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
             let database = Database::open(&paths)?;
@@ -6428,54 +6216,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_reconciliation_retains_artifact_layout_failure() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let (client, _) = scripted_artifact_client(
-            tempdir.path(),
-            "caddy",
-            CADDY_TEST_TRACK,
-            CADDY_TEST_ARTIFACT_VERSION,
-            CADDY_TEST_ARCHIVE_FILE_NAME,
-            "bin/not-caddy",
-        )?;
-        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(OFFLINE_TEST_MANIFEST_URL, client)?;
-
-        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
-            &paths,
-            "system-artifact-layout-test",
-            "reconcile",
-            "system",
-        );
-
-        let result = reconcile_system_projects_and_resources_with_progress(
-            &paths,
-            Some(&catalog),
-            super::DaemonDownloadProgress::disabled(),
-            &phase_log,
-        )
-        .await;
-
-        let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
-            anyhow::bail!("expected invalid Caddy layout: {result:?}");
-        };
-        assert_debug_snapshot!(failures, @r#"
-        [
-            "caddy 2: Managed Resource command failed: invalid artifact layout for `caddy`: missing executable `bin/caddy`",
-        ]
-        "#);
-        assert!(
-            Database::open(&paths)?
-                .managed_resource_track("caddy", CADDY_TEST_TRACK)?
-                .current_artifact_path
-                .is_none()
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn system_recovery_uses_applied_project_demand() -> anyhow::Result<()> {
-        for (update_path, replacement) in [(false, false), (true, false), (false, true)] {
+        for replacement in [false, true] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_installed_caddy(&paths)?;
@@ -6527,27 +6269,16 @@ mod tests {
                 "system",
             );
             let progress = super::DaemonDownloadProgress::disabled();
-            let result = if update_path {
-                reconcile_system_projects_and_resources_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                )
-                .await
-                .map(|_| ())
-            } else {
-                complete_system_reconciliation_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                    ReconciliationJobOptions::default(),
-                    None,
-                )
-                .await
-                .map(|_| ())
-            };
+            let result = complete_system_reconciliation_with_progress(
+                &paths,
+                Some(&catalog),
+                progress,
+                &phase_log,
+                ReconciliationJobOptions::default(),
+                None,
+            )
+            .await
+            .map(|_| ());
             let database = Database::open(&paths)?;
             assert!(
                 database
@@ -6916,12 +6647,11 @@ mod tests {
             progress.clone(),
         )
         .await?;
-        let report = reconcile_system_projects_with_progress(
+        let report = reconcile_system_projects(
             &paths,
             Some(&catalog),
             &demand.resource_tracks,
             &demand.project_demands,
-            &progress,
             ProjectApplyStage::CompleteStagedApply,
             &linked_projects(&paths)?,
             &BTreeSet::new(),
@@ -7004,7 +6734,6 @@ mod tests {
                 crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
             let result = crate::project_env::reconcile_project_env_with_catalog(
                 &paths,
-                &mut database,
                 &linked.project.id,
                 &catalog,
             )
@@ -7108,12 +6837,11 @@ mod tests {
             drop(database);
             let catalog =
                 crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
-            let report = reconcile_system_projects_with_progress(
+            let report = reconcile_system_projects(
                 &paths,
                 Some(&catalog),
                 &demand.resource_tracks,
                 &demand.project_demands,
-                &super::DaemonDownloadProgress::disabled(),
                 ProjectApplyStage::CompleteStagedApply,
                 &linked_projects(&paths)?,
                 &BTreeSet::new(),
@@ -7697,13 +7425,12 @@ mod tests {
             resource_client,
         )?;
 
-        let staged = reconcile_project_env_with_runtime_catalog_and_progress(
+        let staged = reconcile_project_env_with_runtime_catalog(
             &paths,
             &linked.project.id,
             Some(&catalog),
             None,
             &BTreeSet::new(),
-            DaemonDownloadProgress::disabled(),
             ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply),
         )
         .await;
