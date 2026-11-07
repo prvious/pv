@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, LaunchAgentFileState, LocalCaMetadata, ResolverConfig, ResolverFileState,
-    TrustDomainState,
+    CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
+    ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use serde::Serialize;
 use state::{
@@ -146,8 +146,15 @@ impl StatusSnapshot {
         output.line("PV status")?;
         output.line(&format!("Overall: {}", self.overall))?;
         output.line(&format!("Daemon: {}", self.daemon.state))?;
-        output.line(&format!("  LaunchAgent: {}", self.daemon.launch_agent))?;
+        output.line(&format!(
+            "  {DAEMON_REGISTRATION_NAME}: {}",
+            self.daemon.registration
+        ))?;
         output.line(&format!("  Socket: {}", self.daemon.socket))?;
+        #[cfg(target_os = "linux")]
+        if let Some(detail) = self.daemon.registration_detail() {
+            output.line(&format!("  {detail}"))?;
+        }
         output.line("Integrations:")?;
         output.line(&format!("  DNS: {}", self.integrations.dns))?;
         let ports = &self.integrations.ports;
@@ -287,10 +294,17 @@ impl StatusSnapshot {
             output.detail(message)?;
         }
         output.detail(
-            Line::field("LaunchAgent ", self.daemon.launch_agent)
-                .text("  ·  Socket ")
-                .value(self.daemon.socket),
+            Line::field(
+                &format!("{DAEMON_REGISTRATION_NAME} "),
+                self.daemon.registration,
+            )
+            .text("  ·  Socket ")
+            .value(self.daemon.socket),
         )?;
+        #[cfg(target_os = "linux")]
+        if let Some(detail) = self.daemon.registration_detail() {
+            output.detail(detail)?;
+        }
 
         output.section("Integrations")?;
         let integration = |name: &str, state: &str| Line::from(format!("{name:5}  ")).text(state);
@@ -415,7 +429,14 @@ impl StatusSnapshot {
 #[derive(Serialize)]
 struct DaemonStatus {
     state: &'static str,
-    launch_agent: &'static str,
+    #[cfg_attr(not(target_os = "linux"), serde(rename = "launch_agent"))]
+    registration: &'static str,
+    #[cfg(target_os = "linux")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registration_runtime: Option<platform::DaemonRegistrationStatus>,
+    #[cfg(target_os = "linux")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registration_error: Option<String>,
     socket: &'static str,
     failure: bool,
     #[serde(skip)]
@@ -424,10 +445,12 @@ struct DaemonStatus {
 
 impl DaemonStatus {
     fn read(environment: &impl Environment, paths: &PvPaths) -> Result<Self, ExecuteError> {
-        let launch_agent_path = Utf8PathBuf::from_path_buf(environment.launch_agent_path())
-            .map_err(|path| crate::error::CliError::NonUtf8Path { path })?;
-        let launch_agent = platform::inspect_launch_agent_file(&launch_agent_path, None);
-        let launch_agent_status = launch_agent_status(&launch_agent);
+        let daemon_registration_path =
+            Utf8PathBuf::from_path_buf(environment.daemon_registration_path())
+                .map_err(|path| crate::error::CliError::NonUtf8Path { path })?;
+        let registration =
+            platform::inspect_daemon_registration_file(&daemon_registration_path, None);
+        let daemon_registration_file_status = daemon_registration_file_status(&registration);
         let socket_exists = state::fs::path_exists(&paths.daemon_socket());
         let socket = if !socket_exists {
             "missing"
@@ -436,28 +459,87 @@ impl DaemonStatus {
         } else {
             "unhealthy"
         };
-        let (state, mark) = match &launch_agent {
-            LaunchAgentFileState::Missing { .. } if socket == "missing" => ("disabled", Mark::Idle),
-            LaunchAgentFileState::Missing { .. } if socket == "healthy" => {
+        let (state, mark) = match &registration {
+            DaemonRegistrationFileState::Missing { .. } if socket == "missing" => {
+                ("disabled", Mark::Idle)
+            }
+            DaemonRegistrationFileState::Missing { .. } if socket == "healthy" => {
                 ("socket-only", Mark::Warning)
             }
-            LaunchAgentFileState::Missing { .. } => ("socket-stale", Mark::Failure),
-            LaunchAgentFileState::Current { .. } if socket == "healthy" => {
+            DaemonRegistrationFileState::Missing { .. } => ("socket-stale", Mark::Failure),
+            DaemonRegistrationFileState::Current { .. } if socket == "healthy" => {
                 ("running", Mark::Running)
             }
-            LaunchAgentFileState::Current { .. } => ("down", Mark::Failure),
-            LaunchAgentFileState::Stale { .. } | LaunchAgentFileState::Conflict { .. } => {
-                ("repair-required", Mark::Failure)
-            }
-            LaunchAgentFileState::Unreadable { .. } => ("unknown", Mark::Warning),
+            DaemonRegistrationFileState::Current { .. } => ("down", Mark::Failure),
+            DaemonRegistrationFileState::Stale { .. }
+            | DaemonRegistrationFileState::Conflict { .. } => ("repair-required", Mark::Failure),
+            DaemonRegistrationFileState::Unreadable { .. } => ("unknown", Mark::Warning),
+        };
+
+        #[cfg(target_os = "linux")]
+        let (registration_runtime, registration_error) =
+            match environment.inspect_daemon_registration() {
+                Ok(status) => (status, None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+        #[cfg(target_os = "linux")]
+        let registration_error = registration_error.or_else(|| {
+            registration_runtime.as_ref().and_then(|status| {
+                match platform::inspect_daemon_registration_file(&status.fragment_path, None) {
+                    DaemonRegistrationFileState::Current { .. }
+                    | DaemonRegistrationFileState::Stale { .. } => None,
+                    DaemonRegistrationFileState::Unreadable { message, .. } => Some(message),
+                    _ => Some(format!(
+                        "systemd loaded a service that is not PV-owned: {}",
+                        status.fragment_path
+                    )),
+                }
+            })
+        });
+        #[cfg(target_os = "linux")]
+        let (state, mark) = if registration_error.is_some() {
+            ("unknown", Mark::Failure)
+        } else if matches!(registration, DaemonRegistrationFileState::Current { .. })
+            && !registration_runtime.as_ref().is_some_and(|status| {
+                status.load_state == "loaded"
+                    && status.unit_file_state.as_deref() == Some("enabled")
+                    && status.active_state == "active"
+                    && status.main_pid != 0
+            })
+        {
+            ("down", Mark::Failure)
+        } else {
+            (state, mark)
         };
 
         Ok(Self {
             state,
-            launch_agent: launch_agent_status,
+            registration: daemon_registration_file_status,
+            #[cfg(target_os = "linux")]
+            registration_runtime,
+            #[cfg(target_os = "linux")]
+            registration_error,
             socket,
             failure: mark == Mark::Failure,
             mark,
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn registration_detail(&self) -> Option<String> {
+        if let Some(error) = &self.registration_error {
+            return Some(error.clone());
+        }
+        self.registration_runtime.as_ref().map(|status| {
+            format!(
+                "systemd: load={} enablement={} state={}/{} pid={} fragment={}",
+                status.load_state,
+                status.unit_file_state.as_deref().unwrap_or("unavailable"),
+                status.active_state,
+                status.sub_state,
+                status.main_pid,
+                status.fragment_path,
+            )
         })
     }
 }
@@ -726,13 +808,13 @@ fn project_env_warning_message(observed: &state::ProjectEnvObservedStateRecord) 
         .or_else(|| observed.message.clone())
 }
 
-fn launch_agent_status(state: &LaunchAgentFileState) -> &'static str {
+fn daemon_registration_file_status(state: &DaemonRegistrationFileState) -> &'static str {
     match state {
-        LaunchAgentFileState::Missing { .. } => "missing",
-        LaunchAgentFileState::Current { .. } => "current",
-        LaunchAgentFileState::Stale { .. } => "stale",
-        LaunchAgentFileState::Conflict { .. } => "conflict",
-        LaunchAgentFileState::Unreadable { .. } => "unreadable",
+        DaemonRegistrationFileState::Missing { .. } => "missing",
+        DaemonRegistrationFileState::Current { .. } => "current",
+        DaemonRegistrationFileState::Stale { .. } => "stale",
+        DaemonRegistrationFileState::Conflict { .. } => "conflict",
+        DaemonRegistrationFileState::Unreadable { .. } => "unreadable",
     }
 }
 
@@ -869,12 +951,19 @@ mod tests {
 
     #[test]
     fn running_status_shows_gateway_ports_and_project_attention() -> anyhow::Result<()> {
+        let mut settings = insta::Settings::clone_current();
+        settings.add_filter(DAEMON_REGISTRATION_NAME, "LaunchAgent");
+        let _settings = settings.bind_to_scope();
         let mut snapshot = StatusSnapshot {
             overall: "ok",
             system_failure: false,
             daemon: DaemonStatus {
                 state: "running",
-                launch_agent: "current",
+                registration: "current",
+                #[cfg(target_os = "linux")]
+                registration_runtime: None,
+                #[cfg(target_os = "linux")]
+                registration_error: None,
                 socket: "healthy",
                 failure: false,
                 mark: Mark::Running,

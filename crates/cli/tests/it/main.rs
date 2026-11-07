@@ -7,6 +7,8 @@ mod dns;
 mod doctor;
 mod init;
 mod jobs;
+mod linux_daemon_registration;
+mod linux_daemon_registration_system;
 mod list;
 mod logs;
 mod mailpit;
