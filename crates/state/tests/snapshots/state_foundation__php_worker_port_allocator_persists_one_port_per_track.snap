@@ -1,7 +1,6 @@
 ---
 source: crates/state/tests/state_foundation.rs
-assertion_line: 2886
-expression: "(assigned_php84, reused_php84, assigned_php83, database.assigned_ports()?)"
+expression: "(assigned_php84, reused_php84, assigned_php83, reopened.assigned_ports()?)"
 ---
 (
     PortAssignment {
@@ -38,6 +37,13 @@ expression: "(assigned_php84, reused_php84, assigned_php83, database.assigned_po
                 php_runtime_key: "8.4",
             },
             port: 45000,
+            updated_at: "<timestamp>",
+        },
+        PortAssignment {
+            owner: PhpWorker {
+                php_runtime_key: "8.4+redis",
+            },
+            port: 45002,
             updated_at: "<timestamp>",
         },
     ],
