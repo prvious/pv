@@ -1065,7 +1065,7 @@ fn installed_helper_artifacts_present() -> Result<bool, PlatformError> {
     ])
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::disallowed_methods,
     reason = "helper removal checks fixed system artifact paths without following symlinks"
