@@ -587,17 +587,9 @@ impl InstallerExecutionFixture {
         if systemd {
             create_dir_all(&systemd_dir)?;
         }
-        let os_release = self.app.tempdir.path().join("os-release");
-        write_file(
-            &os_release,
-            "ID=example\nPRETTY_NAME='Fixture Linux'\nVERSION_ID=1\n",
-        )?;
         let installer = read_file(&self.app.output)?;
         assert!(installer.contains("/run/systemd/system"));
-        assert!(installer.contains("/etc/os-release"));
-        let installer = installer
-            .replace("/run/systemd/system", systemd_dir.as_str())
-            .replace("/etc/os-release", os_release.as_str());
+        let installer = installer.replace("/run/systemd/system", systemd_dir.as_str());
         write_executable(&self.app.output, &installer)?;
         command
             .env("PV_TEST_UNAME_OS", os)

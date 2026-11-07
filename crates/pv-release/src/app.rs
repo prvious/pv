@@ -155,11 +155,6 @@ select_asset() {
         die "PV needs glibc 2.35 or newer; found ${libc}"
       fi
       [ -d /run/systemd/system ] || die "PV needs systemd running"
-      if [ -r /etc/os-release ]; then
-        # shellcheck source=/dev/null
-        . /etc/os-release
-      fi
-      warn "Linux distribution: ${PRETTY_NAME:-Linux} (untested)"
       ;;
     *)
       die "macOS or Linux is required; found ${os}"

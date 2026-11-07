@@ -26,7 +26,7 @@ The privileged helper has its own version in
 keep those two identities equal. A helper protocol change requires a matching
 app release. Ordinary app releases reuse and verify the published helper bytes.
 
-The macOS release containing #429 must reach both owner laptops before any Linux entry is published. A release that publishes Linux must also select `darwin-arm64`.
+The macOS release containing #429 must reach both owner laptops before any Linux entry is published.
 
 ## Build and publish
 

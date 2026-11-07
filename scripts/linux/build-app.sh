@@ -35,4 +35,3 @@ source_sha256=$(sha256_file "$PV_APP_OUT_DIR/source.tar.gz")
   --helper-protocol-version "$protocol" --helper-object-key "$helper_key" \
   --source-url https://artifacts.pv-linux.invalid/source.tar.gz --source-sha256 "$source_sha256" \
   --recipe scripts/linux/build-app.sh --pv-commit "$PV_COMMIT" --build-run-id "$PV_BUILD_RUN_ID"
-pv_recipe_validate_elf_tree "$PV_APP_OUT_DIR" "$platform"

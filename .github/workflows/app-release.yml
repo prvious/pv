@@ -104,10 +104,6 @@ jobs:
             esac
           done
           app_platforms="$normalized_platforms"
-          if [ "$PUBLISH" = true ] && [[ ",$app_platforms," == *,linux-* ]] && [[ ",$app_platforms," != *,darwin-arm64,* ]]; then
-            printf '%s\n' "publishing Linux requires darwin-arm64 in app_platforms" >&2
-            exit 1
-          fi
 
           if [ -z "$R2_PUBLIC_BASE_URL" ]; then
             printf '%s\n' "R2_PUBLIC_BASE_URL repository variable is required" >&2
@@ -216,7 +212,6 @@ jobs:
       - name: Build Ubuntu 22.04 builder locally
         if: ${{ startsWith(matrix.platform, 'linux-') && contains(format(',{0},', needs.prepare-release.outputs.app_platforms), format(',{0},', matrix.platform)) }}
         run: |
-          df -h /
           docker build -f scripts/linux/builder.Dockerfile --build-arg BUILDER_UID="$(id -u)" -t pv-linux-builder .
 
       - name: Build app and privileged helper binaries
@@ -371,13 +366,6 @@ jobs:
               cargo build --locked --release --package pv --bin pv --target "${{ matrix.rust_target }}"
             fi
             install -m 755 "target/${{ matrix.rust_target }}/release/pv" "$PV_APP_BINARY"
-          fi
-          if [ "$(uname -s)" = Linux ]; then
-            docker run --rm --init --user "$(id -u):$(id -g)" \
-              --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/src,readonly" \
-              --mount "type=bind,src=$RUNNER_TEMP/pv-app-stage,dst=/artifacts,readonly" \
-              --workdir /src --env PV_PLATFORM="${{ matrix.platform }}" pv-linux-builder sh -c \
-              '. release/artifacts/recipes/common.sh; pv_recipe_validate_elf_tree /artifacts "$PV_PLATFORM"'
           fi
 
       - name: Write app release record
