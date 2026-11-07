@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{CaFileState, PlatformTarget};
+use platform::CaFileState;
 use resources::{
     ArtifactManifest, ArtifactManifestCache, ArtifactManifestSource, ResourceHttpClient,
     ResourceName, TargetPlatform, TrackName, TrackSelector, UreqResourceHttpClient,
@@ -876,29 +876,29 @@ fn untrust_ca_for_uninstall(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    if environment.platform_target()? == PlatformTarget::Linux {
-        return ca::untrust(environment, streams);
-    }
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
 
     if matches!(local_state, CaFileState::Missing { .. }) {
+        let system_store = ca::SYSTEM_STORE_LABEL;
         let fingerprints = trusted_pv_ca_fingerprints(environment)?;
         let output = &mut streams.out;
         if fingerprints.is_empty() {
-            output
-                .note("PV local CA files are absent; System keychain trust is already absent.")?;
-
-            return Ok(ExitCode::SUCCESS);
+            output.note(format!(
+                "PV local CA files are absent; {system_store} trust is already absent."
+            ))?;
         }
-
         for fingerprint in fingerprints {
             environment.untrust_system_ca(&fingerprint)?;
             output.success(Line::field(
-                "Removed stale PV local CA trust from the System keychain: ",
+                &format!("Removed stale PV local CA trust from the {system_store}: "),
                 &fingerprint,
             ))?;
+        }
+        for database in environment.browser_ca_databases(paths.home())? {
+            environment.untrust_browser_ca(&database)?;
+            output.success(Line::field("Removed PV browser CA trust: ", &database))?;
         }
 
         return Ok(ExitCode::SUCCESS);

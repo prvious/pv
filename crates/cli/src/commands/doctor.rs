@@ -3,7 +3,7 @@ use std::process::ExitCode;
 use camino::Utf8PathBuf;
 use platform::{
     CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
-    PlatformTarget, ResolverConfig, ResolverFileState, TrustDomainState,
+    ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
@@ -53,7 +53,6 @@ struct DoctorSection {
 
 impl DoctorReport {
     fn read(environment: &impl Environment) -> Result<Self, ExecuteError> {
-        let target = environment.platform_target()?;
         let paths = pv_paths(environment)?;
         let database = Database::open_read_only(&paths)?;
         let daemon_registration_path = daemon_registration_path(environment)?;
@@ -73,7 +72,7 @@ impl DoctorReport {
                 checks: vec![
                     dns_check(environment, &paths)?,
                     ports_check(environment, &paths, database.as_ref())?,
-                    ca_check(environment, &paths, target),
+                    ca_check(environment, &paths),
                 ],
             },
             DoctorSection {
@@ -88,35 +87,33 @@ impl DoctorReport {
             },
         ];
 
-        if target == PlatformTarget::Linux {
-            let local =
-                platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
-            let metadata = metadata_from_local_ca(&local);
-            match super::ca::browser_ca_reports(environment, &paths, metadata.as_ref()) {
-                Ok(reports) => {
-                    for report in reports {
-                        let mut detail = format!(
-                            "{}: {}",
-                            report.database,
-                            super::ca::trust_state_text(&report.state).1
-                        );
-                        if let Some(message) = report.detail() {
-                            detail.push_str(": ");
-                            detail.push_str(message);
-                        }
-                        sections[1].checks.push(if report.current() {
-                            DoctorCheck::pass("Browser CA trust", detail)
-                        } else {
-                            DoctorCheck::fail("Browser CA trust", detail, "pv ca:trust")
-                        });
+        let local =
+            platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+        let metadata = metadata_from_local_ca(&local);
+        match super::ca::browser_ca_reports(environment, &paths, metadata.as_ref()) {
+            Ok(reports) => {
+                for report in reports {
+                    let mut detail = format!(
+                        "{}: {}",
+                        report.database,
+                        super::ca::trust_state_text(&report.state).1
+                    );
+                    if let Some(message) = report.detail() {
+                        detail.push_str(": ");
+                        detail.push_str(message);
                     }
+                    sections[1].checks.push(if report.current() {
+                        DoctorCheck::pass("Browser CA trust", detail)
+                    } else {
+                        DoctorCheck::fail("Browser CA trust", detail, "pv ca:trust")
+                    });
                 }
-                Err(error) => sections[1].checks.push(DoctorCheck::fail(
-                    "Browser CA trust",
-                    error.to_string(),
-                    "pv ca:trust",
-                )),
             }
+            Err(error) => sections[1].checks.push(DoctorCheck::fail(
+                "Browser CA trust",
+                error.to_string(),
+                "pv ca:trust",
+            )),
         }
 
         Ok(Self { sections })
@@ -569,16 +566,8 @@ fn display_port(port: Option<u16>) -> String {
     port.map_or_else(|| "-".to_owned(), |port| port.to_string())
 }
 
-fn ca_check(
-    environment: &impl Environment,
-    paths: &PvPaths,
-    target: PlatformTarget,
-) -> DoctorCheck {
-    let store = if target == PlatformTarget::Linux {
-        "System trust store"
-    } else {
-        "System keychain"
-    };
+fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
+    let store = super::ca::SYSTEM_STORE_LABEL;
     let local_ca =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_ca(&local_ca);

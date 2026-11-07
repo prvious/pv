@@ -70,10 +70,7 @@ pub(crate) fn run_system_command_output_with_timeout(
     system_command_output(command, output)
 }
 
-pub(crate) fn system_command_output(
-    command: String,
-    output: Output,
-) -> Result<String, PlatformError> {
+fn system_command_output(command: String, output: Output) -> Result<String, PlatformError> {
     if output.status.success() {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     } else {
@@ -110,11 +107,7 @@ fn command_output(program: &str, args: &[&str]) -> io::Result<Output> {
     StdCommand::new(program).args(args).output()
 }
 
-pub(crate) fn command_output_with_timeout(
-    program: &str,
-    args: &[&str],
-    wait: Duration,
-) -> io::Result<Output> {
+fn command_output_with_timeout(program: &str, args: &[&str], wait: Duration) -> io::Result<Output> {
     let mut child = StdCommand::new(program)
         .args(args)
         .stdout(Stdio::piped())

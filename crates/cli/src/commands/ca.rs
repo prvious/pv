@@ -2,7 +2,7 @@ use std::io;
 use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use platform::{CaFileState, GeneratedLocalCa, LocalCaMetadata, PlatformTarget, TrustDomainState};
+use platform::{CaFileState, GeneratedLocalCa, LocalCaMetadata, TrustDomainState};
 use serde::Serialize;
 use state::{PvPaths, StateError};
 
@@ -14,11 +14,7 @@ pub(crate) fn status(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let system_store = if environment.platform_target()? == PlatformTarget::Linux {
-        "System CA"
-    } else {
-        "System keychain"
-    };
+    let system_store = SYSTEM_STORE_LABEL;
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -44,11 +40,7 @@ pub(crate) fn trust(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let system_store = if environment.platform_target()? == PlatformTarget::Linux {
-        "System CA"
-    } else {
-        "System keychain"
-    };
+    let system_store = SYSTEM_STORE_LABEL;
     let paths = pv_paths(environment)?;
     let initial_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -133,11 +125,7 @@ pub(crate) fn untrust(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let system_store = if environment.platform_target()? == PlatformTarget::Linux {
-        "System CA"
-    } else {
-        "System keychain"
-    };
+    let system_store = SYSTEM_STORE_LABEL;
     let paths = pv_paths(environment)?;
     let local_state =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -364,19 +352,27 @@ impl BrowserCaReport {
     }
 }
 
+/// The system trust store PV's CA goes into, as PV names it in output.
+pub(crate) const SYSTEM_STORE_LABEL: &str = if cfg!(target_os = "linux") {
+    "System CA"
+} else {
+    "System keychain"
+};
+
+/// Browser databases trust PV's CA only once it exists, so there is nothing to report before.
 pub(crate) fn browser_ca_reports(
     environment: &impl Environment,
     paths: &PvPaths,
     metadata: Option<&LocalCaMetadata>,
 ) -> Result<Vec<BrowserCaReport>, ExecuteError> {
-    if environment.platform_target()? != PlatformTarget::Linux {
+    let Some(metadata) = metadata else {
         return Ok(Vec::new());
-    }
+    };
     Ok(environment
         .browser_ca_databases(paths.home())?
         .into_iter()
         .map(|database| BrowserCaReport {
-            state: environment.inspect_browser_ca_trust(&database, metadata),
+            state: environment.inspect_browser_ca_trust(&database, Some(metadata)),
             database,
         })
         .collect())

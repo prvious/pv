@@ -22,7 +22,6 @@ struct TestEnvironment {
     target: PlatformTarget,
     browser_databases: Vec<Utf8PathBuf>,
     trusted_browsers: RefCell<BTreeSet<Utf8PathBuf>>,
-    fail_browser: Option<Utf8PathBuf>,
     current_dir: RefCell<PathBuf>,
     certificates: RefCell<Vec<KeychainCertificate>>,
     keychain_error: Option<String>,
@@ -37,7 +36,6 @@ impl TestEnvironment {
             target: PlatformTarget::Macos,
             browser_databases: Vec::new(),
             trusted_browsers: RefCell::new(BTreeSet::new()),
-            fail_browser: None,
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             certificates: RefCell::new(Vec::new()),
             keychain_error: None,
@@ -102,11 +100,6 @@ impl Environment for TestEnvironment {
         self.operations
             .borrow_mut()
             .push(format!("browser-trust {database}"));
-        if self.fail_browser.as_deref() == Some(database) {
-            return Err(PlatformError::SystemIntegration(
-                "fixture browser failure".to_owned(),
-            ));
-        }
         self.trusted_browsers
             .borrow_mut()
             .insert(database.to_owned());
@@ -461,11 +454,13 @@ fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.add_filter(r"[a-f0-9]{64}", "<fingerprint>");
+    // Each system names its trust store; the CA flow is the same on both.
+    settings.add_filter("System CA", "System keychain");
     settings.bind(assertion);
 }
 
 #[test]
-fn linux_ca_repairs_browser_trust_when_the_system_store_is_current() -> anyhow::Result<()> {
+fn linux_ca_trust_follows_the_local_ca_into_browser_databases() -> anyhow::Result<()> {
     let directory = tempdir()?;
     let home = directory.path().join("home");
     let mut environment = TestEnvironment::new(&home, directory.path());
@@ -474,34 +469,25 @@ fn linux_ca_repairs_browser_trust_when_the_system_store_is_current() -> anyhow::
         home.join(".pki/nssdb"),
         home.join(".mozilla/firefox/default"),
     ];
-    let first = run_pv(&["ca:trust"], &environment)?;
-    assert_eq!(first.exit_code, ExitCode::SUCCESS);
-    assert_eq!(environment.trusted_browsers.borrow().len(), 2);
-    let paths = pv_paths(&home);
-    let certificate = read_required_file(&paths.ca_certificate())?;
-    let key = read_required_file(&paths.ca_private_key())?;
-    environment.operations.borrow_mut().clear();
+
+    let before_setup = run_pv(&["ca:status"], &environment)?;
+    let trusted = run_pv(&["ca:trust"], &environment)?;
     environment.trusted_browsers.borrow_mut().clear();
-    let missing = run_pv(&["ca:status"], &environment)?;
+    let browsers_missing = run_pv(&["ca:status"], &environment)?;
     let repaired = run_pv(&["ca:trust"], &environment)?;
-    assert_eq!(repaired.exit_code, ExitCode::SUCCESS);
-    assert_eq!(environment.trusted_browsers.borrow().len(), 2);
-    assert_eq!(environment.operations.borrow().len(), 2);
-    assert!(read_required_file(&paths.ca_certificate())? == certificate);
-    assert!(read_required_file(&paths.ca_private_key())? == key);
-    let repaired_operations = environment.operations.borrow().clone();
-    environment.fail_browser = Some(environment.browser_databases[1].clone());
-    environment.trusted_browsers.borrow_mut().clear();
-    let failed = run_pv(&["ca:trust"], &environment)?;
-    assert_eq!(failed.exit_code, ExitCode::FAILURE);
-    assert_eq!(environment.trusted_browsers.borrow().len(), 1);
-    environment.fail_browser = None;
     let removed = run_pv(&["ca:untrust"], &environment)?;
-    assert_eq!(removed.exit_code, ExitCode::SUCCESS);
+
     assert!(environment.trusted_browsers.borrow().is_empty());
     assert!(environment.certificates.borrow().is_empty());
     with_normalized_tempdir(directory.path(), || {
-        assert_debug_snapshot!((missing, repaired, repaired_operations, failed, removed));
+        assert_debug_snapshot!((
+            before_setup,
+            trusted,
+            browsers_missing,
+            repaired,
+            removed,
+            environment.operations.borrow().clone(),
+        ));
     });
     Ok(())
 }

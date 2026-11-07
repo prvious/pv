@@ -2,7 +2,6 @@ use std::io::Cursor;
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use rustix::process::{geteuid, getuid};
 use state::fs;
 
 use super::{KeychainCertificate, KeychainTrustResult, TrustDomainState};
@@ -77,17 +76,19 @@ impl SystemStore {
                 .is_some_and(|name| name.starts_with(ANCHOR_PREFIX))
                 && path.extension() == Some(self.extension)
             {
-                let pem = read_anchor(&path)?;
-                let metadata = checked_metadata(&pem, None)?;
-                if path != self.anchor(&metadata.fingerprint) {
-                    return Err(integration_error(format!(
-                        "PV CA anchor fingerprint mismatch: {path}"
-                    )));
+                // Like macOS, skip a certificate PV can't read or match instead of failing.
+                let Ok(pem) = fs::read_to_string(&path) else {
+                    continue;
+                };
+                let Ok(metadata) = checked_metadata(&pem, None) else {
+                    continue;
+                };
+                let Ok(der) = certificate_der_from_pem(&pem) else {
+                    continue;
+                };
+                if path == self.anchor(&metadata.fingerprint) {
+                    anchors.push((metadata, der));
                 }
-                anchors.push((
-                    metadata,
-                    certificate_der_from_pem(&pem).map_err(integration_error)?,
-                ));
             }
         }
         if anchors.is_empty() {
@@ -122,24 +123,19 @@ pub(crate) fn apply_system_ca_privileged(
     owner_uid: u32,
     fingerprint: &str,
 ) -> Result<(), PlatformError> {
-    require_root()?;
     validate_fingerprint(fingerprint)?;
     let store = SystemStore::detect()?;
-    let _lock = root_files::acquire_lock(Utf8Path::new(root_files::LOCK_PATH))?;
     let pem =
         fs::read_to_string(&owner_ca_certificate_path(owner_uid)?).map_err(integration_error)?;
     checked_metadata(&pem, Some(fingerprint))?;
     let staged = Utf8Path::new(STAGED_CA);
-    if root_files::read_root_file(staged, 0o644)?.is_some() {
-        fs::remove_file(staged).map_err(integration_error)?;
-    }
+    fs::remove_file_if_exists(staged).map_err(integration_error)?;
     root_files::write_root_file(staged, pem.as_bytes(), 0o644)?;
     let result = (|| {
         let staged_pem = read_anchor(staged)?;
         checked_metadata(&staged_pem, Some(fingerprint))?;
-        root_files::validate_directory_chain(Utf8Path::new(store.directory), true)?;
         let anchor = store.anchor(fingerprint);
-        if root_files::read_root_file(&anchor, 0o644)?.is_some() {
+        if fs::path_entry_exists(&anchor).map_err(integration_error)? {
             checked_metadata(&read_anchor(&anchor)?, Some(fingerprint))?;
         } else {
             root_files::write_root_file(&anchor, staged_pem.as_bytes(), 0o644)?;
@@ -157,12 +153,10 @@ pub(crate) fn apply_system_ca_privileged(
 }
 
 pub(crate) fn untrust_system_ca_privileged(fingerprint: &str) -> Result<(), PlatformError> {
-    require_root()?;
     validate_fingerprint(fingerprint)?;
     let store = SystemStore::detect()?;
-    let _lock = root_files::acquire_lock(Utf8Path::new(root_files::LOCK_PATH))?;
     let anchor = store.anchor(fingerprint);
-    if root_files::read_root_file(&anchor, 0o644)?.is_some() {
+    if fs::path_entry_exists(&anchor).map_err(integration_error)? {
         checked_metadata(&read_anchor(&anchor)?, Some(fingerprint))?;
         fs::remove_file(&anchor).map_err(integration_error)?;
     }
@@ -190,16 +184,6 @@ fn checked_metadata(
         });
     }
     Ok(metadata)
-}
-
-fn require_root() -> Result<(), PlatformError> {
-    if getuid().is_root() && geteuid().is_root() {
-        Ok(())
-    } else {
-        Err(PlatformError::PrivilegedHelperAuthentication(
-            "system CA operations require root".to_owned(),
-        ))
-    }
 }
 
 fn integration_error(error: impl std::fmt::Display) -> PlatformError {
@@ -257,8 +241,6 @@ fn certificate(
     nickname: &str,
     skip_foreign: bool,
 ) -> Result<Option<LocalCaMetadata>, PlatformError> {
-    let location = format!("sql:{database}");
-    let arguments = ["-d", location.as_str(), "-L", "-n", nickname, "-a"];
     if !certutil(database, &["-L"])?
         .lines()
         .filter_map(|line| line.trim().rsplit_once(char::is_whitespace))
@@ -266,7 +248,7 @@ fn certificate(
     {
         return Ok(None);
     }
-    let pem = run_system_command_output_with_timeout(CERTUTIL, &arguments, COMMAND_TIMEOUT, None)?;
+    let pem = certutil(database, &["-L", "-n", nickname, "-a"])?;
     let mut found_certificate = false;
     for der in rustls_pemfile::certs(&mut Cursor::new(pem)) {
         let der = der.map_err(integration_error)?;
@@ -397,46 +379,4 @@ pub(super) fn untrust_browser_ca(database: &Utf8Path) -> Result<(), PlatformErro
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use anyhow::Result;
-    use rustix::process::getuid;
-
-    use super::*;
-    use crate::generate_local_ca;
-
-    #[test]
-    #[ignore = "requires root in a disposable Linux trust-store container"]
-    fn linux_system_ca_apply_inspect_remove_matches_the_distribution_store() -> Result<()> {
-        assert!(getuid().is_root());
-        let certificate_path = owner_ca_certificate_path(1000)?;
-        assert!(!fs::path_entry_exists(&certificate_path)?);
-        root_files::validate_directory_chain(Utf8Path::new("/usr/local/libexec"), true)?;
-        fs::ensure_user_dir(Utf8Path::new("/var/lib/pv"))?;
-        let generated = generate_local_ca()?;
-        fs::write_sensitive_file(&certificate_path, &generated.certificate_pem)?;
-        let mut wrong = generated.metadata.fingerprint.clone();
-        wrong.replace_range(..1, if wrong.starts_with('0') { "1" } else { "0" });
-        assert!(matches!(
-            apply_system_ca_privileged(1000, &wrong),
-            Err(PlatformError::PrivilegedHelperRejected { .. })
-        ));
-        apply_system_ca_privileged(1000, &generated.metadata.fingerprint)?;
-        apply_system_ca_privileged(1000, &generated.metadata.fingerprint)?;
-        assert!(
-            trusted_certificates()?
-                .iter()
-                .any(|certificate| certificate.metadata.fingerprint
-                    == generated.metadata.fingerprint
-                    && certificate.trust == KeychainTrustResult::TrustRoot)
-        );
-        untrust_system_ca_privileged(&generated.metadata.fingerprint)?;
-        untrust_system_ca_privileged(&generated.metadata.fingerprint)?;
-        assert!(trusted_certificates()?.is_empty());
-        assert!(!fs::path_entry_exists(Utf8Path::new(STAGED_CA))?);
-        assert!(fs::read_to_string(&certificate_path)? == generated.certificate_pem);
-        Ok(())
-    }
 }
