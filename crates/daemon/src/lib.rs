@@ -372,7 +372,7 @@ mod tests {
     use std::{future, io, time::Duration};
 
     use camino_tempfile::tempdir;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use insta::assert_debug_snapshot;
     use platform::clock::{self, real};
     use platform::{PlatformCapability, PlatformError, PlatformTarget};

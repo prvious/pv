@@ -554,17 +554,14 @@ impl ManagedProcess {
         &self.metadata_path
     }
 
-    /// Whether the runtime has exited. Linux retains the identity of an unreaped zombie;
-    /// the monitor keeps the exit status on both platforms.
+    /// Whether the runtime has exited. An identity lookup never finds an exited process, so a
+    /// changed identity is enough; the monitor keeps the exit status.
     pub fn has_exited(&mut self) -> Result<bool, DaemonError> {
         let Some(start_identity) = self.start_identity else {
             return Ok(true);
         };
 
-        Ok(
-            platform::inspect_process_start_identity(self.pid)? != Some(start_identity)
-                || platform::process_is_zombie(self.pid)?,
-        )
+        Ok(platform::inspect_process_start_identity(self.pid)? != Some(start_identity))
     }
 
     pub async fn stop(self, grace_period: Duration) -> Result<(), DaemonError> {
@@ -1039,32 +1036,11 @@ fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonErr
         ProcessSignal::Kill => Signal::KILL,
     };
 
-    // ponytail: Linux contains runtimes with process groups only, the same as macOS.
-    // The original plan (2026-09-29, step 8) was a child subreaper plus cgroups:
-    // - prctl(PR_SET_CHILD_SUBREAPER) in `pv monitor:run`, so descendants that
-    //   leave the group (Postgres backends call setsid(), double-forked daemons)
-    //   re-parent to the monitor instead of systemd/init. The monitor would then
-    //   have to reap them and SIGKILL any survivors after the group kill. "No
-    //   children left" (waitpid ECHILD) would prove the whole tree is gone.
-    // - One cgroup v2 leaf per runtime under a delegated subtree: either
-    //   `Delegate=yes` on pv-daemon.service, or one `systemd-run --user --scope`
-    //   per monitor. `cgroup.kill` (kernel >= 5.14) is an atomic force-kill of
-    //   every descendant, and `cgroup.events` `populated 0` proves the tree is
-    //   empty even after the monitor dies. This interacts with
-    //   `KillMode=process` (D18): a delegated subtree under pv-daemon.service
-    //   is still inside the service's cgroup.
-    // Revisit if any of these show up on Linux:
-    // - processes survive `pv daemon:disable` / `pv uninstall`
-    // - Postgres backends or MySQL helpers outlive a reported stop
-    // - a port is still held after a stop reported success
-    // - "cleanup unproven" errors appear
-    // - a logout leaves Postgres monitor records that only a reboot clears (spec O1)
     match kill_process_group(process_group, signal) {
-        Ok(()) | Err(rustix::io::Errno::SRCH) => Ok(()),
-        // macOS answers EPERM when only unreaped zombies or exiting members remain.
-        // Linux EPERM is a real error; its live-member scan handles zombie-only groups.
-        #[cfg(unix)]
-        Err(rustix::io::Errno::PERM) => Ok(()),
+        // macOS answers EPERM, not ESRCH, when no member can take a signal: each is an
+        // unreaped zombie or already exiting, as a killed runtime's children briefly are.
+        // Every caller then waits for the group to end, which decides the stop.
+        Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => Ok(()),
         Err(error) => Err(io::Error::from(error).into()),
     }
 }

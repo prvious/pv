@@ -86,7 +86,7 @@ pub(super) fn inspect_process_start_identity(
     let Some(process) = open_process(pid).map_err(inspection_error)? else {
         return Ok(None);
     };
-    Ok(read_stat(&process)
+    Ok(live_stat(&process)
         .map_err(inspection_error)?
         .map(|stat| start_identity(&stat)))
 }
@@ -124,7 +124,7 @@ fn inspect_identity(pid: u32) -> ProcResult<Option<ProcessIdentity>> {
         return Ok(None);
     };
     for _attempt in 0..MAX_SNAPSHOT_ATTEMPTS {
-        let Some(before) = read_stat(&process)? else {
+        let Some(before) = live_stat(&process)? else {
             return Ok(None);
         };
         let observation: ProcResult<_> = (|| {
@@ -134,10 +134,10 @@ fn inspect_identity(pid: u32) -> ProcResult<Option<ProcessIdentity>> {
         })();
         let (executable, command_line, confirmed_executable) = match observation {
             Ok(observation) => observation,
-            Err(_source) if read_stat(&process)?.is_none() => return Ok(None),
+            Err(_source) if live_stat(&process)?.is_none() => return Ok(None),
             Err(source) => return Err(source),
         };
-        let Some(after) = read_stat(&process)? else {
+        let Some(after) = live_stat(&process)? else {
             return Ok(None);
         };
         // Equal raw links bracket the argument read; same-path or ABA exec and
@@ -201,6 +201,11 @@ fn open_process(pid: u32) -> ProcResult<Option<Process>> {
         Err(ProcError::NotFound(_)) => Ok(None),
         Err(source) => Err(source),
     }
+}
+
+/// Like macOS, an exited process that its parent has not reaped yet has no live identity.
+fn live_stat(process: &Process) -> ProcResult<Option<Stat>> {
+    Ok(read_stat(process)?.filter(|stat| !stat_is_zombie(stat)))
 }
 
 fn read_stat(process: &Process) -> ProcResult<Option<Stat>> {

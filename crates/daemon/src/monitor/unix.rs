@@ -1,7 +1,5 @@
 use std::fmt::Write as _;
 use std::io::{self, BufRead as _, BufReader, Write as _};
-#[cfg(target_os = "linux")]
-use std::net::Shutdown;
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
@@ -278,17 +276,16 @@ async fn recover_reserved(paths: &PvPaths, subject: &str) -> Result<(), DaemonEr
 /// The runtime of `subject`'s monitor, while both the monitor and its runtime still run as
 /// recorded, from this boot.
 ///
-/// It needs no request to the monitor: birth and live-state checks exclude exited processes,
-/// and the monitor reaps its runtime only after recording the exit.
+/// It needs no request to the monitor: an identity lookup never finds a process that has exited,
+/// and the monitor reaps its runtime only after recording the exit. So `Some` means the monitor
+/// is alive and its runtime has not exited.
 pub fn live_runtime(paths: &PvPaths, subject: &str) -> Result<Option<LiveRuntime>, DaemonError> {
     let Some(record) = read_record(paths, subject)? else {
         return Ok(None);
     };
     let live = record.boot_session_id == platform::current_boot_session_id()?
         && process_matches(record.monitor)?
-        && !platform::process_is_zombie(record.monitor.pid)?
-        && process_matches(record.runtime)?
-        && !platform::process_is_zombie(record.runtime.pid)?;
+        && process_matches(record.runtime)?;
 
     Ok(live.then_some(LiveRuntime {
         instance: record.instance,
@@ -645,7 +642,7 @@ async fn supervise_gate(
     pause(hooks, MonitorPause::AfterPermission).await;
     let events = clock::timeout(
         &EXEC_TIMEOUT,
-        confirm_exec(&mut watch, &mut gate, subject, pid, hooks, gate_program),
+        confirm_exec(&mut watch, &mut gate, subject, pid, gate_program),
     )
     .await
     .map_err(|_elapsed| startup_failed(subject, "the runtime did not start in time"))??;
@@ -667,7 +664,6 @@ async fn confirm_exec(
     gate: &mut DaemonTransport<UnixStream>,
     subject: &str,
     _pid: u32,
-    _hooks: &MonitorHooks,
     _gate_program: &Path,
 ) -> Result<ProcessEvents, DaemonError> {
     let mut gate_open = true;
@@ -705,27 +701,19 @@ async fn confirm_exec(
     gate: &mut DaemonTransport<UnixStream>,
     subject: &str,
     pid: u32,
-    hooks: &MonitorHooks,
     gate_program: &Path,
 ) -> Result<ProcessEvents, DaemonError> {
     if let Some(line) = gate.next().await {
         let line = line.map_err(ProtocolError::from)?;
         return Err(startup_failed(subject, failure_message(&line)));
     }
-    let monitor_pid = std::process::id();
-    let monitor_name = platform::inspect_process_comm(monitor_pid)?.ok_or_else(|| {
-        DaemonError::MissingProcessIdentity {
-            name: "monitor".to_owned(),
-            pid: monitor_pid,
-        }
-    })?;
     let gate_name = gate_program
         .file_name()
         .ok_or_else(|| startup_failed(subject, "the gate executable has no file name"))?
         .as_encoded_bytes();
     let gate_name = String::from_utf8_lossy(&gate_name[..gate_name.len().min(15)]);
     // EOF can precede waitable exit. Keep checking status then name within the
-    // caller's timeout; either known pre-runtime name remains inconclusive.
+    // caller's timeout; the gate's own name remains inconclusive.
     // ponytail: same-name runtimes fail closed; kernel exec events would remove this limit.
     loop {
         let exit = watch.get_mut().try_exit_status()?;
@@ -735,7 +723,7 @@ async fn confirm_exec(
                 pid,
             }
         })?;
-        if runtime_name != monitor_name && runtime_name != gate_name {
+        if runtime_name != gate_name {
             return Ok(ProcessEvents { exec: true, exit });
         }
         if let Some(status) = exit {
@@ -744,7 +732,6 @@ async fn confirm_exec(
                 format!("the gate exited before the runtime started ({status})"),
             ));
         }
-        pause(hooks, MonitorPause::AfterGateEof).await;
         clock::poll(POLL_INTERVAL).await;
     }
 }
@@ -828,10 +815,6 @@ pub fn run_monitor_gate(hooks: &MonitorHooks) -> Result<(), DaemonError> {
         .into());
     }
     let permission: GatePermission = serde_json::from_str(&line)?;
-    #[cfg(target_os = "linux")]
-    if pause_files(hooks, MonitorPause::GateAfterPermission).is_some() {
-        socket.shutdown(Shutdown::Write)?;
-    }
     pause_blocking(hooks, MonitorPause::GateAfterPermission);
 
     let error = runtime_command(&permission).exec();

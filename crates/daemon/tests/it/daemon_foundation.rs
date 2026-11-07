@@ -537,7 +537,7 @@ fn recorded_runtime_pid(metadata_path: &Utf8Path) -> Result<Pid> {
     Pid::from_raw(raw_pid).ok_or_else(|| anyhow!("invalid recorded runtime pid {raw_pid}"))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
     Ok(getpgid(Some(leader))?)
 }
