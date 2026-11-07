@@ -121,7 +121,6 @@ struct UnitStatus {
     needs_reload: bool,
     active_state: String,
     fragment_path: Utf8PathBuf,
-    drop_in_paths: Vec<String>,
 }
 
 impl Unit {
@@ -131,7 +130,6 @@ impl Unit {
             .is_some_and(|content| content.lines().any(|line| line.trim() == PV_MARKER))
             && self.status.as_ref().is_none_or(|status| {
                 status.fragment_path == Utf8Path::new(SYSTEM_DIRECTORY).join(name)
-                    && status.drop_in_paths.is_empty()
             })
     }
 
@@ -444,7 +442,6 @@ async fn query_unit(
             .await
             .map_err(bus_error)?
             .into(),
-        drop_in_paths: unit.get_property("DropInPaths").await.map_err(bus_error)?,
     };
     if status.load_state == "not-found"
         && status.active_state == "inactive"
@@ -489,7 +486,6 @@ mod tests {
                 needs_reload: false,
                 active_state: "active".to_owned(),
                 fragment_path: format!("{SYSTEM_DIRECTORY}/{name}").into(),
-                drop_in_paths: Vec::new(),
             }),
         };
         Forwarder {
@@ -554,14 +550,6 @@ mod tests {
             .as_mut()
             .context("fixture socket missing")?
             .fragment_path = "/run/systemd/system/pv-http.socket".into();
-        let mut overridden = owned.clone();
-        overridden
-            .service
-            .status
-            .as_mut()
-            .context("fixture service missing")?
-            .drop_in_paths
-            .push("/etc/systemd/system/pv-http.service.d/administrator.conf".to_owned());
         for rejected in [
             Forwarder {
                 socket: Unit::default(),
@@ -573,7 +561,6 @@ mod tests {
             },
             foreign,
             foreign_fragment,
-            overridden,
         ] {
             assert!(!rejected.owned(&HTTP));
         }
@@ -699,7 +686,6 @@ mod tests {
             "missing file",
             "stale file",
             "foreign fragment",
-            "drop-in",
             "failed service",
         ] {
             let mut changed = http.clone();
@@ -709,13 +695,6 @@ mod tests {
                 "foreign fragment" => {
                     if let Some(status) = &mut changed.service.status {
                         status.fragment_path = "/run/systemd/system/pv-http.service".into();
-                    }
-                }
-                "drop-in" => {
-                    if let Some(status) = &mut changed.socket.status {
-                        status
-                            .drop_in_paths
-                            .push("/etc/systemd/system/pv-http.socket.d/foreign.conf".to_owned());
                     }
                 }
                 "failed service" => {

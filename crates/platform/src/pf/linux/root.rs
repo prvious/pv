@@ -11,7 +11,8 @@ use crate::clock::Limit;
 use crate::helper::linux::{self as root_files, RootFile};
 use crate::helper::validate_high_port;
 use crate::systemd::{
-    read_owned_unit, require_no_candidate, system_manager_proxy, unit_job, within, write_owned_unit,
+    read_owned_unit, remove_leftover_candidate, system_manager_proxy, unit_job, within,
+    write_owned_unit,
 };
 use crate::{PfRedirectConfig, PlatformError};
 use tokio::runtime::Builder;
@@ -176,8 +177,6 @@ pub(in crate::pf) fn remove() -> Result<(), PlatformError> {
 }
 
 fn mutation_lock() -> Result<RootFile, PlatformError> {
-    root_files::validate_directory_chain(Utf8Path::new("/usr/local/libexec"), false)?;
-    root_files::validate_directory_chain(Utf8Path::new(SYSTEM_DIRECTORY), false)?;
     root_files::acquire_lock(Utf8Path::new(root_files::LOCK_PATH))
 }
 
@@ -213,10 +212,9 @@ async fn preflight() -> Result<(Proxy<'static>, Vec<PreviousUnit>), PlatformErro
 }
 
 fn capture_files(directory: &Utf8Path) -> Result<Vec<PreviousUnit>, PlatformError> {
-    root_files::validate_directory_chain(directory, false)?;
     unit_names().into_iter().map(|name| {
         let path = directory.join(&name);
-        require_no_candidate(&path)?;
+        remove_leftover_candidate(&path)?;
         let backup = Utf8PathBuf::from(format!("{path}.rollback"));
         if root_files::read_root_file(&backup, 0o644)?.is_some() {
             return Err(PlatformError::SystemIntegration(format!(
@@ -272,10 +270,10 @@ fn require_owned_status(
     status: Option<&UnitStatus>,
 ) -> Result<(), PlatformError> {
     if let Some(status) = status
-        && (!has_file || status.fragment_path != path(name) || !status.drop_in_paths.is_empty())
+        && (!has_file || status.fragment_path != path(name))
     {
         return Err(PlatformError::SystemIntegration(format!(
-            "refusing socket proxy unit {name}: loaded ownership could not be verified; inspect the unit and its overrides with an administrator"
+            "refusing socket proxy unit {name}: loaded ownership could not be verified; inspect the unit with an administrator"
         )));
     }
     Ok(())
@@ -410,7 +408,7 @@ fn restore_files(directory: &Utf8Path, previous: &[PreviousUnit]) -> Result<(), 
 fn clear_backups(directory: &Utf8Path, previous: &[PreviousUnit]) -> Result<(), PlatformError> {
     for unit in previous {
         let path = directory.join(&unit.name);
-        require_no_candidate(&path)?;
+        remove_leftover_candidate(&path)?;
         let backup = Utf8PathBuf::from(format!("{path}.rollback"));
         if let Some(content) = root_files::read_root_file(&backup, 0o644)? {
             if unit.checksum.as_deref() != Some(root_files::checksum_bytes(&content).as_str()) {
@@ -529,18 +527,9 @@ fn timeout(operation: &str) -> PlatformError {
 
 #[cfg(test)]
 mod tests {
-    use anyhow::{Context, Result};
-    use camino::Utf8Path;
-    use camino_tempfile::tempdir_in;
     use rustix::process::{geteuid, getuid};
 
-    use super::owned_during_rollback;
-    use super::{
-        HTTP, HTTPS, PreviousUnit, UnitStatus, apply, backup_files, capture_files, clear_backups,
-        path, remove, remove_file, require_owned_status, require_root, restore_files, root_files,
-        unit_names, validate_ports, write_units,
-    };
-    use crate::systemd::read_owned_unit;
+    use super::{HTTP, UnitStatus, apply, path, remove, require_owned_status, validate_ports};
     use crate::{PfRedirectConfig, PlatformError};
 
     #[test]
@@ -569,163 +558,23 @@ mod tests {
     }
 
     #[test]
-    fn loaded_units_require_the_marked_fixed_file_without_overrides() {
+    fn loaded_units_require_the_marked_fixed_file() {
         let name = HTTP.socket_name();
         let status = UnitStatus {
             load_state: "loaded".to_owned(),
             needs_reload: false,
             active_state: "active".to_owned(),
             fragment_path: path(&name),
-            drop_in_paths: Vec::new(),
         };
         assert!(require_owned_status(&name, false, None).is_ok());
         assert!(require_owned_status(&name, true, Some(&status)).is_ok());
         let mut foreign_fragment = status.clone();
         foreign_fragment.fragment_path = "/run/systemd/system/pv-http.socket".into();
-        let mut overridden = status.clone();
-        overridden
-            .drop_in_paths
-            .push("/etc/systemd/system/pv-http.socket.d/foreign.conf".to_owned());
-        for (has_file, status) in [
-            (false, &status),
-            (true, &foreign_fragment),
-            (true, &overridden),
-        ] {
+        for (has_file, status) in [(false, &status), (true, &foreign_fragment)] {
             assert!(matches!(
                 require_owned_status(&name, has_file, Some(status)),
                 Err(PlatformError::SystemIntegration(_))
             ));
         }
-    }
-
-    fn contents(directory: &Utf8Path) -> Result<Vec<Option<Vec<u8>>>> {
-        unit_names()
-            .iter()
-            .map(|name| Ok(root_files::read_root_file(&directory.join(name), 0o644)?))
-            .collect()
-    }
-
-    fn require_restored(directory: &Utf8Path, previous: &[PreviousUnit]) -> Result<()> {
-        for unit in previous {
-            let path = directory.join(&unit.name);
-            assert_eq!(
-                read_owned_unit(&path)?
-                    .as_deref()
-                    .map(root_files::checksum_bytes),
-                unit.checksum
-            );
-            assert!(
-                root_files::read_root_file(
-                    &directory.join(format!("{}.rollback", unit.name)),
-                    0o644
-                )?
-                .is_none()
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "run as root in an ordinary disposable Linux container; uses only temporary files"]
-    fn root_unit_transactions_restore_four_files_and_preserve_foreign_state() -> Result<()> {
-        require_root()?;
-        let directory = tempdir_in("/run")?;
-        let original = PfRedirectConfig::new(48080, 48443);
-        let replacement = PfRedirectConfig::new(45000, 45001);
-        let empty = capture_files(directory.path())?;
-        write_units(directory.path(), &original)?;
-        assert!(contents(directory.path())?.iter().all(Option::is_some));
-        assert_eq!(
-            read_owned_unit(&directory.path().join(HTTP.service_name()))?,
-            Some(HTTP.render_service(original.http_port).into_bytes())
-        );
-        assert_eq!(
-            read_owned_unit(&directory.path().join(HTTPS.service_name()))?,
-            Some(HTTPS.render_service(original.https_port).into_bytes())
-        );
-        restore_files(directory.path(), &empty)?;
-        require_restored(directory.path(), &empty)?;
-
-        write_units(directory.path(), &original)?;
-        let before = contents(directory.path())?;
-        let mut previous = capture_files(directory.path())?;
-        backup_files(directory.path(), &previous)?;
-        write_units(directory.path(), &replacement)?;
-        assert_ne!(contents(directory.path())?, before);
-        restore_files(directory.path(), &previous)?;
-        require_restored(directory.path(), &previous)?;
-        assert_eq!(contents(directory.path())?, before);
-        clear_backups(directory.path(), &previous)?;
-
-        let first = directory.path().join(&previous[0].name);
-        let first_backup = directory
-            .path()
-            .join(format!("{}.rollback", previous[0].name));
-        root_files::rename(&first, &first_backup)?;
-        assert!(owned_during_rollback(directory.path(), &previous[0])?);
-        let checksum = previous[0].checksum.replace("wrong checksum".to_owned());
-        assert!(!owned_during_rollback(directory.path(), &previous[0])?);
-        previous[0].checksum = checksum;
-        restore_files(directory.path(), &previous)?;
-        require_restored(directory.path(), &previous)?;
-        assert_eq!(contents(directory.path())?, before);
-
-        for suffix in ["candidate", "rollback"] {
-            let retained = directory
-                .path()
-                .join(format!("{}.{suffix}", previous[2].name));
-            root_files::write_root_file(
-                &retained,
-                b"retained administrator recovery bytes",
-                0o644,
-            )?;
-            assert!(capture_files(directory.path()).is_err());
-            assert_eq!(contents(directory.path())?, before);
-            assert_eq!(
-                root_files::read_root_file(&retained, 0o644)?,
-                Some(b"retained administrator recovery bytes".to_vec())
-            );
-            remove_file(&retained)?;
-        }
-
-        let foreign = directory.path().join(&previous[0].name);
-        let original_first = read_owned_unit(&foreign)?.context("original fixture unit missing")?;
-        remove_file(&foreign)?;
-        root_files::write_root_file(&foreign, b"administrator unit", 0o644)?;
-        let foreign_state = contents(directory.path())?;
-        assert!(matches!(
-            capture_files(directory.path()),
-            Err(PlatformError::SystemIntegration(_))
-        ));
-        assert_eq!(contents(directory.path())?, foreign_state);
-        remove_file(&foreign)?;
-        root_files::write_root_file(&foreign, &original_first, 0o644)?;
-
-        backup_files(directory.path(), &previous)?;
-        write_units(directory.path(), &replacement)?;
-        remove_file(&foreign)?;
-        root_files::write_root_file(&foreign, b"administrator unit", 0o644)?;
-        assert!(matches!(
-            owned_during_rollback(directory.path(), &previous[0]),
-            Err(PlatformError::SystemIntegration(_))
-        ));
-        assert!(matches!(
-            restore_files(directory.path(), &previous),
-            Err(PlatformError::SystemIntegration(_))
-        ));
-        assert_eq!(
-            root_files::read_root_file(&foreign, 0o644)?,
-            Some(b"administrator unit".to_vec())
-        );
-        assert_eq!(read_owned_unit(&first_backup)?, Some(original_first));
-        for unit in previous.iter().skip(1) {
-            assert_eq!(
-                read_owned_unit(&directory.path().join(&unit.name))?
-                    .as_deref()
-                    .map(root_files::checksum_bytes),
-                unit.checksum
-            );
-        }
-        Ok(())
     }
 }

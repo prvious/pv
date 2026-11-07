@@ -2,7 +2,6 @@
 
 mod dns_system;
 
-#[path = "support/ports_system.rs"]
 mod ports_system;
 
 use platform::clock::{self, real};

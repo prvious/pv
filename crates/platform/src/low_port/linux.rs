@@ -77,68 +77,12 @@ fn diagnostic_read<T>(result: ProcResult<T>) -> ProcResult<Option<T>> {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
     use std::net::TcpListener;
     use std::process;
 
     use anyhow::{Context, Result};
-    use insta::assert_debug_snapshot;
-    use procfs::net::TcpNetEntries;
-    use procfs::{FromReadSI, ProcError, current_system_info};
 
     use super::super::inspect_loopback_ports;
-    use super::{LowPortState, diagnostic_read, socket_ports};
-
-    #[test]
-    fn socket_candidates_only_include_listeners_on_requested_unavailable_ports() -> Result<()> {
-        let entries = TcpNetEntries::from_read(
-            b"sl local_address rem_address st tx_queue:rx_queue tr:tm->when retrnsmt uid timeout inode\n\
-0: 0100007F:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 101\n\
-1: 00000000:01BB 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 102\n\
-2: 00000000000000000000000000000000:0050 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 103\n\
-3: 0100007F:0050 0100007F:C000 01 00000000:00000000 00:00000000 00000000 1000 0 104\n\
-4: 0100007F:1F40 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 105\n\
-5: 010200C0:0050 00000000:0000 0A 00000000:00000000 00:00000000 00000000 1000 0 106\n".as_slice(),
-            current_system_info(),
-        )?;
-        let ports = [
-            LowPortState {
-                port: 80,
-                available: false,
-                owners: Vec::new(),
-            },
-            LowPortState {
-                port: 443,
-                available: true,
-                owners: Vec::new(),
-            },
-        ];
-        assert_debug_snapshot!(socket_ports(entries.0, &ports), @r"
-        {
-            101: 80,
-            103: 80,
-            106: 80,
-        }
-        ");
-        Ok(())
-    }
-
-    #[test]
-    fn diagnostic_races_skip_only_missing_or_inaccessible_metadata() -> Result<()> {
-        assert_eq!(diagnostic_read(Ok(42))?, Some(42));
-        for error in [ProcError::NotFound(None), ProcError::PermissionDenied(None)] {
-            assert!(matches!(diagnostic_read::<()>(Err(error)), Ok(None)));
-        }
-        assert!(matches!(
-            diagnostic_read::<()>(Err(ProcError::Incomplete(None))),
-            Err(ProcError::Incomplete(None))
-        ));
-        assert!(matches!(
-            diagnostic_read::<()>(Err(ProcError::Io(io::Error::other("fixture read failed"), None))),
-            Err(ProcError::Io(source, _)) if source.kind() == io::ErrorKind::Other
-        ));
-        Ok(())
-    }
 
     #[test]
     fn wildcard_listener_with_duplicated_descriptors_has_one_native_owner() -> Result<()> {

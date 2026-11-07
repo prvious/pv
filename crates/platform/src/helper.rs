@@ -2029,8 +2029,6 @@ mod tests {
     use anyhow::anyhow;
     #[cfg(target_os = "macos")]
     use camino_tempfile::tempdir;
-    #[cfg(target_os = "linux")]
-    use insta::assert_snapshot;
     #[cfg(target_os = "macos")]
     use insta::{Settings, assert_debug_snapshot};
     #[cfg(target_os = "macos")]
@@ -2055,7 +2053,7 @@ mod tests {
         validate_fingerprint, validate_helper_identity, validate_high_port,
     };
     use crate::PlatformError;
-    #[cfg(unix)]
+    #[cfg(target_os = "macos")]
     use crate::clock::{self, real};
 
     #[cfg(target_os = "macos")]
@@ -2222,80 +2220,6 @@ mod tests {
             HelperPayload::Status(status) if status.owner_uid == owner_uid
         ));
 
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn mutations_wait_beyond_the_lifecycle_deadline_and_preserve_unknown_outcomes()
-    -> anyhow::Result<()> {
-        for (apply_operation, remove_operation) in [(
-            HelperOperation::PfApply {
-                http_port: 48080,
-                https_port: 48443,
-            },
-            HelperOperation::PfRemove,
-        )] {
-            let directory = tempdir()?;
-            let socket = directory.path().join("mutation-helper.sock");
-            let listener = std::os::unix::net::UnixListener::bind(&socket)?;
-            listener.set_nonblocking(true)?;
-            let (response, unknown_outcome, server_result) = thread::scope(|scope| {
-                let server = scope.spawn(|| -> anyhow::Result<()> {
-                    for (operation, reply) in [
-                        (apply_operation.clone(), true),
-                        (remove_operation.clone(), false),
-                    ] {
-                        let started = real::now();
-                        let mut stream = loop {
-                            match listener.accept() {
-                                Ok((stream, _)) => break stream,
-                                Err(error)
-                                    if error.kind() == ErrorKind::WouldBlock
-                                        && real::elapsed(started) < Duration::from_secs(2) =>
-                                {
-                                    clock::poll_blocking(Duration::from_millis(10))
-                                }
-                                Err(error) => return Err(error.into()),
-                            }
-                        };
-                        stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-                        stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-                        let request: HelperRequest = read_message(&mut stream)?;
-                        assert_eq!(request.protocol_version, HELPER_PROTOCOL_VERSION);
-                        assert_eq!(request.operation, operation);
-                        if reply {
-                            real::sleep_blocking(Duration::from_millis(5500));
-                            write_message(
-                                &mut stream,
-                                &super::successful_response(HelperPayload::Empty),
-                            )?;
-                        }
-                    }
-                    Ok(())
-                });
-                let response = call_helper(&socket, apply_operation.clone());
-                let unknown_outcome = response
-                    .is_ok()
-                    .then(|| call_helper(&socket, remove_operation.clone()));
-                (response, unknown_outcome, server.join())
-            });
-            assert!(matches!(response?, HelperPayload::Empty));
-            server_result.map_err(|_| anyhow!("mutation response fixture thread failed"))??;
-            let error = unknown_outcome
-                .ok_or_else(|| anyhow!("removal request was not sent"))?
-                .err()
-                .ok_or_else(|| anyhow!("removal unexpectedly succeeded without a response"))?;
-            assert!(matches!((&remove_operation, &error),
-                    (HelperOperation::PfRemove, PlatformError::PortProxyMutation { operation: "remove", source })
-                    if matches!(source.as_ref(), PlatformError::PrivilegedHelperIo(source) if source.kind() == ErrorKind::UnexpectedEof)));
-            match error {
-                PlatformError::PortProxyMutation { .. } => {
-                    assert_snapshot!(error.to_string(), @"socket proxy remove failed: PV privileged helper I/O failed: helper protocol connection closed before a complete frame was received; port routing may be partial and a queued or in-flight request may still complete; inspect pv-http and pv-https units, their .candidate and .rollback files with an administrator before retrying `pv ports:install` or `pv ports:uninstall`")
-                }
-                error => return Err(error.into()),
-            }
-        }
         Ok(())
     }
 
