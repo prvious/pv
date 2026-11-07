@@ -863,6 +863,27 @@ mod tests {
     }
 
     #[test]
+    fn inactive_vendor_configured_unit_is_owned_and_stale_before_link_creation() {
+        let mut observation = Observation {
+            unit_content: Some(render_unit(&ResolverConfig::new(35353))),
+            unit_status: current().unit_status,
+            ..Observation::default()
+        };
+        if let Some(status) = &mut observation.unit_status {
+            status.active_state = "inactive".to_owned();
+            status.unit_file_state = "disabled".to_owned();
+        }
+        assert!(observation.require_apply().is_ok());
+        assert!(matches!(
+            observation.state(None),
+            ResolverFileState::Stale {
+                actual_port: Some(35353),
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn current_requires_the_active_unit_owned_up_link_and_exact_resolved_settings() {
         let config = ResolverConfig::new(35353);
         assert!(matches!(

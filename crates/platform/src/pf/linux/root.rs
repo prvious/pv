@@ -568,6 +568,20 @@ mod tests {
         };
         assert!(require_owned_status(&name, false, None).is_ok());
         assert!(require_owned_status(&name, true, Some(&status)).is_ok());
+        let service_name = HTTP.service_name();
+        let service_status = UnitStatus {
+            fragment_path: path(&service_name),
+            drop_in_paths: vec![
+                "/usr/lib/systemd/system/service.d/10-timeout-abort.conf".to_owned(),
+            ],
+            ..status.clone()
+        };
+        assert!(require_owned_status(&service_name, true, Some(&service_status)).is_ok());
+        let mut overridden_service = service_status;
+        overridden_service
+            .drop_in_paths
+            .push("/etc/systemd/system/service.d/administrator.conf".to_owned());
+        assert!(require_owned_status(&service_name, true, Some(&overridden_service)).is_err());
         let mut foreign_fragment = status.clone();
         foreign_fragment.fragment_path = "/run/systemd/system/pv-http.socket".into();
         for (has_file, status) in [(false, &status), (true, &foreign_fragment)] {

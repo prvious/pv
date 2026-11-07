@@ -143,7 +143,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
         &client,
     )?;
     let rustfs = commands.install(&rustfs_adapter()?, setup_track_selector("rustfs")?, &client)?;
-    let composer = if TargetPlatform::current()? == TargetPlatform::DarwinArm64 {
+    let composer = if TargetPlatform::current()? != TargetPlatform::DarwinAmd64 {
         Some(commands.install_composer_with_php_pair(setup_track_selector("php")?, &client)?)
     } else {
         None
