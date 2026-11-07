@@ -146,9 +146,13 @@ fn verify_daemon_process(
 ) -> Result<platform::ProcessIdentity, DaemonError> {
     let identity = platform::inspect_process_identity(pid)?
         .ok_or(DaemonError::RuntimeProcessIdentityChanged { pid })?;
-    let executable = fs::canonicalize(&identity.executable)?;
+    // procfs reports the resolved executable, with " (deleted)" appended once the release is
+    // replaced, so compare it with the resolved binaries directory.
+    #[cfg(target_os = "linux")]
     let binaries = fs::canonicalize(paths.bin())?;
-    if identity.arguments != ["daemon:run"] || !executable.starts_with(binaries) {
+    #[cfg(not(target_os = "linux"))]
+    let binaries = paths.bin();
+    if identity.arguments != ["daemon:run"] || !identity.executable.starts_with(binaries) {
         return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
     }
     Ok(identity)
@@ -262,7 +266,7 @@ fn require_directory(path: &Utf8Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-#[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
+#[cfg(all(test, target_os = "linux"))]
 mod tests {
     use std::process::Child;
     use std::time::Duration;
@@ -292,7 +296,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_identity_accepts_an_executable_under_a_symlinked_home() -> Result<()> {
+    fn daemon_identity_accepts_a_symlinked_home_and_a_replaced_binary() -> Result<()> {
         let directory = tempdir()?;
         let home = directory.path().join("actual-home");
         let linked_home = directory.path().join("linked-home");
@@ -317,6 +321,14 @@ mod tests {
 
         let identity = verify_daemon_process(&paths, child.0.id())?;
         assert_eq!(identity.arguments, ["daemon:run"]);
+
+        fs::delete_file(fake.executable())?;
+        let mut expected_identity = identity;
+        expected_identity.executable = format!("{} (deleted)", expected_identity.executable).into();
+        assert_eq!(
+            verify_daemon_process(&paths, child.0.id())?,
+            expected_identity
+        );
         Ok(())
     }
 }

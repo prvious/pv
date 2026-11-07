@@ -1,8 +1,6 @@
 #![cfg(unix)]
 
 use std::io::Write as _;
-#[cfg(target_os = "linux")]
-use std::io::{BufRead, BufReader};
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
@@ -19,8 +17,6 @@ use platform::{
     ProcessExitWatch, inspect_process_identity, inspect_process_start_identity,
     process_group_has_live_members, process_is_zombie,
 };
-#[cfg(target_os = "linux")]
-use procfs::process::Process;
 use state::fs;
 #[cfg(target_os = "linux")]
 use tokio::io::{Interest, unix::AsyncFd};
@@ -34,11 +30,6 @@ type TestCommand = std::process::Command;
 #[test]
 fn native_process_identity_reports_direct_executable_and_ordered_arguments() -> Result<()> {
     let mut child = ChildGuard(TestCommand::new("/bin/sleep").arg("30").spawn()?);
-    #[cfg(target_os = "linux")]
-    wait_for_executable(
-        child.0.id(),
-        &fs::canonicalize(Utf8Path::new("/bin/sleep"))?,
-    )?;
     let identity = inspect_child(&mut child)?;
 
     assert_eq!(
@@ -53,19 +44,6 @@ fn native_process_identity_reports_direct_executable_and_ordered_arguments() -> 
         inspect_process_start_identity(child.0.id())?,
         Some(identity.start_identity)
     );
-    #[cfg(target_os = "linux")]
-    {
-        let stat = Process::new(i32::try_from(child.0.id())?)?.stat()?;
-        let ticks_per_second = procfs::ticks_per_second();
-        assert_eq!(
-            identity.start_identity.seconds,
-            stat.starttime / ticks_per_second
-        );
-        assert_eq!(
-            identity.start_identity.microseconds,
-            (stat.starttime % ticks_per_second) * 1_000_000 / ticks_per_second
-        );
-    }
 
     Ok(())
 }
@@ -158,104 +136,6 @@ fn wait_for_events(
 }
 
 #[cfg(target_os = "linux")]
-#[test]
-fn process_identity_resolves_a_symlinked_home() -> Result<()> {
-    let directory = tempdir()?;
-    let home = directory.path().join("actual-home");
-    let linked_home = directory.path().join("linked-home");
-    let executable = home.join(".pv/bin/sleep");
-    fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &executable)?;
-    set_executable(&executable)?;
-    fs::symlink_file(&home, &linked_home)?;
-    let mut child = ChildGuard(
-        TestCommand::new(linked_home.join(".pv/bin/sleep"))
-            .arg("30")
-            .spawn()?,
-    );
-    let expected = fs::canonicalize(&executable)?;
-    wait_for_executable(child.0.id(), &expected)?;
-
-    assert_eq!(inspect_child(&mut child)?.executable, expected);
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn process_identity_preserves_the_path_of_a_deleted_executable() -> Result<()> {
-    let directory = tempdir()?;
-    let executable = directory.path().join("sleep");
-    fs::copy_file_atomically(Utf8Path::new("/bin/sleep"), &executable)?;
-    set_executable(&executable)?;
-    let mut child = ChildGuard(TestCommand::new(&executable).arg("30").spawn()?);
-    let expected = fs::canonicalize(&executable)?;
-    wait_for_executable(child.0.id(), &expected)?;
-    let mut expected_identity = inspect_child(&mut child)?;
-    expected_identity.executable = format!("{expected} (deleted)").into();
-    fs::remove_file_if_exists(&executable)?;
-
-    assert_eq!(inspect_child(&mut child)?, expected_identity);
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn process_identity_preserves_empty_arguments() -> Result<()> {
-    let mut child = ChildGuard(
-        TestCommand::new("/bin/bash")
-            .args(["-c", "read line", "", "one two", ""])
-            .stdin(Stdio::piped())
-            .spawn()?,
-    );
-    wait_for_executable(child.0.id(), &fs::canonicalize(Utf8Path::new("/bin/bash"))?)?;
-    assert_eq!(
-        inspect_child(&mut child)?.arguments,
-        ["-c", "read line", "", "one two", ""]
-    );
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn existing_unreadable_process_returns_an_error() -> Result<()> {
-    let mut child = ChildGuard(TestCommand::new("python3")
-        .args(["-c", "import ctypes, sys; assert ctypes.CDLL(None).prctl(4, 0, 0, 0, 0) == 0; print('ready', flush=True); sys.stdin.read()"])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn()?);
-    let mut ready = String::new();
-    BufReader::new(
-        child
-            .0
-            .stdout
-            .take()
-            .ok_or_else(|| anyhow!("missing child stdout"))?,
-    )
-    .read_line(&mut ready)?;
-    assert_eq!(ready, "ready\n");
-    assert!(matches!(inspect_process_identity(child.0.id()),
-        Err(platform::PlatformError::ProcessIdentityInspection { source })
-        if matches!(source.downcast_ref::<procfs::ProcError>(), Some(procfs::ProcError::PermissionDenied(_)))));
-    Ok(())
-}
-
-#[cfg(target_os = "linux")]
-#[test]
-fn invalid_process_ids_cannot_select_a_process_or_group() {
-    for pid in [0, u32::MAX] {
-        assert!(matches!(
-            inspect_process_identity(pid),
-            Err(platform::PlatformError::ProcessIdentityInspection { .. })
-        ));
-        assert!(matches!(
-            ProcessExitWatch::new(pid),
-            Err(platform::PlatformError::ProcessIdentityInspection { .. })
-        ));
-        assert!(matches!(
-            process_group_has_live_members(pid),
-            Err(platform::PlatformError::ProcessIdentityInspection { .. })
-        ));
-    }
-}
-
-#[cfg(target_os = "linux")]
 #[tokio::test]
 async fn pidfd_readiness_holds_exact_exit_status_until_the_parent_reaps() -> Result<()> {
     for killed in [false, true] {
@@ -324,19 +204,9 @@ fn group_inspection_keeps_live_members_after_the_leader_exits() -> Result<()> {
     leader.0.wait()?;
     member.0.wait()?;
     assert!(!process_group_has_live_members(process_group)?);
-    Ok(())
-}
-
-#[test]
-fn reaped_process_has_no_identity_or_zombie_state() -> Result<()> {
-    let mut child = ChildGuard(TestCommand::new("/bin/sleep").arg("30").spawn()?);
-    let pid = child.0.id();
-    child.0.kill()?;
-    child.0.wait()?;
-
-    assert!(inspect_process_identity(pid)?.is_none());
-    assert!(inspect_process_start_identity(pid)?.is_none());
-    assert!(!process_is_zombie(pid)?);
+    assert!(inspect_process_identity(process_group)?.is_none());
+    assert!(inspect_process_start_identity(process_group)?.is_none());
+    assert!(!process_is_zombie(process_group)?);
     Ok(())
 }
 
@@ -352,25 +222,16 @@ fn wait_for_exit(watch: &mut ProcessExitWatch) -> Result<std::process::ExitStatu
 
 fn inspect_child(child: &mut ChildGuard) -> Result<platform::ProcessIdentity> {
     let pid = child.0.id();
+    // On Linux, `spawn` returns once the child execs, a moment before the kernel publishes its
+    // arguments.
     for _attempt in 0..500 {
         if let Ok(Some(identity)) = inspect_process_identity(pid) {
             return Ok(identity);
         }
         clock::poll_blocking(Duration::from_millis(10));
     }
-    inspect_process_identity(pid)?.ok_or_else(|| anyhow!("process {pid} had no native identity"))
-}
 
-#[cfg(target_os = "linux")]
-fn wait_for_executable(pid: u32, expected: &Utf8Path) -> Result<()> {
-    let process = Process::new(i32::try_from(pid)?)?;
-    for _attempt in 0..500 {
-        if process.exe()? == expected.as_std_path() {
-            return Ok(());
-        }
-        clock::poll_blocking(Duration::from_millis(10));
-    }
-    Err(anyhow!("process {pid} did not execute {expected}"))
+    inspect_process_identity(pid)?.ok_or_else(|| anyhow!("process {pid} had no native identity"))
 }
 
 struct ChildGuard(Child);

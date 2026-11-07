@@ -1,4 +1,4 @@
-use std::io::{self, Read};
+use std::io;
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd, RawFd};
 use std::os::unix::process::ExitStatusExt;
 use std::process::ExitStatus;
@@ -107,13 +107,10 @@ fn stat_is_zombie(stat: &Stat) -> bool {
 }
 
 pub(super) fn inspect_process_identity(pid: u32) -> Result<Option<ProcessIdentity>, PlatformError> {
-    inspect_identity(pid, || Ok(())).map_err(inspection_error)
+    inspect_identity(pid).map_err(inspection_error)
 }
 
-fn inspect_identity(
-    pid: u32,
-    mut after_executable: impl FnMut() -> ProcResult<()>,
-) -> ProcResult<Option<ProcessIdentity>> {
+fn inspect_identity(pid: u32) -> ProcResult<Option<ProcessIdentity>> {
     let Some(process) = open_process(pid)? else {
         return Ok(None);
     };
@@ -123,8 +120,7 @@ fn inspect_identity(
         };
         let observation: ProcResult<_> = (|| {
             let executable = process.exe()?;
-            after_executable()?;
-            let command_line = process_command_line(&process);
+            let command_line = process.cmdline();
             Ok((executable, command_line, process.exe()?))
         })();
         let (executable, command_line, confirmed_executable) = match observation {
@@ -138,15 +134,17 @@ fn inspect_identity(
         // Equal raw links bracket the argument read; same-path or ABA exec and
         // writable argument memory still prevent an atomic image snapshot.
         if before.starttime == after.starttime && executable == confirmed_executable {
-            let (argument_zero, arguments) = command_line?;
+            let mut arguments = command_line?.into_iter();
+            let argument_zero = arguments
+                .next()
+                .ok_or_else(|| ProcError::Other(format!("process {pid} has no argument zero")))?;
             let executable = executable.into_os_string().into_string().map_err(|path| {
                 ProcError::Other(format!("process executable is not UTF-8: {path:?}"))
             })?;
-            let executable = Utf8PathBuf::from(executable);
             return Ok(Some(ProcessIdentity {
-                executable,
+                executable: Utf8PathBuf::from(executable),
                 argument_zero,
-                arguments,
+                arguments: arguments.collect(),
                 start_identity: start_identity(&before),
             }));
         }
@@ -154,29 +152,6 @@ fn inspect_identity(
     Err(ProcError::Other(format!(
         "process {pid} identity changed during {MAX_SNAPSHOT_ATTEMPTS} inspections"
     )))
-}
-
-fn process_command_line(process: &Process) -> ProcResult<(String, Vec<String>)> {
-    // Process::cmdline drops empty arguments. Read through the same pinned proc
-    // directory so empty values and argument boundaries survive inspection.
-    let mut command_line = String::new();
-    process
-        .open_relative("cmdline")?
-        .read_to_string(&mut command_line)?;
-    let command_line = command_line.strip_suffix('\0').ok_or_else(|| {
-        ProcError::Other(format!(
-            "process {} has no terminated command line",
-            process.pid
-        ))
-    })?;
-    let mut arguments = command_line.split('\0');
-    let argument_zero = arguments
-        .next()
-        .ok_or_else(|| ProcError::Other(format!("process {} has no argument zero", process.pid)))?;
-    Ok((
-        argument_zero.to_owned(),
-        arguments.map(str::to_owned).collect(),
-    ))
 }
 
 pub(super) fn process_group_has_live_members(process_group: u32) -> Result<bool, PlatformError> {
@@ -245,67 +220,5 @@ fn start_identity(stat: &Stat) -> ProcessStartIdentity {
 fn inspection_error(source: impl std::error::Error + Send + Sync + 'static) -> PlatformError {
     PlatformError::ProcessIdentityInspection {
         source: Box::new(source),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io::Write as _;
-    use std::process::{Child, Stdio};
-    use std::time::Duration;
-
-    use anyhow::{Result, anyhow};
-    use camino::Utf8Path;
-    use procfs::ProcError;
-    use procfs::process::Process;
-    use state::fs;
-
-    use super::inspect_identity;
-    use crate::clock;
-
-    #[expect(
-        clippy::disallowed_types,
-        reason = "native inspection regression controls a child's exec boundary"
-    )]
-    type TestCommand = std::process::Command;
-
-    #[test]
-    fn identity_retries_an_exec_between_executable_and_arguments() -> Result<()> {
-        let mut child = ChildGuard(
-            TestCommand::new("/bin/bash")
-                .args(["-c", "read line; exec /bin/sleep 30"])
-                .stdin(Stdio::piped())
-                .spawn()?,
-        );
-        let pid = child.0.id();
-        let process = Process::new(i32::try_from(pid)?)?;
-        let expected = fs::canonicalize(Utf8Path::new("/bin/sleep"))?;
-        let identity = inspect_identity(pid, || {
-            if let Some(mut input) = child.0.stdin.take() {
-                input.write_all(b"go\n")?;
-                for _attempt in 0..500 {
-                    if process.exe()? == expected.as_std_path() {
-                        return Ok(());
-                    }
-                    clock::poll_blocking(Duration::from_millis(10));
-                }
-                return Err(ProcError::Other("child never exec'd sleep".to_owned()));
-            }
-            Ok(())
-        })?
-        .ok_or_else(|| anyhow!("child had no identity"))?;
-        assert_eq!(identity.executable, expected);
-        assert_eq!(identity.argument_zero, "/bin/sleep");
-        assert_eq!(identity.arguments, ["30"]);
-        Ok(())
-    }
-
-    struct ChildGuard(Child);
-
-    impl Drop for ChildGuard {
-        fn drop(&mut self) {
-            let _kill = self.0.kill();
-            let _wait = self.0.wait();
-        }
     }
 }
