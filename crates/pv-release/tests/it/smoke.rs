@@ -2176,7 +2176,7 @@ fn mysql_build_recipe_rejects_unknown_broken_symlinks() -> Result<()> {
 fn backing_build_recipes_ad_hoc_sign_macho_payloads() -> Result<()> {
     let mut summaries = Vec::new();
     for recipe in BackingBuildRecipe::all() {
-        let run = run_backing_build_recipe_signing_smoke(recipe)?;
+        let run = run_backing_build_recipe_payload_smoke(recipe, false)?;
         assert!(
             run.output.status.success(),
             "{} build recipe failed: {}",
@@ -2212,6 +2212,48 @@ fn backing_build_recipes_ad_hoc_sign_macho_payloads() -> Result<()> {
 
     assert_debug_snapshot!(summaries);
 
+    Ok(())
+}
+
+#[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn linux_build_recipes_validate_elf_before_final_outputs() -> Result<()> {
+    let mut summaries = Vec::new();
+    for mut recipe in BackingBuildRecipe::all() {
+        recipe.platform = if cfg!(target_arch = "aarch64") {
+            "linux-arm64"
+        } else {
+            "linux-amd64"
+        };
+        for invalid_rpath in [false, true] {
+            let run = run_backing_build_recipe_payload_smoke(recipe, invalid_rpath)?;
+            assert_eq!(
+                run.output.status.success(),
+                !invalid_rpath,
+                "{} invalid_rpath={invalid_rpath}: {}",
+                recipe.resource,
+                command_output_debug(&run.output)
+            );
+            assert_eq!(run.archive_exists, !invalid_rpath);
+            assert_eq!(run.record_json.is_some(), !invalid_rpath);
+            assert!(run.signed_files.is_empty());
+            assert_eq!(run.validate_log.is_empty(), invalid_rpath);
+            summaries.push((
+                recipe.resource,
+                invalid_rpath,
+                run.validate_log
+                    .replace(&run.out_dir, "<out>")
+                    .replace(recipe.platform, "<native-platform>"),
+                String::from_utf8(run.output.stderr)?
+                    .replace(&run.out_dir, "<out>")
+                    .replace(recipe.platform, "<native-platform>"),
+            ));
+        }
+    }
+    assert_debug_snapshot!(summaries);
     Ok(())
 }
 
@@ -2826,6 +2868,7 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     write_redis_source_archive_with_options(
         &source_archive,
         options.include_fast_float_legal_header,
+        false,
     )?;
     write_fake_redis_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
@@ -3471,8 +3514,9 @@ fn run_composer_build_recipe_smoke() -> Result<ComposerBuildRecipeRun> {
     })
 }
 
-fn run_backing_build_recipe_signing_smoke(
+fn run_backing_build_recipe_payload_smoke(
     recipe: BackingBuildRecipe,
+    invalid_elf_rpath: bool,
 ) -> Result<BackingBuildRecipeRun> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
@@ -3484,17 +3528,19 @@ fn run_backing_build_recipe_signing_smoke(
     let validate_log = tempdir.path().join("validate.log");
 
     create_dir_all(&fake_bin)?;
-    write_backing_source_archive(&source_archive, recipe)?;
+    write_backing_source_archive(&source_archive, recipe, invalid_elf_rpath)?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
-    write_fake_codesign(&fake_bin.join("codesign"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
-    write_fake_lipo(&fake_bin.join("lipo"))?;
-    write_fake_make(&fake_bin.join("make"))?;
-    write_fake_otool(&fake_bin.join("otool"))?;
-    write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_cpu_tools(&fake_bin)?;
-    write_fake_uname(&fake_bin.join("uname"))?;
-    write_fake_unzip(&fake_bin.join("unzip"))?;
+    if !recipe.platform.starts_with("linux-") {
+        write_fake_make(&fake_bin.join("make"))?;
+        write_fake_codesign(&fake_bin.join("codesign"))?;
+        write_fake_lipo(&fake_bin.join("lipo"))?;
+        write_fake_otool(&fake_bin.join("otool"))?;
+        write_fake_macho_file(&fake_bin.join("file"))?;
+        write_fake_uname(&fake_bin.join("uname"))?;
+        write_fake_unzip(&fake_bin.join("unzip"))?;
+    }
     write_file(&curl_log, "")?;
     write_file(&sign_log, "")?;
     write_file(&validate_log, "")?;
@@ -5790,13 +5836,52 @@ fn write_openssl_source_archive(path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-fn write_backing_source_archive(path: &Utf8Path, recipe: BackingBuildRecipe) -> Result<()> {
-    match recipe.source_kind {
-        BackingSourceKind::Redis => write_redis_source_archive(path),
-        BackingSourceKind::TarGzBinary => {
-            write_single_file_archive(path, recipe.resource, b"binary fixture")
+fn write_backing_source_archive(
+    path: &Utf8Path,
+    recipe: BackingBuildRecipe,
+    invalid_elf_rpath: bool,
+) -> Result<()> {
+    if matches!(recipe.source_kind, BackingSourceKind::Redis) {
+        return write_redis_source_archive_with_options(path, true, invalid_elf_rpath);
+    }
+    if recipe.platform.starts_with("linux-") {
+        let source = path.with_extension("c");
+        let binary = path.with_extension("elf");
+        write_file(&source, "int main(void) { return 0; }\n")?;
+        let mut command = StdCommand::new("cc");
+        command.arg(&source).arg("-o").arg(&binary);
+        if invalid_elf_rpath {
+            command.arg("-Wl,-rpath,/tmp/build/lib");
         }
-        BackingSourceKind::ZipBinary => write_file(path, "zip fixture\n"),
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "ELF compilation failed: {}",
+            command_output_debug(&output)
+        );
+        if matches!(recipe.source_kind, BackingSourceKind::ZipBinary) {
+            let output = StdCommand::new("python3")
+                .args([
+                    "-c",
+                    "import sys, zipfile\nwith zipfile.ZipFile(sys.argv[1], 'w') as archive:\n    archive.write(sys.argv[2], sys.argv[3])",
+                ])
+                .arg(path)
+                .arg(&binary)
+                .arg(recipe.resource)
+                .output()?;
+            assert!(
+                output.status.success(),
+                "ZIP creation failed: {}",
+                command_output_debug(&output)
+            );
+            return Ok(());
+        }
+        return write_single_file_archive(path, recipe.resource, &read_bytes(&binary)?);
+    }
+    if matches!(recipe.source_kind, BackingSourceKind::ZipBinary) {
+        write_file(path, "zip fixture\n")
+    } else {
+        write_single_file_archive(path, recipe.resource, b"binary fixture")
     }
 }
 
@@ -5835,10 +5920,6 @@ fn write_single_binary_source_archive(path: &Utf8Path, binary_name: &str) -> Res
     Ok(())
 }
 
-fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
-    write_redis_source_archive_with_options(path, true)
-}
-
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
@@ -5846,10 +5927,26 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
 fn write_redis_source_archive_with_options(
     path: &Utf8Path,
     include_fast_float_legal_header: bool,
+    invalid_elf_rpath: bool,
 ) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = Builder::new(encoder);
+
+    append_archive_file(
+        &mut builder,
+        "redis-source/src/fixture.c",
+        b"int main(void) { return 0; }\n",
+    )?;
+    let linker_flags = if invalid_elf_rpath {
+        "-Wl,-rpath,/tmp/build/lib"
+    } else {
+        ""
+    };
+    let makefile = format!(
+        "all:\n\ttest \"$(BUILD_TLS)\" = no\n\t$(CC) src/fixture.c -o src/redis-server {linker_flags}\n\t$(CC) src/fixture.c -o src/redis-cli\n"
+    );
+    append_archive_file(&mut builder, "redis-source/Makefile", makefile.as_bytes())?;
 
     append_archive_file(
         &mut builder,
@@ -5965,10 +6062,14 @@ fn archive_entries(path: &Utf8Path) -> Result<Vec<String>> {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "release tooling tests read local source archive fixtures to seed matching checksums"
+    reason = "release tooling tests read local source archives and compiled fixture payloads"
 )]
+fn read_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
+    Ok(std::fs::read(path)?)
+}
+
 fn file_sha256(path: &Utf8Path) -> Result<String> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_bytes(path)?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
 

@@ -18,12 +18,22 @@ recipe_dir="$ROOT/release/artifacts/recipes/caddy"
 
 need awk
 need cargo
-need codesign
 need curl
-need lipo
-need otool
 need tar
 need uname
+
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    need codesign
+    need lipo
+    need otool
+    ;;
+  linux-amd64 | linux-arm64)
+    need file
+    need readelf
+    ;;
+  *) die "unsupported Caddy artifact platform: $PLATFORM" ;;
+esac
 
 if [ -z "$PV_COMMIT" ]; then
   need git
@@ -31,7 +41,7 @@ if [ -z "$PV_COMMIT" ]; then
 fi
 
 case "$PLATFORM:$(uname -s):$(uname -m)" in
-  darwin-arm64:Darwin:arm64 | darwin-amd64:Darwin:x86_64) ;;
+  darwin-arm64:Darwin:arm64 | darwin-amd64:Darwin:x86_64 | linux-arm64:Linux:aarch64 | linux-amd64:Linux:x86_64) ;;
   *) die "Caddy artifacts must be built on a native runner for $PLATFORM" ;;
 esac
 
@@ -68,8 +78,13 @@ tar -xzf "$source_archive" -C "$extract_dir"
 [ -f "$extract_dir/caddy" ] || die "Caddy upstream archive did not contain caddy"
 cp "$extract_dir/caddy" "$root_dir/bin/caddy"
 chmod 755 "$root_dir/bin/caddy"
-validate_macho_binary "$root_dir/bin/caddy" "$PV_PLATFORM" "$CADDY_DEPLOYMENT_TARGET"
-pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
+case "$PV_PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    validate_macho_binary "$root_dir/bin/caddy" "$PV_PLATFORM" "$CADDY_DEPLOYMENT_TARGET"
+    pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
+    ;;
+  linux-amd64 | linux-arm64) pv_recipe_validate_elf_tree "$root_dir" "$PV_PLATFORM" ;;
+esac
 cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
 cp "$recipe_dir/NOTICE" "$root_dir/NOTICE"
 
