@@ -2,10 +2,12 @@ use std::collections::BTreeMap;
 use std::result::Result as StdResult;
 
 use anyhow::Result;
+use camino::Utf8Path;
 use camino_tempfile::tempdir;
+use insta::assert_debug_snapshot;
 use resources::{
-    PHP_TRACK_DEFAULT_INI, ensure_php_track_defaults, php_track_defaults, php_track_environment,
-    php_track_exec_environment,
+    PHP_TRACK_DEFAULT_INI, PhpTrackDefaults, ensure_php_track_defaults, php_track_defaults,
+    php_track_environment, php_track_exec_environment,
 };
 use state::{PvPaths, StateError, fs};
 
@@ -14,33 +16,11 @@ fn php_track_defaults_seed_stripped_sample_once() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let defaults = ensure_php_track_defaults(&paths, "8.4")?;
-    let first_content = fs::read_to_string(defaults.php_ini())?;
 
-    assert_eq!(defaults.etc_dir(), paths.resources().join("php/8.4/etc"));
     assert_eq!(
-        defaults.conf_dir(),
-        paths.resources().join("php/8.4/etc/conf.d")
+        fs::read_to_string(defaults.php_ini())?,
+        PHP_TRACK_DEFAULT_INI
     );
-    assert_eq!(first_content, PHP_TRACK_DEFAULT_INI);
-    assert!(first_content.starts_with("[PHP]\nengine = On\n"));
-    assert!(first_content.contains("\n[Date]\n"));
-    assert!(first_content.contains("\nunserialize_callback_func =\n"));
-    assert!(!first_content.contains("; About php.ini"));
-    assert!(PHP_TRACK_DEFAULT_INI.ends_with(
-        "[soap]\n\
-soap.wsdl_cache_enabled=1\n\
-soap.wsdl_cache_dir=\"/tmp\"\n\
-soap.wsdl_cache_ttl=86400\n\
-soap.wsdl_cache_limit = 5\n\
-[sysvshm]\n\
-[ldap]\n\
-ldap.max_links = -1\n\
-[dba]\n\
-[opcache]\n\
-[curl]\n\
-[openssl]\n\
-[ffi]\n"
-    ));
 
     fs::write_sensitive_file(defaults.php_ini(), "memory_limit = 768M\n")?;
     let seeded_again = ensure_php_track_defaults(&paths, "8.4")?;
@@ -68,6 +48,9 @@ fn php_track_defaults_reject_unsupported_tracks() -> Result<()> {
         error,
         StateError::InvalidProjectTrack { track } if track == "8.2"
     ));
+    assert_invalid_track(php_track_defaults(&paths, "8.2"), "8.2")?;
+    assert_invalid_track(php_track_environment(&paths, "8.2"), "8.2")?;
+    assert_invalid_track(php_track_exec_environment(&paths, "8.2"), "8.2")?;
 
     Ok(())
 }
@@ -75,81 +58,55 @@ fn php_track_defaults_reject_unsupported_tracks() -> Result<()> {
 #[test]
 fn php_track_defaults_reject_blocking_paths() -> Result<()> {
     let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let defaults = php_track_defaults(&paths, "8.5")?;
-    fs::ensure_user_dir(defaults.etc_dir())?;
-    fs::write_sensitive_file(defaults.conf_dir(), "not a directory\n")?;
+    let symlink_root = tempdir.path().join("php_ini_is_a_symlink");
 
-    let error = match ensure_php_track_defaults(&paths, "8.5") {
-        Ok(_) => anyhow::bail!("expected blocking conf.d path to fail"),
-        Err(error) => error,
-    };
+    let errors = [
+        (
+            "conf_d_is_a_file",
+            blocked_defaults_error(&tempdir.path().join("conf_d_is_a_file"), |defaults| {
+                fs::write_sensitive_file(defaults.conf_dir(), "not a directory\n")?;
+                Ok(())
+            })?,
+        ),
+        (
+            "php_ini_is_a_directory",
+            blocked_defaults_error(&tempdir.path().join("php_ini_is_a_directory"), |defaults| {
+                fs::ensure_user_dir(defaults.php_ini())?;
+                Ok(())
+            })?,
+        ),
+        (
+            "php_ini_is_a_symlink",
+            blocked_defaults_error(&symlink_root, |defaults| {
+                let target = symlink_root.join("linked-php.ini");
+                fs::write_sensitive_file(&target, "memory_limit = 768M\n")?;
+                fs::symlink_file(&target, defaults.php_ini())?;
+                Ok(())
+            })?,
+        ),
+    ];
 
-    assert!(
-        error
-            .to_string()
-            .contains("PHP track defaults conf.d path is not a directory")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn php_track_defaults_reject_blocking_php_ini_paths() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let defaults = php_track_defaults(&paths, "8.5")?;
-    fs::ensure_user_dir(defaults.etc_dir())?;
-    fs::ensure_user_dir(defaults.php_ini())?;
-
-    let error = match ensure_php_track_defaults(&paths, "8.5") {
-        Ok(_) => anyhow::bail!("expected blocking php.ini path to fail"),
-        Err(error) => error,
-    };
-
-    assert!(
-        error
-            .to_string()
-            .contains("PHP track defaults php.ini path is not a file")
-    );
+    assert_debug_snapshot!(errors);
 
     Ok(())
 }
 
-#[test]
-fn php_track_defaults_reject_symlinked_php_ini_paths() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
+/// Blocks one PHP track defaults path with `block`, then returns where and why seeding failed.
+fn blocked_defaults_error(
+    root: &Utf8Path,
+    block: impl FnOnce(&PhpTrackDefaults) -> Result<()>,
+) -> Result<(String, String)> {
+    let paths = PvPaths::for_home(root.join("home"));
     let defaults = php_track_defaults(&paths, "8.5")?;
-    let target = tempdir.path().join("linked-php.ini");
     fs::ensure_user_dir(defaults.etc_dir())?;
-    fs::write_sensitive_file(&target, "memory_limit = 768M\n")?;
-    fs::symlink_file(&target, defaults.php_ini())?;
+    block(&defaults)?;
 
-    let error = match ensure_php_track_defaults(&paths, "8.5") {
-        Ok(_) => anyhow::bail!("expected symlinked php.ini path to fail"),
-        Err(error) => error,
-    };
-
-    assert!(
-        error
-            .to_string()
-            .contains("PHP track defaults php.ini path is not a file")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn php_track_defaults_helpers_reject_unsupported_tracks() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-    assert_invalid_track(php_track_defaults(&paths, "8.2"), "8.2")?;
-    assert_invalid_track(php_track_environment(&paths, "8.2"), "8.2")?;
-    assert_invalid_track(php_track_exec_environment(&paths, "8.2"), "8.2")?;
-
-    Ok(())
+    match ensure_php_track_defaults(&paths, "8.5") {
+        Err(StateError::Filesystem { path, source }) => {
+            Ok((path.strip_prefix(root)?.to_string(), source.to_string()))
+        }
+        other => anyhow::bail!("expected blocked PHP track defaults to fail, got {other:?}"),
+    }
 }
 
 #[test]

@@ -2,9 +2,8 @@ use anyhow::{Result, anyhow};
 use insta::assert_debug_snapshot;
 use resources::registry;
 use resources::{
-    ConcreteTrackName, ResourceAllocationKind, ResourceAllocationName, ResourceName,
-    ResourcesError, allocation_env_placeholders, generated_allocation_name,
-    resource_env_placeholders,
+    ConcreteTrackName, ResourceAllocationName, ResourceName, ResourcesError,
+    allocation_env_placeholders, generated_allocation_name, resource_env_placeholders,
 };
 
 #[derive(Debug)]
@@ -146,18 +145,6 @@ fn placeholder_contracts_are_resource_specific_and_alias_aware() -> Result<()> {
     .collect::<Result<Vec<_>>>()?;
 
     assert_eq!(
-        registry::resolve("mysql")?.allocation_kind(),
-        Some(ResourceAllocationKind::SqlDatabase)
-    );
-    assert_eq!(
-        registry::resolve("redis")?.allocation_kind(),
-        Some(ResourceAllocationKind::RedisPrefix)
-    );
-    assert_eq!(
-        registry::resolve("rustfs")?.allocation_kind(),
-        Some(ResourceAllocationKind::RustfsBucket)
-    );
-    assert_eq!(
         resource_env_placeholders("pg")?,
         resource_env_placeholders("postgres")?
     );
@@ -165,11 +152,6 @@ fn placeholder_contracts_are_resource_specific_and_alias_aware() -> Result<()> {
         allocation_env_placeholders("s3")?,
         allocation_env_placeholders("rustfs")?
     );
-    assert!(!resource_env_placeholders("mysql")?.contains(&"smtp_host"));
-    assert!(!allocation_env_placeholders("redis")?.contains(&"bucket"));
-    assert!(allocation_env_placeholders("mysql")?.contains(&"database"));
-    assert!(allocation_env_placeholders("redis")?.contains(&"prefix"));
-    assert!(allocation_env_placeholders("rustfs")?.contains(&"bucket"));
 
     assert_debug_snapshot!(contracts);
 

@@ -1,6 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
-use std::io::{Error, ErrorKind, Write};
+use std::io::{ErrorKind, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use anyhow::{Result, bail};
@@ -64,97 +64,121 @@ fn managed_resource_commands_install_update_list_and_uninstall_fake_adapter() ->
 }
 
 #[test]
-fn managed_resource_commands_install_reports_download_progress() -> Result<()> {
+fn managed_resource_commands_report_download_progress() -> Result<()> {
     let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
+    let commands_in = |home: &str| {
+        ManagedResourceCommands::new(
+            PvPaths::for_home(tempdir.path().join(home)),
+            MANIFEST_URL,
+            TargetPlatform::DarwinArm64,
+        )
+    };
     let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
-    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
-    let manifest = manifest_with_artifacts(&[&artifact]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(artifact.bytes());
-    let progress = RecordingDownloadProgress::default();
+    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
+    let second_artifact = fixture_artifact("7.2.6-pv1", "second")?;
+    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
 
-    commands.install_with_progress(&adapter, TrackSelector::Latest, &client, &progress)?;
+    let install_progress = RecordingDownloadProgress::default();
+    let install_client = ScriptedClient::new()
+        .with_text(&manifest_with_artifacts(&[&first_artifact]))
+        .with_bytes(first_artifact.bytes());
+    commands_in("install").install_with_progress(
+        &adapter,
+        TrackSelector::Latest,
+        &install_client,
+        &install_progress,
+    )?;
 
-    assert_debug_snapshot!(progress.events());
+    let update_progress = RecordingDownloadProgress::default();
+    let update_commands = commands_in("update");
+    let update_client = ScriptedClient::new()
+        .with_text(&manifest_with_artifacts(&[&first_artifact]))
+        .with_bytes(first_artifact.bytes())
+        .with_text(&manifest_with_artifacts(&[
+            &first_artifact,
+            &second_artifact,
+        ]))
+        .with_bytes(second_artifact.bytes());
+    update_commands.install(&adapter, TrackSelector::Latest, &update_client)?;
+    update_commands.update_with_progress(&adapter, &update_client, &update_progress)?;
+
+    let php_pair_progress = RecordingDownloadProgress::default();
+    let php_pair_client = ScriptedClient::new()
+        .with_text(&manifest_with_resources(&[
+            manifest_resource(
+                "php",
+                "8.4",
+                vec![manifest_track("8.4", vec![&php_artifact])],
+            ),
+            manifest_resource(
+                "frankenphp",
+                "8.4",
+                vec![manifest_track("8.4", vec![&frankenphp_artifact])],
+            ),
+        ]))
+        .with_bytes(php_artifact.bytes())
+        .with_bytes(frankenphp_artifact.bytes());
+    commands_in("php-pair").install_php_pair_with_progress(
+        TrackSelector::Latest,
+        &php_pair_client,
+        &php_pair_progress,
+    )?;
+
+    assert_debug_snapshot!([
+        ("install", install_progress.events()),
+        ("update", update_progress.events()),
+        ("php_pair", php_pair_progress.events()),
+    ]);
 
     Ok(())
 }
 
 #[test]
-fn managed_resource_commands_install_uses_prefetched_cached_download_without_rehashing()
+fn managed_resource_commands_install_uses_prefetched_download_snapshot_without_rehashing()
 -> Result<()> {
     let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
     let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
     let artifact = fixture_artifact("7.2.5-pv1", "original")?;
     let replacement = fixture_artifact("7.2.5-pv1", "replacement")?;
     let manifest = manifest_with_artifacts(&[&artifact]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(artifact.bytes());
-    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
-    let resolved =
-        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
-    let downloader = ArtifactDownloader::new(paths.downloads());
-    downloader.download(resolved.artifact(), &client)?;
-    let cached_download = downloader.download(resolved.artifact(), &client)?;
-    assert!(cached_download.is_from_cache());
-    write_fixture_bytes(cached_download.path(), replacement.bytes())?;
 
-    let install = commands.install_resolved_artifact_with_progress(
-        &adapter,
-        resolved,
-        Some(&cached_download),
-        &NoDownloadProgress,
-    )?;
-    let installed_content =
-        fs::read_to_string(&install.current_artifact_path().join("bin/pv-fake-resource"))?;
+    for (home, from_cache) in [("fresh", false), ("cached", true)] {
+        let paths = PvPaths::for_home(tempdir.path().join(home));
+        let commands =
+            ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+        let client = ScriptedClient::new()
+            .with_text(&manifest)
+            .with_bytes(artifact.bytes());
+        let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
+        let resolved =
+            commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
+        let downloader = ArtifactDownloader::new(paths.downloads());
+        let mut download = downloader.download(resolved.artifact(), &client)?;
+        if from_cache {
+            download = downloader.download(resolved.artifact(), &client)?;
+        }
+        assert_eq!(download.is_from_cache(), from_cache);
+        write_fixture_bytes(download.path(), replacement.bytes())?;
 
-    assert_eq!(installed_content, "fake resource original");
-    assert!(install.downloaded_from_cache());
-    assert_eq!(client.byte_request_count(), 1);
+        let install = commands.install_resolved_artifact_with_progress(
+            &adapter,
+            resolved,
+            Some(&download),
+            &NoDownloadProgress,
+        )?;
+        let installed_content =
+            fs::read_to_string(&install.current_artifact_path().join("bin/pv-fake-resource"))?;
 
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_install_uses_prefetched_fresh_download_snapshot() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
-    let artifact = fixture_artifact("7.2.5-pv1", "original")?;
-    let replacement = fixture_artifact("7.2.5-pv1", "replacement")?;
-    let manifest = manifest_with_artifacts(&[&artifact]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(artifact.bytes());
-    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
-    let resolved =
-        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
-    let download =
-        ArtifactDownloader::new(paths.downloads()).download(resolved.artifact(), &client)?;
-    assert!(!download.is_from_cache());
-    write_fixture_bytes(download.path(), replacement.bytes())?;
-
-    let install = commands.install_resolved_artifact_with_progress(
-        &adapter,
-        resolved,
-        Some(&download),
-        &NoDownloadProgress,
-    )?;
-    let installed_content =
-        fs::read_to_string(&install.current_artifact_path().join("bin/pv-fake-resource"))?;
-
-    assert_eq!(installed_content, "fake resource original");
-    assert!(!install.downloaded_from_cache());
-    assert_eq!(client.byte_request_count(), 1);
+        assert_eq!(installed_content, "fake resource original", "{home}");
+        assert_eq!(install.downloaded_from_cache(), from_cache);
+        assert_eq!(client.byte_request_count(), 1);
+    }
 
     Ok(())
 }
@@ -189,121 +213,6 @@ fn failed_prefetched_install_does_not_record_desired_state() -> Result<()> {
             ResourcesError::InvalidArtifactLayout { .. }
         ))
     ));
-    assert!(raw_track_records_summary(&paths, tempdir.path())?.is_empty());
-
-    Ok(())
-}
-
-#[test]
-fn database_open_failure_rolls_back_prefetched_install() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
-    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
-    let second_artifact = fixture_artifact("7.2.6-pv1", "second")?;
-    let first_client = ScriptedClient::new()
-        .with_text(&manifest_with_artifacts(&[&first_artifact]))
-        .with_bytes(first_artifact.bytes());
-    commands.install(&adapter, TrackSelector::Latest, &first_client)?;
-
-    let second_client = ScriptedClient::new()
-        .with_text(&manifest_with_artifacts(&[
-            &first_artifact,
-            &second_artifact,
-        ]))
-        .with_bytes(second_artifact.bytes());
-    let snapshot = commands.manifest_snapshot_with_progress(&second_client, &NoDownloadProgress)?;
-    let resolved =
-        commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
-    let download =
-        ArtifactDownloader::new(paths.downloads()).download(resolved.artifact(), &second_client)?;
-    fs::remove_file_if_exists(paths.db())?;
-    fs::ensure_user_dir(paths.db())?;
-
-    let result = commands.install_resolved_artifact_with_progress(
-        &adapter,
-        resolved,
-        Some(&download),
-        &NoDownloadProgress,
-    );
-
-    assert!(matches!(
-        result,
-        Err(ManagedResourceCommandError::State(
-            state::StateError::Sqlite(_)
-        ))
-    ));
-    assert!(path_exists(&release_path(
-        &paths,
-        "redis",
-        "7.2",
-        first_artifact.version.as_str(),
-    ))?);
-    assert!(!path_exists(&release_path(
-        &paths,
-        "redis",
-        "7.2",
-        second_artifact.version.as_str(),
-    ))?);
-    assert_eq!(
-        symlink_target(&current_path(&paths, "redis", "7.2"))?.as_deref(),
-        Some("releases/7.2.5-pv1")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_rejects_download_for_different_artifact() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
-    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
-    let second_artifact = fixture_artifact("8.0.1-pv1", "second")?;
-    let manifest =
-        manifest_with_tracks(&[("7.2", &[&first_artifact]), ("8.0", &[&second_artifact])]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(first_artifact.bytes());
-    let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
-    let first = commands.resolve_install_artifact(&adapter, TrackName::new("7.2")?, &snapshot)?;
-    let second = commands.resolve_install_artifact(&adapter, TrackName::new("8.0")?, &snapshot)?;
-    let first_download =
-        ArtifactDownloader::new(paths.downloads()).download(first.artifact(), &client)?;
-
-    let result = commands.install_resolved_artifact_with_progress(
-        &adapter,
-        second,
-        Some(&first_download),
-        &NoDownloadProgress,
-    );
-    let Err(ManagedResourceCommandError::Resources(ResourcesError::InvalidArtifactLayout {
-        resource,
-        reason,
-    })) = result
-    else {
-        bail!("expected mismatched prefetched download to be rejected");
-    };
-    let expected_reason = format!(
-        "prefetched download belongs to redis artifact {} checksum {}, not redis artifact {} checksum {}",
-        first_artifact.version,
-        first_artifact.sha256,
-        second_artifact.version,
-        second_artifact.sha256,
-    );
-
-    assert_eq!(resource, "redis");
-    assert_eq!(reason, expected_reason);
-    assert!(!path_exists(&release_path(
-        &paths,
-        "redis",
-        "8.0",
-        &second_artifact.version,
-    ))?);
     assert!(raw_track_records_summary(&paths, tempdir.path())?.is_empty());
 
     Ok(())
@@ -358,31 +267,6 @@ fn managed_resource_commands_install_rolls_back_artifact_when_installed_state_wr
         artifact.version.as_str(),
     ))?);
     assert_eq!(symlink_target(&current_path(&paths, "caddy", "2"))?, None);
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_update_reports_download_progress() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
-    let first_artifact = fixture_artifact("7.2.5-pv1", "first")?;
-    let second_artifact = fixture_artifact("7.2.6-pv1", "second")?;
-    let first_manifest = manifest_with_artifacts(&[&first_artifact]);
-    let second_manifest = manifest_with_artifacts(&[&first_artifact, &second_artifact]);
-    let client = ScriptedClient::new()
-        .with_text(&first_manifest)
-        .with_bytes(first_artifact.bytes())
-        .with_text(&second_manifest)
-        .with_bytes(second_artifact.bytes());
-    let progress = RecordingDownloadProgress::default();
-
-    commands.install(&adapter, TrackSelector::Latest, &client)?;
-    commands.update_with_progress(&adapter, &client, &progress)?;
-
-    assert_debug_snapshot!(progress.events());
 
     Ok(())
 }
@@ -808,8 +692,13 @@ fn managed_resource_commands_update_without_installed_tracks_does_not_refresh_ma
     let client = ScriptedClient::new();
 
     let updated = commands.update(&adapter, &client)?;
+    let updated_php_pairs = commands.update_php_pairs(&client)?;
 
-    assert_debug_snapshot!(update_summary(&updated, tempdir.path())?);
+    assert_debug_snapshot!((
+        update_summary(&updated, tempdir.path())?,
+        install_summaries(updated_php_pairs.installs(), tempdir.path())?,
+        client.text_request_count(),
+    ));
 
     Ok(())
 }
@@ -935,43 +824,6 @@ fn managed_resource_commands_install_php_pair_resolves_latest_once_for_both_reso
 }
 
 #[test]
-fn managed_resource_commands_install_php_pair_reports_download_progress() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands = ManagedResourceCommands::new(paths, MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
-    let frankenphp_artifact = runtime_fixture_artifact(
-        "frankenphp",
-        "8.4.8-pv1",
-        "bin/frankenphp",
-        "frankenphp 8.4",
-    )?;
-    let manifest = manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            "8.4",
-            vec![manifest_track("8.4", vec![&php_artifact])],
-        ),
-        manifest_resource(
-            "frankenphp",
-            "8.4",
-            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
-        ),
-    ]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(php_artifact.bytes())
-        .with_bytes(frankenphp_artifact.bytes());
-    let progress = RecordingDownloadProgress::default();
-
-    commands.install_php_pair_with_progress(TrackSelector::Latest, &client, &progress)?;
-
-    assert_debug_snapshot!(progress.events());
-
-    Ok(())
-}
-
-#[test]
 fn managed_resource_commands_install_php_pair_seeds_track_defaults() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1023,43 +875,56 @@ fn managed_resource_commands_install_php_pair_seeds_track_defaults() -> Result<(
 }
 
 #[test]
-fn managed_resource_commands_prefetched_php_pair_rolls_back_first_install() -> Result<()> {
+fn managed_resource_commands_php_pair_second_artifact_failure_rolls_back_php() -> Result<()> {
     let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
     let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
-    let frankenphp_artifact = runtime_fixture_artifact(
+    let invalid_frankenphp_artifact = runtime_fixture_artifact(
         "frankenphp",
         "8.4.8-pv1",
         "bin/not-frankenphp",
         "invalid frankenphp 8.4",
     )?;
-    let manifest = manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            "8.4",
-            vec![manifest_track("8.4", vec![&php_artifact])],
-        ),
-        manifest_resource(
-            "frankenphp",
-            "8.4",
-            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
-        ),
-    ]);
+    let frankenphp_artifact = runtime_fixture_artifact(
+        "frankenphp",
+        "8.4.8-pv1",
+        "bin/frankenphp",
+        "frankenphp 8.4",
+    )?;
+    let pair_manifest = |frankenphp: &FixtureArtifact| {
+        manifest_with_resources(&[
+            manifest_resource(
+                "php",
+                "8.4",
+                vec![manifest_track("8.4", vec![&php_artifact])],
+            ),
+            manifest_resource(
+                "frankenphp",
+                "8.4",
+                vec![manifest_track("8.4", vec![frankenphp])],
+            ),
+        ])
+    };
+
+    // A prefetched pair whose FrankenPHP archive has the wrong layout.
+    let prefetched_root = tempdir.path().join("prefetched");
+    let prefetched_paths = PvPaths::for_home(prefetched_root.join("home"));
+    let commands = ManagedResourceCommands::new(
+        prefetched_paths.clone(),
+        MANIFEST_URL,
+        TargetPlatform::DarwinArm64,
+    );
     let client = ScriptedClient::new()
-        .with_text(&manifest)
+        .with_text(&pair_manifest(&invalid_frankenphp_artifact))
         .with_bytes(php_artifact.bytes())
-        .with_bytes(frankenphp_artifact.bytes());
+        .with_bytes(invalid_frankenphp_artifact.bytes());
     let snapshot = commands.manifest_snapshot_with_progress(&client, &NoDownloadProgress)?;
     let track = TrackName::new("8.4")?;
     let php = commands.resolve_install_artifact(&php_adapter()?, track.clone(), &snapshot)?;
     let frankenphp = commands.resolve_install_artifact(&frankenphp_adapter()?, track, &snapshot)?;
-    let downloader = ArtifactDownloader::new(paths.downloads());
+    let downloader = ArtifactDownloader::new(prefetched_paths.downloads());
     let php_download = downloader.download(php.artifact(), &client)?;
     let frankenphp_download = downloader.download(frankenphp.artifact(), &client)?;
-
-    let result = commands.install_resolved_php_pair_with_progress(
+    let prefetched_result = commands.install_resolved_php_pair_with_progress(
         php,
         Some(&php_download),
         frankenphp,
@@ -1067,20 +932,37 @@ fn managed_resource_commands_prefetched_php_pair_rolls_back_first_install() -> R
         &NoDownloadProgress,
     );
 
-    assert!(matches!(
-        result,
-        Err(ManagedResourceCommandError::Resources(
-            ResourcesError::InvalidArtifactLayout { .. }
-        ))
+    // A direct install whose FrankenPHP download fails.
+    let direct_root = tempdir.path().join("direct");
+    let direct_paths = PvPaths::for_home(direct_root.join("home"));
+    let direct_client = ScriptedClient::new()
+        .with_text(&pair_manifest(&frankenphp_artifact))
+        .with_bytes(php_artifact.bytes());
+    let direct_result = ManagedResourceCommands::new(
+        direct_paths.clone(),
+        MANIFEST_URL,
+        TargetPlatform::DarwinArm64,
+    )
+    .install_php_pair(TrackSelector::Latest, &direct_client);
+
+    for (root, paths) in [
+        (&prefetched_root, &prefetched_paths),
+        (&direct_root, &direct_paths),
+    ] {
+        assert!(!path_exists(&release_path(
+            paths,
+            "php",
+            "8.4",
+            php_artifact.version.as_str(),
+        ))?);
+        assert_eq!(symlink_target(&current_path(paths, "php", "8.4"))?, None);
+        assert!(raw_track_records_summary(paths, root)?.is_empty());
+    }
+    assert_debug_snapshot!((
+        prefetched_result,
+        direct_result,
+        direct_client.byte_request_count(),
     ));
-    assert!(!path_exists(&release_path(
-        &paths,
-        "php",
-        "8.4",
-        php_artifact.version.as_str(),
-    ))?);
-    assert!(!path_exists(&current_path(&paths, "php", "8.4"))?);
-    assert!(raw_track_records_summary(&paths, tempdir.path())?.is_empty());
 
     Ok(())
 }
@@ -1119,119 +1001,6 @@ fn managed_resource_commands_install_php_pair_preflights_frankenphp_track_before
     let state_after_failure = raw_track_records_summary(&paths, tempdir.path())?;
 
     assert_debug_snapshot!((result, state_after_failure, client.byte_request_count(),));
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_install_php_pair_reports_rollback_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
-    let frankenphp_artifact = runtime_fixture_artifact(
-        "frankenphp",
-        "8.4.8-pv1",
-        "bin/frankenphp",
-        "frankenphp 8.4",
-    )?;
-    let manifest = manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            "8.4",
-            vec![manifest_track("8.4", vec![&php_artifact])],
-        ),
-        manifest_resource(
-            "frankenphp",
-            "8.4",
-            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
-        ),
-    ]);
-    let php_current_path = current_path(&paths, "php", "8.4");
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(php_artifact.bytes())
-        .with_byte_error_after(
-            ResourcesError::HttpRequestFailed {
-                url: "https://artifacts.example.test/frankenphp-8.4.8-pv1-darwin-arm64.tar.gz"
-                    .to_string(),
-                reason: "scripted downstream failure".to_string(),
-            },
-            move || replace_current_pointer_with_directory(&php_current_path),
-        );
-
-    let result = commands.install_php_pair(TrackSelector::Latest, &client);
-    let php_release_exists = path_exists(&release_path(
-        &paths,
-        "php",
-        "8.4",
-        php_artifact.version.as_str(),
-    ))?;
-    let php_current_is_directory = path_is_directory(&current_path(&paths, "php", "8.4"))?;
-    let result = format!("{result:#?}")
-        .replace(tempdir.path().as_str(), "<tempdir>")
-        .replace(
-            "Operation not permitted (os error 1)",
-            "<directory remove error>",
-        )
-        .replace("Is a directory (os error 21)", "<directory remove error>");
-
-    assert_debug_snapshot!((result, php_release_exists, php_current_is_directory,));
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_install_php_pair_second_artifact_failure_records_no_pair_state()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
-    let frankenphp_artifact = runtime_fixture_artifact(
-        "frankenphp",
-        "8.4.8-pv1",
-        "bin/frankenphp",
-        "frankenphp 8.4",
-    )?;
-    let manifest = manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            "8.4",
-            vec![manifest_track("8.4", vec![&php_artifact])],
-        ),
-        manifest_resource(
-            "frankenphp",
-            "8.4",
-            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
-        ),
-    ]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(php_artifact.bytes());
-
-    let result = commands.install_php_pair(TrackSelector::Latest, &client);
-    let state_after_failure = raw_track_records_summary(&paths, tempdir.path())?;
-    let php_release_exists = path_exists(&release_path(
-        &paths,
-        "php",
-        "8.4",
-        php_artifact.version.as_str(),
-    ))?;
-    let php_current_target = symlink_target(&current_path(&paths, "php", "8.4"))?;
-
-    assert!(!php_release_exists);
-    assert_eq!(php_current_target, None);
-
-    assert_debug_snapshot!((
-        result,
-        state_after_failure,
-        php_release_exists,
-        php_current_target,
-        client.byte_request_count(),
-    ));
 
     Ok(())
 }
@@ -1726,153 +1495,6 @@ fn managed_resource_commands_update_php_pairs_second_artifact_failure_preserves_
 }
 
 #[test]
-fn managed_resource_commands_update_php_pairs_rollback_failure_preserves_failed_release()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
-    let php_update_artifact =
-        runtime_fixture_artifact("php", "8.4.9-pv1", "bin/php", "php 8.4 update")?;
-    let frankenphp_artifact = runtime_fixture_artifact(
-        "frankenphp",
-        "8.4.8-pv1",
-        "bin/frankenphp",
-        "frankenphp 8.4",
-    )?;
-    let frankenphp_update_artifact = runtime_fixture_artifact(
-        "frankenphp",
-        "8.4.9-pv1",
-        "bin/frankenphp",
-        "frankenphp 8.4 update",
-    )?;
-    let initial_manifest = manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            "8.4",
-            vec![manifest_track("8.4", vec![&php_artifact])],
-        ),
-        manifest_resource(
-            "frankenphp",
-            "8.4",
-            vec![manifest_track("8.4", vec![&frankenphp_artifact])],
-        ),
-    ]);
-    let update_manifest = manifest_with_resources(&[
-        manifest_resource(
-            "php",
-            "8.4",
-            vec![manifest_track(
-                "8.4",
-                vec![&php_artifact, &php_update_artifact],
-            )],
-        ),
-        manifest_resource(
-            "frankenphp",
-            "8.4",
-            vec![manifest_track(
-                "8.4",
-                vec![&frankenphp_artifact, &frankenphp_update_artifact],
-            )],
-        ),
-    ]);
-    let install_client = ScriptedClient::new()
-        .with_text(&initial_manifest)
-        .with_bytes(php_artifact.bytes())
-        .with_bytes(frankenphp_artifact.bytes());
-    let php_current_path = current_path(&paths, "php", "8.4");
-    let update_client = ScriptedClient::new()
-        .with_text(&update_manifest)
-        .with_bytes(php_update_artifact.bytes())
-        .with_byte_error_after(
-            ResourcesError::DownloadWriteFailed {
-                url: "https://artifacts.example.test/frankenphp-8.4.9-pv1-darwin-arm64.tar.gz"
-                    .to_string(),
-                reason: "scripted downstream failure".to_string(),
-            },
-            move || replace_current_pointer_with_directory(&php_current_path),
-        );
-
-    commands.install_php_pair(TrackSelector::Latest, &install_client)?;
-    let state_before_update = raw_track_records_summary(&paths, tempdir.path())?;
-    let result = commands.update_php_pairs(&update_client);
-    let state_after_update = raw_track_records_summary(&paths, tempdir.path())?;
-    let byte_downloads_during_update = update_client.byte_request_count();
-    let old_php_release_exists = path_exists(&release_path(
-        &paths,
-        "php",
-        "8.4",
-        php_artifact.version.as_str(),
-    ))?;
-    let new_php_release_exists = path_exists(&release_path(
-        &paths,
-        "php",
-        "8.4",
-        php_update_artifact.version.as_str(),
-    ))?;
-    let php_current_is_directory = path_is_directory(&current_path(&paths, "php", "8.4"))?;
-
-    let Err(ManagedResourceCommandError::RollbackFailed {
-        original_error,
-        rollback_error,
-    }) = &result
-    else {
-        bail!("unexpected rollback result: {result:#?}");
-    };
-    match original_error.as_ref() {
-        ManagedResourceCommandError::Resources(ResourcesError::DownloadWriteFailed {
-            reason,
-            ..
-        }) => assert_eq!(reason, "scripted downstream failure"),
-        other => bail!("unexpected original rollback error: {other:#?}"),
-    }
-    assert!(matches!(rollback_error, ResourcesError::Filesystem { .. }));
-    assert!(old_php_release_exists);
-    assert!(new_php_release_exists);
-    assert!(php_current_is_directory);
-
-    let result = format!("{result:#?}")
-        .replace(tempdir.path().as_str(), "<tempdir>")
-        .replace(
-            "Operation not permitted (os error 1)",
-            "<directory remove error>",
-        )
-        .replace("Is a directory (os error 21)", "<directory remove error>");
-
-    assert_debug_snapshot!((
-        result,
-        state_before_update,
-        state_after_update,
-        old_php_release_exists,
-        new_php_release_exists,
-        php_current_is_directory,
-        byte_downloads_during_update,
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_update_php_pairs_without_installed_tracks_does_not_refresh_manifest()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let client = ScriptedClient::new();
-
-    let updated = commands.update_php_pairs(&client)?;
-
-    assert_debug_snapshot!((
-        install_summaries(updated.installs(), tempdir.path())?,
-        client.text_request_count(),
-    ));
-
-    Ok(())
-}
-
-#[test]
 fn managed_resource_commands_uninstall_php_pair_records_both_removal_intents() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1921,43 +1543,8 @@ fn managed_resource_commands_uninstall_php_pair_records_both_removal_intents() -
 }
 
 #[test]
-fn managed_resource_commands_uninstall_php_pair_missing_frankenphp_leaves_php_installed()
--> Result<()> {
+fn managed_resource_commands_uninstall_php_pair_refusal_leaves_php_installed() -> Result<()> {
     let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let php_adapter = php_adapter()?;
-    let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
-    let manifest = manifest_with_resources(&[manifest_resource(
-        "php",
-        "8.4",
-        vec![manifest_track("8.4", vec![&php_artifact])],
-    )]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(php_artifact.bytes());
-
-    commands.install(&php_adapter, TrackSelector::Latest, &client)?;
-    let state_before_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
-    let result = commands.uninstall_php_pair(
-        &TrackName::new("8.4")?,
-        ManagedResourceUninstallOptions::default(),
-    );
-    let state_after_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
-
-    assert_debug_snapshot!((result, state_before_uninstall, state_after_uninstall));
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_uninstall_php_pair_in_use_frankenphp_leaves_php_installed()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
     let php_artifact = runtime_fixture_artifact("php", "8.4.8-pv1", "bin/php", "php 8.4")?;
     let frankenphp_artifact = runtime_fixture_artifact(
         "frankenphp",
@@ -1977,21 +1564,34 @@ fn managed_resource_commands_uninstall_php_pair_in_use_frankenphp_leaves_php_ins
             vec![manifest_track("8.4", vec![&frankenphp_artifact])],
         ),
     ]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(php_artifact.bytes())
-        .with_bytes(frankenphp_artifact.bytes());
+    let mut results = Vec::new();
 
-    commands.install_php_pair(TrackSelector::Latest, &client)?;
-    set_usage_count(&paths, "frankenphp", "8.4", 2)?;
-    let state_before_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
-    let result = commands.uninstall_php_pair(
-        &TrackName::new("8.4")?,
-        ManagedResourceUninstallOptions::default(),
-    );
-    let state_after_uninstall = raw_track_records_summary(&paths, tempdir.path())?;
+    for case in ["missing_frankenphp", "in_use_frankenphp"] {
+        let root = tempdir.path().join(case);
+        let paths = PvPaths::for_home(root.join("home"));
+        let commands =
+            ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
+        let client = ScriptedClient::new()
+            .with_text(&manifest)
+            .with_bytes(php_artifact.bytes())
+            .with_bytes(frankenphp_artifact.bytes());
+        if case == "missing_frankenphp" {
+            commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
+        } else {
+            commands.install_php_pair(TrackSelector::Latest, &client)?;
+            set_usage_count(&paths, "frankenphp", "8.4", 2)?;
+        }
 
-    assert_debug_snapshot!((result, state_before_uninstall, state_after_uninstall));
+        let state_before_uninstall = raw_track_records_summary(&paths, &root)?;
+        let result = commands.uninstall_php_pair(
+            &TrackName::new("8.4")?,
+            ManagedResourceUninstallOptions::default(),
+        );
+        let state_after_uninstall = raw_track_records_summary(&paths, &root)?;
+        results.push((case, result, state_before_uninstall, state_after_uninstall));
+    }
+
+    assert_debug_snapshot!(results);
 
     Ok(())
 }
@@ -2212,48 +1812,6 @@ fn managed_resource_commands_install_uses_existing_release_without_downloading_a
 }
 
 #[test]
-fn managed_resource_commands_uninstall_records_prune_and_force_intent() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let adapter = FakeAdapter::new("redis", &["bin/pv-fake-resource"])?;
-    let artifact = fixture_artifact("7.2.5-pv1", "first")?;
-    let manifest = manifest_with_artifacts(&[&artifact]);
-    let client = ScriptedClient::new()
-        .with_text(&manifest)
-        .with_bytes(artifact.bytes());
-    let resource_name = ResourceName::new("redis")?;
-    let track = TrackName::new("7.2")?;
-
-    commands.install(&adapter, TrackSelector::Latest, &client)?;
-    let intent = commands.uninstall(
-        &resource_name,
-        &track,
-        ManagedResourceUninstallOptions::new()
-            .prune(true)
-            .force(true),
-    )?;
-    let database = Database::open(&paths)?;
-    let removal_prune = state::testing::query_i64(
-        &database,
-        "SELECT removal_prune FROM managed_resource_tracks WHERE resource_name = 'redis' AND track = '7.2'",
-    )?;
-    let removal_force = state::testing::query_i64(
-        &database,
-        "SELECT removal_force FROM managed_resource_tracks WHERE resource_name = 'redis' AND track = '7.2'",
-    )?;
-
-    assert_debug_snapshot!((
-        removal_intent_summary(&intent),
-        removal_prune,
-        removal_force
-    ));
-
-    Ok(())
-}
-
-#[test]
 fn managed_resource_commands_uninstall_rejects_in_use_tracks_without_force() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2294,56 +1852,18 @@ fn managed_resource_commands_uninstall_rejects_tracks_that_are_not_installed() -
     let commands =
         ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
     let resource_name = ResourceName::new("redis")?;
-    let track = TrackName::new("7.2")?;
+    let results = [TrackName::new("7.2")?, TrackName::new("latest")?]
+        .into_iter()
+        .map(|track| {
+            commands.uninstall(
+                &resource_name,
+                &track,
+                ManagedResourceUninstallOptions::default(),
+            )
+        })
+        .collect::<Vec<_>>();
 
-    let result = commands.uninstall(
-        &resource_name,
-        &track,
-        ManagedResourceUninstallOptions::default(),
-    );
-
-    assert_debug_snapshot!(result);
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_commands_uninstall_rejects_latest_alias_as_concrete_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let commands =
-        ManagedResourceCommands::new(paths.clone(), MANIFEST_URL, TargetPlatform::DarwinArm64);
-    let resource_name = ResourceName::new("redis")?;
-    let latest = TrackName::new("latest")?;
-
-    let result = commands.uninstall(
-        &resource_name,
-        &latest,
-        ManagedResourceUninstallOptions::default(),
-    );
-
-    assert_debug_snapshot!(result);
-
-    Ok(())
-}
-
-#[test]
-fn scripted_client_reports_destination_write_failures_separately() -> Result<()> {
-    let client = ScriptedClient::new().with_bytes(b"artifact");
-    let mut writer = FailingWriter;
-    let url = "https://artifacts.example.test/redis.tar.gz";
-    let result = client.download(url, &mut writer);
-
-    let Err(ResourcesError::DownloadWriteFailed {
-        url: error_url,
-        reason,
-    }) = result
-    else {
-        bail!("expected DownloadWriteFailed, got {result:?}");
-    };
-
-    assert_eq!(error_url, url);
-    assert_eq!(reason, "disk full");
+    assert_debug_snapshot!(results);
 
     Ok(())
 }
@@ -2737,10 +2257,6 @@ impl ResourceHttpClient for CountingBytesClient {
 enum ScriptedByteResponse {
     Bytes(Vec<u8>),
     Error(ResourcesError),
-    ErrorAfter {
-        error: ResourcesError,
-        operation: Box<dyn FnOnce() -> Result<()>>,
-    },
 }
 
 impl std::fmt::Debug for ScriptedByteResponse {
@@ -2751,10 +2267,6 @@ impl std::fmt::Debug for ScriptedByteResponse {
                 .field(&format!("{} byte(s)", bytes.len()))
                 .finish(),
             Self::Error(error) => formatter.debug_tuple("Error").field(error).finish(),
-            Self::ErrorAfter { error, .. } => formatter
-                .debug_struct("ErrorAfter")
-                .field("error", error)
-                .finish_non_exhaustive(),
         }
     }
 }
@@ -2785,20 +2297,6 @@ impl ScriptedClient {
         self.byte_responses
             .borrow_mut()
             .push_back(ScriptedByteResponse::Bytes(bytes.to_vec()));
-        self
-    }
-
-    fn with_byte_error_after(
-        self,
-        error: ResourcesError,
-        operation: impl FnOnce() -> Result<()> + 'static,
-    ) -> Self {
-        self.byte_responses
-            .borrow_mut()
-            .push_back(ScriptedByteResponse::ErrorAfter {
-                error,
-                operation: Box::new(operation),
-            });
         self
     }
 
@@ -2842,14 +2340,6 @@ impl ResourceHttpClient for ScriptedClient {
         let bytes = match response {
             ScriptedByteResponse::Bytes(bytes) => bytes,
             ScriptedByteResponse::Error(error) => return Err(error),
-            ScriptedByteResponse::ErrorAfter { error, operation } => {
-                operation().map_err(|source| ResourcesError::HttpRequestFailed {
-                    url: url.to_string(),
-                    reason: source.to_string(),
-                })?;
-
-                return Err(error);
-            }
         };
         writer
             .write_all(&bytes)
@@ -2857,18 +2347,6 @@ impl ResourceHttpClient for ScriptedClient {
                 url: url.to_string(),
                 reason: source.to_string(),
             })
-    }
-}
-
-struct FailingWriter;
-
-impl Write for FailingWriter {
-    fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
-        Err(Error::other("disk full"))
-    }
-
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
     }
 }
 
@@ -3261,33 +2739,6 @@ fn path_exists(path: &Utf8Path) -> Result<bool> {
         Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
         Err(error) => Err(error.into()),
     }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "managed resource command tests inspect fixture filesystem state"
-)]
-fn path_is_directory(path: &Utf8Path) -> Result<bool> {
-    match std::fs::symlink_metadata(path) {
-        Ok(metadata) => Ok(metadata.is_dir()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "managed resource command tests corrupt fixture current pointers"
-)]
-fn replace_current_pointer_with_directory(path: &Utf8Path) -> Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-    std::fs::create_dir(path)?;
-
-    Ok(())
 }
 
 #[expect(

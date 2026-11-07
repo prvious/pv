@@ -1,0 +1,37 @@
+---
+source: crates/resources/tests/it/artifact_cache_download.rs
+expression: results
+---
+[
+    (
+        "connection_reset",
+        Ok(
+            (
+                false,
+                Some(
+                    "87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9-redis-7.2.5-pv1-darwin-arm64.tar.gz",
+                ),
+            ),
+        ),
+    ),
+    (
+        "status_500",
+        Ok(
+            (
+                false,
+                Some(
+                    "87698b18df0047a6404165a79250f5728ecc25b65fed27077ed9dff23e1232a9-redis-7.2.5-pv1-darwin-arm64.tar.gz",
+                ),
+            ),
+        ),
+    ),
+    (
+        "status_404",
+        Err(
+            HttpStatusFailed {
+                url: "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+                status_code: 404,
+            },
+        ),
+    ),
+]
