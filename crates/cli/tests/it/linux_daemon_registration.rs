@@ -9,7 +9,10 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot};
-use platform::{ActivePfRedirectInspection, DaemonRegistrationConfig, PlatformError};
+use platform::{
+    ActivePfRedirectInspection, DaemonRegistrationConfig, LocalCaMetadata, PlatformError,
+    TrustDomainState,
+};
 use serde_json::Value;
 use state::{PvPaths, fs};
 
@@ -17,6 +20,7 @@ use crate::support::run_pv;
 
 struct TestEnvironment {
     home: Utf8PathBuf,
+    browser_ca: Vec<(Utf8PathBuf, bool)>,
     operations: RefCell<Vec<&'static str>>,
     fail_next_enable: Cell<bool>,
 }
@@ -25,6 +29,7 @@ impl TestEnvironment {
     fn new(home: &Utf8Path) -> Self {
         Self {
             home: home.to_owned(),
+            browser_ca: Vec::new(),
             operations: RefCell::new(Vec::new()),
             fail_next_enable: Cell::new(false),
         }
@@ -42,6 +47,39 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    fn browser_ca_databases(&self, _home: &Utf8Path) -> Result<Vec<Utf8PathBuf>, PlatformError> {
+        Ok(self
+            .browser_ca
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect())
+    }
+
+    fn inspect_browser_ca_trust(
+        &self,
+        database: &Utf8Path,
+        metadata: Option<&LocalCaMetadata>,
+    ) -> TrustDomainState {
+        let Some(metadata) = metadata else {
+            return TrustDomainState::Unknown {
+                reason: "local CA is unavailable".to_owned(),
+            };
+        };
+        if self
+            .browser_ca
+            .iter()
+            .any(|(path, trusted)| path == database && *trusted)
+        {
+            TrustDomainState::Current {
+                fingerprint: metadata.fingerprint.clone(),
+            }
+        } else {
+            TrustDomainState::NotTrusted {
+                fingerprint: metadata.fingerprint.clone(),
+            }
+        }
+    }
+
     fn var_os(&self, _key: &str) -> Option<OsString> {
         None
     }
@@ -205,3 +243,4 @@ fn snapshot_settings(tempdir: &Utf8Path) -> Settings {
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings
 }
+

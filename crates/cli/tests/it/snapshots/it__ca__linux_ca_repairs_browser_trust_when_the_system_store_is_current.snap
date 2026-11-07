@@ -1,0 +1,46 @@
+---
+source: crates/cli/tests/it/ca.rs
+expression: "(missing, repaired, repaired_operations, failed, removed)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "CA trust status\nLocal CA files: current\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  common name: PV Local Development CA\n  fingerprint: <fingerprint>\nSystem CA trust: current\n  fingerprint: <fingerprint>\nBrowser CA trust: <tempdir>/home/.pki/nssdb: not trusted\n  fingerprint: <fingerprint>\nBrowser CA trust: <tempdir>/home/.mozilla/firefox/default: not trusted\n  fingerprint: <fingerprint>\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Prepared PV local CA\n  existing local CA is current\nSystem CA trust: current\n  fingerprint: <fingerprint>\nSystem CA trust already matches PV.\nTrusted PV browser CA: <tempdir>/home/.pki/nssdb\nTrusted PV browser CA: <tempdir>/home/.mozilla/firefox/default\n",
+        stderr: "",
+    },
+    [
+        "browser-trust <tempdir>/home/.pki/nssdb",
+        "browser-trust <tempdir>/home/.mozilla/firefox/default",
+    ],
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        stdout: "Prepared PV local CA\n  existing local CA is current\nSystem CA trust: current\n  fingerprint: <fingerprint>\nSystem CA trust already matches PV.\nTrusted PV browser CA: <tempdir>/home/.pki/nssdb\n",
+        stderr: "error: system integration operation failed: fixture browser failure\n",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "Prepared PV local CA trust removal\nLocal CA files: current\n  certificate: <tempdir>/home/.pv/certificates/ca.pem\n  private key: <tempdir>/home/.pv/certificates/ca-key.pem\n  common name: PV Local Development CA\n  fingerprint: <fingerprint>\nSystem CA trust: current\n  fingerprint: <fingerprint>\nRemoved PV local CA trust from the System CA.\nRemoved PV browser CA trust: <tempdir>/home/.pki/nssdb\nRemoved PV browser CA trust: <tempdir>/home/.mozilla/firefox/default\n",
+        stderr: "",
+    },
+)
