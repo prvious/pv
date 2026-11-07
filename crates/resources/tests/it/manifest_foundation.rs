@@ -409,7 +409,8 @@ fn manifest_rejects_invalid_manifests() -> Result<()> {
         .map(|(name, json)| {
             Ok(InvalidManifestSnapshot {
                 name,
-                error: parse_manifest_error(&json)?,
+                error: parse_manifest_error(&json)
+                    .map_err(|error| error.context(format!("manifest case `{name}`")))?,
             })
         })
         .collect::<Result<Vec<_>>>()?;

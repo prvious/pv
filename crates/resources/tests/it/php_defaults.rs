@@ -39,15 +39,7 @@ fn php_track_defaults_reject_unsupported_tracks() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
 
-    let error = match ensure_php_track_defaults(&paths, "8.2") {
-        Ok(_) => anyhow::bail!("expected unsupported PHP track to fail"),
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        StateError::InvalidProjectTrack { track } if track == "8.2"
-    ));
+    assert_invalid_track(ensure_php_track_defaults(&paths, "8.2"), "8.2")?;
     assert_invalid_track(php_track_defaults(&paths, "8.2"), "8.2")?;
     assert_invalid_track(php_track_environment(&paths, "8.2"), "8.2")?;
     assert_invalid_track(php_track_exec_environment(&paths, "8.2"), "8.2")?;
