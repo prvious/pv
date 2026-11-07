@@ -12,8 +12,8 @@ use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
-    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection,
-    PlatformError, PlatformTarget, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
+    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection, PlatformError,
+    PlatformTarget, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
     SYSTEM_RESOLVER_TEST_PATH,
 };
 use serde_json::{Value, json};

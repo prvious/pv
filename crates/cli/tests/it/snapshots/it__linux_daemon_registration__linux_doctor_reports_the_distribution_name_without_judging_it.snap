@@ -1,0 +1,27 @@
+---
+source: crates/cli/tests/it/linux_daemon_registration.rs
+expression: observed
+---
+[
+    (
+        "double quoted",
+        Object {
+            "pretty_name": String("Ubuntu 22.04.5 LTS"),
+        },
+        "PV doctor\nLinux distribution: Ubuntu 22.04.5 LTS",
+    ),
+    (
+        "single quoted",
+        Object {
+            "pretty_name": String("Debian GNU/Linux 13"),
+        },
+        "PV doctor\nLinux distribution: Debian GNU/Linux 13",
+    ),
+    (
+        "missing",
+        Object {
+            "pretty_name": String("Linux"),
+        },
+        "PV doctor\nLinux distribution: Linux",
+    ),
+]

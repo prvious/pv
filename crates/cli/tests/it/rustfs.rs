@@ -1,5 +1,3 @@
-#![cfg(any(target_os = "macos", target_os = "linux"))]
-
 use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io;

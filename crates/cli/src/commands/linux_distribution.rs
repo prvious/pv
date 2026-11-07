@@ -10,7 +10,6 @@ use crate::output::Output;
 #[derive(Serialize)]
 pub(super) struct LinuxDistribution {
     pretty_name: String,
-    support: &'static str,
 }
 
 impl LinuxDistribution {
@@ -35,16 +34,10 @@ impl LinuxDistribution {
                 (!name.is_empty() && !name.chars().any(char::is_control)).then(|| name.to_owned())
             })
             .unwrap_or_else(|| "Linux".to_owned());
-        Self {
-            pretty_name,
-            support: "untested",
-        }
+        Self { pretty_name }
     }
 
     pub(super) fn write(&self, output: &mut Output<'_>) -> io::Result<()> {
-        output.line(&format!(
-            "Linux distribution: {} ({})",
-            self.pretty_name, self.support
-        ))
+        output.line(&format!("Linux distribution: {}", self.pretty_name))
     }
 }

@@ -9,7 +9,6 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::assert_debug_snapshot;
-use platform::{PlatformError, PlatformTarget};
 use state::{Database, ManagedResourceTrackInstallInput, PvPaths};
 
 #[derive(Debug)]
@@ -17,7 +16,6 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     decorated: bool,
-    target: PlatformTarget,
 }
 
 impl TestEnvironment {
@@ -26,7 +24,6 @@ impl TestEnvironment {
             home: home.as_std_path().to_path_buf(),
             current_dir: home.as_std_path().to_path_buf(),
             decorated: false,
-            target: PlatformTarget::Macos,
         }
     }
 
@@ -37,10 +34,6 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
-    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
-        Ok(self.target)
-    }
-
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
         Err(platform::PlatformError::PrivilegedHelperUnavailable)
     }
@@ -103,29 +96,11 @@ fn logs_defaults_to_daemon_sources() -> anyhow::Result<()> {
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
+    // Linux labels the same sources after systemd instead of launchd.
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter("systemd:", "launchd:");
+    settings.bind(|| assert_debug_snapshot!(output));
 
-    Ok(())
-}
-
-#[test]
-fn logs_uses_linux_labels_for_default_and_all_sources() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let paths = PvPaths::for_home(&home);
-    let mut environment = TestEnvironment::new(&home);
-    environment.target = PlatformTarget::Linux;
-    write_log(&paths.daemon_log(), "daemon one\ndaemon two\n")?;
-    write_log(&paths.daemon_registration_stdout_log(), "stdout one\n")?;
-    write_log(&paths.daemon_registration_stderr_log(), "stderr one\n")?;
-    let mut outputs = Vec::new();
-    for args in [&["logs", "-n", "1"][..], &["logs", "--all", "-n", "1"][..]] {
-        let output = run_pv(args, &environment)?;
-        assert_eq!(output.exit_code, ExitCode::SUCCESS);
-        assert!(output.stderr.is_empty());
-        outputs.push(output);
-    }
-    assert_debug_snapshot!(outputs);
     Ok(())
 }
 

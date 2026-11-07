@@ -7,7 +7,6 @@ use std::sync::mpsc;
 use camino::{Utf8Path, Utf8PathBuf};
 use notify::event::Flag;
 use notify::{Event, EventKind, RecursiveMode, Watcher};
-use platform::PlatformTarget;
 use resources::{ArtifactManifestCache, ResourceName, TrackSelector};
 use state::{Database, PvPaths, StateError};
 
@@ -25,7 +24,7 @@ pub(crate) fn run(
 ) -> Result<ExitCode, ExecuteError> {
     let line_count = line_count(args.lines)?;
     let paths = pv_paths(environment)?;
-    let selection = select_sources(&args, &paths, environment.platform_target()?)?;
+    let selection = select_sources(&args, &paths)?;
     let color_enabled = streams.out.surface().color();
 
     write_initial_tail(
@@ -68,13 +67,9 @@ struct LogSource {
     active_path: Utf8PathBuf,
 }
 
-fn select_sources(
-    args: &LogsArgs,
-    paths: &PvPaths,
-    target: PlatformTarget,
-) -> Result<LogSelection, ExecuteError> {
+fn select_sources(args: &LogsArgs, paths: &PvPaths) -> Result<LogSelection, ExecuteError> {
     if args.all {
-        let mut sources = default_sources(paths, target);
+        let mut sources = default_sources(paths);
         sources.extend(gateway_sources(paths));
         sources.extend(installed_worker_sources(paths)?);
         sources.extend(installed_resource_sources(paths)?);
@@ -119,15 +114,16 @@ fn select_sources(
     }
 
     Ok(LogSelection {
-        sources: default_sources(paths, target),
+        sources: default_sources(paths),
         empty_message: "No PV daemon logs found".to_string(),
     })
 }
 
-fn default_sources(paths: &PvPaths, target: PlatformTarget) -> Vec<LogSource> {
-    let registration = match target {
-        PlatformTarget::Linux => "systemd",
-        _ => "launchd",
+fn default_sources(paths: &PvPaths) -> Vec<LogSource> {
+    let registration = if cfg!(target_os = "linux") {
+        "systemd"
+    } else {
+        "launchd"
     };
     vec![
         LogSource {

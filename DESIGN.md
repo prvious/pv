@@ -200,7 +200,7 @@ A friendly browser page for unknown Project hostnames is useful, but is post-v1 
 
 ## Setup
 
-Linux host prerequisites run before helper inspection; DNS diagnostics require active systemd-resolved and only `nameserver 127.0.0.53` in `/etc/resolv.conf`.
+Linux setup checks sudo, certutil, the user's systemd session and an active systemd-resolved before it changes anything. `pv doctor` warns when `/etc/resolv.conf` doesn't list `nameserver 127.0.0.53` first, because lookups would then bypass systemd-resolved.
 
 `pv setup` performs PV's required macOS bootstrap steps:
 
@@ -1793,7 +1793,7 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 
 `pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, `pf` rules, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, `pv dns:install`, `pv ports:install`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
 
-On Linux, `pv doctor` and `pv status` report `Linux distribution: <PRETTY_NAME> (untested)` from `/etc/os-release` as information outside health checks. Their JSON reports include the same name and support label. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status. Distribution and architecture support remains gated by artifact and system acceptance.
+On Linux, `pv doctor` reports `Linux distribution: <PRETTY_NAME>` from `/etc/os-release` as information outside health checks, so bug reports name the distribution. Its JSON report includes the same name. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status.
 
 `pv jobs` is a read-only diagnostic command that lists recent daemon jobs, including setup, install, update, restart, and reconciliation jobs. It shows status, scope, start/end time, and failure summary. Live progress remains attached to the command that started the job.
 

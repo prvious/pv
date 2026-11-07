@@ -103,6 +103,12 @@ impl Environment for TestEnvironment {
         Ok(None)
     }
 
+    fn check_linux_setup_host(&self) -> Result<(), PlatformError> {
+        Err(PlatformError::SystemIntegration(
+            "fixture host has no active systemd-resolved".to_owned(),
+        ))
+    }
+
     fn resolver_test_path(&self) -> PathBuf {
         self.home.join("etc/resolver/test").into_std_path_buf()
     }

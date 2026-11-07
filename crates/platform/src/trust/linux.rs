@@ -12,7 +12,7 @@ use crate::helper::{owner_ca_certificate_path, validate_fingerprint};
 use crate::{LocalCaMetadata, PlatformError};
 
 pub(crate) const COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
-const CERTUTIL: &str = "/usr/bin/certutil";
+pub(crate) const CERTUTIL: &str = "/usr/bin/certutil";
 const STAGED_CA: &str = "/var/lib/pv/ca.pem";
 const NICKNAME_PREFIX: &str = "PV Local Development CA ";
 const ANCHOR_PREFIX: &str = "pv-local-ca-";

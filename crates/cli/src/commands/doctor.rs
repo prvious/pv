@@ -260,11 +260,7 @@ fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> D
         Err(platform::PlatformError::PrivilegedHelperAuthentication(message)) => {
             DoctorCheck::fail(
                 "Privileged helper",
-                if cfg!(target_os = "linux") {
-                    "helper belongs to a different Linux account"
-                } else {
-                    "helper belongs to a different macOS account"
-                },
+                "helper belongs to a different account",
                 "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
             )
             .with_detail(message)
@@ -476,15 +472,6 @@ fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileSta
 }
 
 fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCheck, ExecuteError> {
-    if cfg!(target_os = "linux")
-        && let Err(error) = environment.check_linux_resolved_stub()
-    {
-        return Ok(DoctorCheck::fail(
-            "DNS config",
-            error.to_string(),
-            "repair systemd-resolved and /etc/resolv.conf, then run `pv dns:install`",
-        ));
-    }
     let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
     let expected = resolver_config_from_state(&prepared);
     let system_path = resolver_test_path(environment)?;
@@ -552,6 +539,13 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
         .with_detail(format!("{path}: {message}")),
     };
 
+    // PV's own routing can be right while the host still bypasses systemd-resolved.
+    if matches!(check.status, CheckStatus::Pass)
+        && cfg!(target_os = "linux")
+        && let Err(error) = environment.check_linux_resolved_stub()
+    {
+        return Ok(DoctorCheck::warn("DNS config", error.to_string(), None));
+    }
     Ok(check)
 }
 

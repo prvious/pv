@@ -35,7 +35,7 @@ impl DaemonProcess {
             if deadline.is_expired() {
                 return Err(DaemonError::RuntimeCleanupUnproven {
                     pid: self.pid,
-                    reason: "daemon is still running after LaunchAgent unload".to_owned(),
+                    reason: "daemon is still running after its service stopped".to_owned(),
                 });
             }
             clock::poll_blocking(Duration::from_millis(25));

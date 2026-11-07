@@ -87,20 +87,14 @@ pub(crate) fn setup(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let linux = environment.platform_target()? == PlatformTarget::Linux;
+    let linux = cfg!(target_os = "linux");
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
     let authentication = if linux { "sudo" } else { "macOS" };
 
-    streams.out.flow_start(
-        "setup",
-        "PV setup",
-        Some(if linux {
-            "Linux integration"
-        } else {
-            "macOS integration"
-        }),
-    )?;
+    streams
+        .out
+        .flow_start("setup", "PV setup", Some("system integration"))?;
     streams.out.flow_step(
         Mark::Done,
         Line::field("Ensured PV state layout: ", paths.root()),
@@ -112,7 +106,7 @@ pub(crate) fn setup(
     let helper_installation_required =
         privileged_helper_installation_required(environment, &helper_candidate)?;
     if args.non_interactive && helper_installation_required {
-        return Err(CliError::SetupHelperRequiresAuthentication { authentication }.into());
+        return Err(CliError::SetupHelperRequiresAuthentication.into());
     }
     if helper_installation_required
         && !args.yes
@@ -178,8 +172,6 @@ pub(crate) fn setup(
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);
-    let summary = &completed.summary;
-    let resource_failures = &default_resource_plan.failures;
     let output = &mut streams.out;
 
     if output.surface().decorated() {
@@ -195,14 +187,14 @@ pub(crate) fn setup(
     }
 
     let summary = Line::from("System reconciliation completed: ")
-        .prose_with_quoted_values(summary, Tone::Value);
+        .prose_with_quoted_values(&completed.summary, Tone::Value);
     output.flow_step(Mark::Done, summary)?;
-    if !resource_failures.is_empty() {
+    if !default_resource_plan.failures.is_empty() {
         output.flow_step(
             Mark::Failure,
             "Default Managed Resource planning failed for some defaults:",
         )?;
-        for failure in resource_failures {
+        for failure in &default_resource_plan.failures {
             output.detail(format!("- {failure}"))?;
         }
         output.follow_up("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
@@ -394,13 +386,10 @@ pub(crate) fn uninstall(
 
     let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_exclusive(&paths)
         .map_err(super::coordination_lock_error)?;
-    let linux = environment.platform_target()? == PlatformTarget::Linux;
     let subtitle = if args.prune {
         "--prune"
-    } else if linux {
-        "Linux integration"
     } else {
-        "macOS integration"
+        "system integration"
     };
     streams
         .out
@@ -425,7 +414,7 @@ pub(crate) fn uninstall(
     // listens on it. The daemon is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
     if !run_required_step(
-        if linux {
+        if cfg!(target_os = "linux") {
             "socket proxy removal"
         } else {
             "port redirect removal"
@@ -737,7 +726,7 @@ fn configure_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
+    let profile_path = shell_profile_path(paths.home(), shell);
     let block = shell_profile_block(shell);
     let existing = read_user_file(&profile_path)?;
     let (next_content, action) = match existing.as_deref() {
@@ -855,7 +844,7 @@ fn remove_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
+    let profile_path = shell_profile_path(paths.home(), shell);
     let Some(content) = read_user_file(&profile_path)? else {
         output.flow_step(
             Mark::Idle,
@@ -996,10 +985,10 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<bool, ExecuteError> {
     }
 }
 
-fn shell_profile_path(home: &Utf8Path, shell: Shell, target: PlatformTarget) -> Utf8PathBuf {
+fn shell_profile_path(home: &Utf8Path, shell: Shell) -> Utf8PathBuf {
     match shell {
-        Shell::Bash if target == PlatformTarget::Linux => home.join(".bashrc"),
-        Shell::Zsh if target == PlatformTarget::Linux => home.join(".zshrc"),
+        Shell::Bash if cfg!(target_os = "linux") => home.join(".bashrc"),
+        Shell::Zsh if cfg!(target_os = "linux") => home.join(".zshrc"),
         Shell::Bash => home.join(".bash_profile"),
         Shell::Fish => home.join(".config/fish/config.fish"),
         Shell::Zsh => home.join(".zprofile"),
