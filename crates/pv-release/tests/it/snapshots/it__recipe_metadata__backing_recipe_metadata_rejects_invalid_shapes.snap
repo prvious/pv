@@ -12,7 +12,7 @@ expression: "(BackingRecipe::from_toml(Utf8Path::new(\"wrong-resource.toml\"),\n
     Err(
         InvalidRecipeMetadata {
             path: "missing-platform.toml",
-            reason: "Redis recipe platforms must be exactly `darwin-amd64`, `darwin-arm64`",
+            reason: "Redis recipe platforms must be exactly `darwin-amd64`, `darwin-arm64`, `linux-amd64`, `linux-arm64`",
         },
     ),
     Err(

@@ -7,7 +7,7 @@ ENV CARGO_HOME=/opt/cargo \
 
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-        bison build-essential ca-certificates cmake curl git jq libaio-dev \
+        bison build-essential ca-certificates cmake curl file git jq libaio-dev \
         patchelf pkg-config python3 unzip xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
@@ -24,7 +24,8 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh 
     && tar -xzf /tmp/nextest.tar.gz -C /opt/cargo/bin cargo-nextest \
     && rm /tmp/nextest.tar.gz
 
-RUN useradd --create-home --uid 1000 dev \
+ARG BUILDER_UID=1000
+RUN useradd --create-home --uid "$BUILDER_UID" dev \
     && mkdir /work /target \
     && chown -R dev:dev /opt/cargo /work /target
 USER dev

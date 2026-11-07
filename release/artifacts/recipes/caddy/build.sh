@@ -22,7 +22,6 @@ need codesign
 need curl
 need lipo
 need otool
-need shasum
 need tar
 need uname
 

@@ -20,7 +20,6 @@ need git
 need lipo
 need otool
 need patch
-need shasum
 need spc
 need tar
 
@@ -179,14 +178,6 @@ ensure_pkg_config() {
     PKG_CONFIG_LIBDIR="$spc_work_dir/buildroot/lib/pkgconfig"
   fi
   export PKG_CONFIG PKG_CONFIG_LIBDIR
-}
-
-expected_arch_for_platform() {
-  case "$1" in
-    darwin-arm64) printf '%s\n' arm64 ;;
-    darwin-amd64) printf '%s\n' x86_64 ;;
-    *) die "unsupported native PHP artifact platform: $1" ;;
-  esac
 }
 
 macho_minimum_os() {

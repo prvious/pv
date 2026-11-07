@@ -359,7 +359,7 @@ impl BackingRecipe {
             path,
             kind.recipe_kind(),
             &header.platforms,
-            &["darwin-arm64", "darwin-amd64"],
+            &["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"],
         )?;
 
         let artifact = BackingArtifact::from_raw(path, raw.artifact)?;
@@ -569,7 +569,7 @@ impl PhpRecipe {
             path,
             "PHP recipe",
             &header.platforms,
-            &["darwin-amd64", "darwin-arm64"],
+            &["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"],
         )?;
 
         let php = PhpSettings::from_raw(path, raw.php)?;

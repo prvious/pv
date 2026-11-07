@@ -23,8 +23,6 @@ need awk
 need lipo
 need make
 need otool
-need shasum
-need sysctl
 need tar
 need uname
 
@@ -39,14 +37,6 @@ case "$PLATFORM:$(uname -s):$(uname -m)" in
 esac
 
 export MACOSX_DEPLOYMENT_TARGET="$REDIS_DEPLOYMENT_TARGET"
-
-expected_arch_for_platform() {
-  case "$1" in
-    darwin-arm64) printf '%s\n' arm64 ;;
-    darwin-amd64) printf '%s\n' x86_64 ;;
-    *) die "unsupported native Redis artifact platform: $1" ;;
-  esac
-}
 
 macho_minimum_os() {
   otool -l "$1" | awk '
@@ -237,7 +227,8 @@ curl -L --fail --show-error --silent \
   "$PV_SOURCE_URL" -o "$source_archive"
 require_sha256 "$source_archive" "$PV_SOURCE_SHA256"
 tar -xzf "$source_archive" -C "$source_dir" --strip-components 1
-make -C "$source_dir" BUILD_TLS=no -j"$(sysctl -n hw.ncpu)"
+build_jobs=$(cpu_count)
+make -C "$source_dir" BUILD_TLS=no -j"$build_jobs"
 validate_macho_binary "$source_dir/src/redis-server"
 validate_macho_binary "$source_dir/src/redis-cli"
 cp "$source_dir/src/redis-server" "$root_dir/bin/redis-server"
