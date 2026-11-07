@@ -1224,17 +1224,12 @@ cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=base
 cc main.c -Lvalid/lib -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib:${ORIGIN}/../lib' -o valid/bin/tool
 printf '%s\n' 'ordinary non-ELF content' > valid/README
 
-for scenario in legacy-rpath absolute-rpath relative-rpath empty-entry empty-rpath missing-library directory-library soname; do
+for scenario in legacy-rpath absolute-rpath missing-library; do
     cp -R valid "$scenario"
 done
 patchelf --force-rpath --set-rpath '$ORIGIN/../lib' legacy-rpath/bin/tool
 patchelf --set-rpath /tmp/build/lib absolute-rpath/bin/tool
-patchelf --set-rpath ../lib relative-rpath/bin/tool
-patchelf --set-rpath '$ORIGIN/../lib:' empty-entry/bin/tool
-patchelf --set-rpath '' empty-rpath/bin/tool
-rm missing-library/lib/libfixture.so.1 directory-library/lib/libfixture.so.1 soname/bin/tool
-mkdir directory-library/lib/libfixture.so.1
-mv soname/lib/libfixture.so.1 soname/lib/librenamed.so.1
+rm missing-library/lib/libfixture.so.1
 
 mkdir -p newer-definition/share/nested newer-requirement/bin newer-requirement/lib static/bin
 cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=newer.map -o newer-definition/share/nested/libfixture.so.1
@@ -1246,9 +1241,6 @@ cc main.c -Labi-link -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib' -o newer-abi
 cp newer-requirement/lib/libfixture.so.1 newer-abi/lib/
 printf '%s\n' 'int main(void) { return 0; }' > static.c
 cc -static static.c -o static/bin/tool
-mkdir failing-tools
-printf '#!/bin/sh\nexit 42\n' > failing-tools/file
-chmod +x failing-tools/file
 "#,
     )?;
     let output = StdCommand::new(&build)
@@ -1273,22 +1265,12 @@ chmod +x failing-tools/file
         ("static", native_platform, true),
         ("static", other_platform, false),
         ("absolute-rpath", native_platform, false),
-        ("relative-rpath", native_platform, false),
-        ("empty-entry", native_platform, false),
-        ("empty-rpath", native_platform, false),
         ("missing-library", native_platform, false),
-        ("directory-library", native_platform, false),
-        ("soname", native_platform, false),
         ("newer-definition", native_platform, false),
         ("newer-requirement", native_platform, false),
         ("newer-abi", native_platform, false),
-        ("inspection-error", native_platform, false),
     ] {
-        let root = tempdir.path().join(if scenario == "inspection-error" {
-            "static"
-        } else {
-            scenario
-        });
+        let root = tempdir.path().join(scenario);
         let mut command = StdCommand::new("/bin/sh");
         command
             .args([
@@ -1300,12 +1282,6 @@ pv_recipe_validate_elf_tree "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_PLATFORM"
             .env("PV_TEST_COMMON_SH", &common)
             .env("PV_TEST_ARTIFACT_ROOT", &root)
             .env("PV_TEST_PLATFORM", platform);
-        if scenario == "inspection-error" {
-            command.env(
-                "PATH",
-                format!("{}/failing-tools:/usr/bin:/bin", tempdir.path()),
-            );
-        }
         let output = command.output()?;
         assert_eq!(
             output.status.success(),

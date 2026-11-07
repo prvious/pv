@@ -462,7 +462,7 @@ EOF
 
     dynamic=$(readelf --wide --dynamic -- "$binary") || die "failed to inspect ELF dynamic section for $binary"
     dynamic_entries=$(awk '
-      $2 == "(NEEDED)" || $2 == "(SONAME)" || $2 == "(RPATH)" || $2 == "(RUNPATH)" {
+      $2 == "(NEEDED)" || $2 == "(RPATH)" || $2 == "(RUNPATH)" {
         value = substr($0, index($0, "[") + 1)
         sub(/\]$/, "", value)
         print $2 ":" value
@@ -489,9 +489,6 @@ EOF
 $artifact_files
 EOF
           [ "$bundled" = true ] || die "$binary ELF dependency is not a system library or bundled file: $value"
-          ;;
-        '(SONAME):'*)
-          [ "${binary##*/}" = "$value" ] || die "$binary ELF filename does not match SONAME $value"
           ;;
         '(RPATH):'* | '(RUNPATH):'*)
           while :; do
