@@ -17,11 +17,26 @@ need awk
 need cargo
 need curl
 need git
-need lipo
-need otool
 need patch
 need spc
 need tar
+
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    need lipo
+    need otool
+    ;;
+  linux-amd64 | linux-arm64)
+    need cmp
+    need file
+    need patchelf
+    need readelf
+    [ "$(uname -s)" = Linux ] || die "Linux PHP artifacts require a native Linux runner"
+    [ "$(uname -m)" = "$(expected_arch_for_platform "$PLATFORM")" ] || die "PHP runner architecture does not match $PLATFORM"
+    export LC_ALL=C
+    ;;
+  *) die "unsupported PHP artifact platform: $PLATFORM" ;;
+esac
 
 if [ -z "$PV_COMMIT" ]; then
   PV_COMMIT=$(git -C "$ROOT" rev-parse HEAD)
@@ -380,7 +395,15 @@ PHP_ARTIFACT_OPTIONAL_EXTENSIONS=$PHP_OPTIONAL_EXTENSIONS
 # php-cli does not report them as loaded. Do not advertise broken optional modules.
 FRANKENPHP_ARTIFACT_OPTIONAL_EXTENSIONS=$(csv_without "$PHP_OPTIONAL_EXTENSIONS" sqlsrv pdo_sqlsrv)
 
-export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
+case "$PLATFORM" in
+  darwin-arm64 | darwin-amd64)
+    export MACOSX_DEPLOYMENT_TARGET="$PHP_DEPLOYMENT_TARGET"
+    ;;
+  linux-amd64 | linux-arm64)
+    # SPC_TARGET takes precedence over SPC_LIBC; use the native glibc toolchain.
+    export SPC_LIBC=glibc SPC_TARGET='' SPC_CONCURRENCY="${PV_BUILD_JOBS:-2}"
+    ;;
+esac
 
 php_source_dir=$(download_source php "$PHP_PHP_VERSION" "$PHP_SOURCE_URL" "$PHP_SOURCE_SHA256")
 frankenphp_source_dir=$(download_source frankenphp "$FRANKENPHP_ARTIFACT_VERSION" "$FRANKENPHP_SOURCE_URL" "$FRANKENPHP_SOURCE_SHA256")
@@ -417,12 +440,22 @@ fi
     CXXFLAGS="${CXXFLAGS:+$CXXFLAGS }$imagick_include"
     export CFLAGS CXXFLAGS
   fi
-  # StaticPHP's macOS dead-strip defaults remove PHP API symbols that shared
-  # extensions resolve at load time. Export them only from the shipped SAPIs.
-  # Current StaticPHP v3 also omits its static libcurl's required macOS
-  # frameworks from the LDFLAGS used by PHP's configure link checks.
-  SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS="-Wl,-export_dynamic -framework CoreFoundation -framework CoreServices -framework SystemConfiguration"
-  frankenphp_LDFLAGS="-Wl,-export_dynamic"
+  case "$PLATFORM" in
+    darwin-arm64 | darwin-amd64)
+      # StaticPHP's macOS dead-strip defaults remove PHP API symbols that shared
+      # extensions resolve at load time. Export them only from the shipped SAPIs.
+      # Current StaticPHP v3 also omits its static libcurl's required macOS
+      # frameworks from the LDFLAGS used by PHP's configure link checks.
+      SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS="-Wl,-export_dynamic -framework CoreFoundation -framework CoreServices -framework SystemConfiguration"
+      frankenphp_LDFLAGS="-Wl,-export_dynamic"
+      ;;
+    linux-amd64 | linux-arm64)
+      # Cgo must find FrankenPHP's types.h before libwebp's namesake header.
+      export frankenphp_CFLAGS="-I$frankenphp_source_dir"
+      SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS="-Wl,--export-dynamic"
+      frankenphp_LDFLAGS="-Wl,--export-dynamic"
+      ;;
+  esac
   export SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS frankenphp_LDFLAGS
   # StaticPHP v3 selects mbregex separately from mbstring; Laravel uses mb_split().
   # shellcheck disable=SC2086
@@ -459,8 +492,12 @@ stage_optional_php_extensions() {
     [ -n "$module" ] || die "optional PHP extension $extension did not produce a shared module"
     staged_module="$root_dir/lib/php/extensions/$extension.so"
     cp "$module" "$staged_module"
-    delete_known_stale_macho_rpaths "$staged_module"
-    validate_macho_binary "$staged_module"
+    case "$PLATFORM" in
+      darwin-arm64 | darwin-amd64)
+        delete_known_stale_macho_rpaths "$staged_module"
+        validate_macho_binary "$staged_module"
+        ;;
+    esac
     load_kind=extension
     [ "$extension" = "xdebug" ] && load_kind=zend_extension
     [ "$first" -eq 1 ] || printf ',' >>"$metadata"
@@ -487,8 +524,16 @@ stage_artifact() {
   cp "$spc_work_dir/buildroot/bin/$binary_name" "$root_dir/bin/$binary_name"
   [ -f "$root_dir/bin/$binary_name" ] || die "$resource artifact did not produce bin/$binary_name"
   stage_optional_php_extensions "$root_dir" "$optional_extensions"
-  delete_known_stale_macho_rpaths "$root_dir/bin/$binary_name"
-  validate_macho_binary "$root_dir/bin/$binary_name"
+  case "$PLATFORM" in
+    darwin-arm64 | darwin-amd64)
+      delete_known_stale_macho_rpaths "$root_dir/bin/$binary_name"
+      validate_macho_binary "$root_dir/bin/$binary_name"
+      ;;
+    linux-amd64 | linux-arm64)
+      pv_recipe_normalize_elf_tree "$root_dir"
+      pv_recipe_validate_elf_tree "$root_dir" "$PLATFORM"
+      ;;
+  esac
 
   cp "$recipe_dir/LICENSE" "$root_dir/LICENSE"
   {
