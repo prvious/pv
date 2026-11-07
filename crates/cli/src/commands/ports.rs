@@ -15,6 +15,9 @@ use crate::output::{Line, Mark, Output, Streams};
 
 use super::pf_diagnostics::PfRoutingDiagnostic;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
 pub(crate) fn status(
     args: PortsStatusArgs,
     environment: &impl Environment,
@@ -75,6 +78,10 @@ pub(crate) fn install(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    #[cfg(target_os = "linux")]
+    if environment.platform_target()? == platform::PlatformTarget::Linux {
+        return linux::install(environment, streams);
+    }
     let paths = pv_paths(environment)?;
     let inspection = environment.inspect_low_ports()?;
     let output = &mut streams.out;
@@ -226,7 +233,13 @@ fn refresh_gateway_observation_after_pf_repair(
         database.record_runtime_observed_snapshot(
             RuntimeSubject::Gateway,
             RuntimeObservedStatus::Running,
-            Some("Gateway identity verified through ports 80 and 443 after PF repair"),
+            Some(
+                if environment.platform_target()? == platform::PlatformTarget::Linux {
+                    "Gateway identity verified through ports 80 and 443 after socket proxy repair"
+                } else {
+                    "Gateway identity verified through ports 80 and 443 after PF repair"
+                },
+            ),
         )?;
 
         return Ok(());
@@ -298,6 +311,10 @@ pub(crate) fn uninstall(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    #[cfg(target_os = "linux")]
+    if environment.platform_target()? == platform::PlatformTarget::Linux {
+        return linux::uninstall(environment, streams);
+    }
     let paths = pv_paths(environment)?;
     let prepared_anchor_path = paths.pf_anchor_config();
     let prepared_reference_path = paths.pf_conf_reference_config();

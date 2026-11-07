@@ -9,7 +9,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot};
-use platform::{DaemonRegistrationConfig, PlatformError};
+use platform::{ActivePfRedirectInspection, DaemonRegistrationConfig, PlatformError};
 use serde_json::Value;
 use state::{PvPaths, fs};
 
@@ -116,7 +116,17 @@ impl Environment for TestEnvironment {
         self.home.join("etc/pf.conf").into_std_path_buf()
     }
 
+    fn socket_proxy_directory(&self) -> PathBuf {
+        self.home.join("etc/systemd/system").into_std_path_buf()
+    }
+
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, PlatformError> {
+        Err(PlatformError::PrivilegedHelperUnavailable)
+    }
+
+    fn inspect_active_pf_redirects_unprivileged(
+        &self,
+    ) -> Result<ActivePfRedirectInspection, PlatformError> {
         Err(PlatformError::PrivilegedHelperUnavailable)
     }
 

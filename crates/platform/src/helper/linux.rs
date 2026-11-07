@@ -7,6 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use rustix::fs::{AtFlags, CWD, FlockOperation, Mode, OFlags, flock, open, unlinkat};
 use rustix::process::{Uid, geteuid, getuid};
 use rustix::thread::set_thread_res_uid;
+use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::UnixStream;
 use zbus::Proxy;
@@ -46,7 +47,7 @@ const SERVICE: &str = "# Managed by PV\n[Unit]\nDescription=PV privileged helper
     clippy::disallowed_types,
     reason = "root helper owns validated native file descriptors"
 )]
-type RootFile = std::fs::File;
+pub(crate) type RootFile = std::fs::File;
 
 #[derive(Clone, Copy)]
 struct Artifact {
@@ -681,9 +682,13 @@ fn require_identity(
     Ok(())
 }
 
+pub(crate) fn checksum_bytes(content: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(content))
+}
+
 /// Puts back a file the transaction moved aside, or removes one it created. A file that existed
 /// but has no rollback copy was never moved, because an early step failed.
-fn restore_file(path: &Utf8Path, mode: u32, existed: bool) -> Result<(), PlatformError> {
+pub(crate) fn restore_file(path: &Utf8Path, mode: u32, existed: bool) -> Result<(), PlatformError> {
     let backup = sibling(path.as_str(), "rollback");
     if exists(backup.as_str())? {
         read_root_file(&backup, mode)?;

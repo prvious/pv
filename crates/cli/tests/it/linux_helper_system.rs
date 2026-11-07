@@ -2,6 +2,9 @@
 
 mod dns_system;
 
+#[path = "support/ports_system.rs"]
+mod ports_system;
+
 use platform::clock::{self, real};
 use std::io::{self, Write as _};
 use std::process::Output;

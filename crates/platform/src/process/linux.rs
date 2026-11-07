@@ -163,6 +163,24 @@ fn inspect_identity(pid: u32) -> ProcResult<Option<ProcessIdentity>> {
     )))
 }
 
+pub(crate) fn inspect_process_command_line(
+    pid: u32,
+) -> Result<Option<(String, Vec<String>)>, PlatformError> {
+    let Some(process) = open_process(pid).map_err(inspection_error)? else {
+        return Ok(None);
+    };
+    match process.cmdline() {
+        Ok(command_line) => {
+            let mut arguments = command_line.into_iter();
+            Ok(arguments
+                .next()
+                .map(|argument_zero| (argument_zero, arguments.collect())))
+        }
+        Err(_source) if read_stat(&process).map_err(inspection_error)?.is_none() => Ok(None),
+        Err(source) => Err(inspection_error(source)),
+    }
+}
+
 pub(super) fn process_group_has_live_members(process_group: u32) -> Result<bool, PlatformError> {
     let process_group = native_pid(process_group)
         .map_err(inspection_error)?
