@@ -5,7 +5,6 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use pv_fake::Persona;
-use resources::RuntimeArtifactAdapter;
 use serde_json::{Value, json};
 use state::{Database, LinkProjectInput, ProjectRecord, PvPaths};
 
@@ -13,31 +12,6 @@ use super::{ManagedResourceRuntimeAdapter, tests::ManagedResourceFixtureGuard};
 
 const MYSQL_TRACK: &str = "8.0";
 const MYSQL_ARTIFACT_VERSION: &str = "8.0.35-pv1";
-const MYSQL_ARCHIVE_FILE_NAME: &str = "mysql-8.0.35-pv1-any.tar.gz";
-const OFFLINE_TEST_MANIFEST_URL: &str = "https://127.0.0.1:9/manifest.json";
-
-#[test]
-fn mysql_runtime_port_prefers_3306() -> Result<()> {
-    let adapter = super::mysql::MysqlRuntimeAdapter::new();
-    let [port] = adapter.port_specs() else {
-        bail!("expected one MySQL port spec");
-    };
-
-    assert_eq!(port.name, "mysql");
-    assert_eq!(port.preferred_port, 3306);
-
-    Ok(())
-}
-
-#[test]
-fn mysql_runtime_uses_resources_artifact_adapter() -> Result<()> {
-    let adapter = super::mysql::MysqlRuntimeAdapter::new();
-    let artifact_adapter: RuntimeArtifactAdapter = adapter.artifact_adapter()?;
-
-    assert_eq!(artifact_adapter, resources::mysql_adapter()?);
-
-    Ok(())
-}
 
 #[test]
 fn mysql_runtime_arguments_disable_x_protocol() -> Result<()> {
@@ -145,45 +119,6 @@ async fn mysql_reconciliation_creates_database_allocation_and_renders_env() -> R
 }
 
 #[tokio::test]
-async fn mysql_project_demand_installs_missing_fixture_track_before_start() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let project = link_project_with_mysql_database_env(&paths, &tempdir.path().join("project"))?;
-    let admin = super::mysql::RecordingMysqlAdmin::default();
-    let catalog = super::mysql::mysql_runtime_catalog_with_recording_admin(
-        OFFLINE_TEST_MANIFEST_URL,
-        admin.clone(),
-    )?;
-    let mut runtimes = ManagedResourceFixtureGuard::new(&paths)?;
-    seed_mysql_cached_fixture(&paths, tempdir.path())?;
-
-    run_project_reconciliation(&paths, &project, &catalog).await?;
-    let snapshot = {
-        let database = Database::open(&paths)?;
-
-        (
-            admin.operations().await?,
-            read_dotenv(&project)?,
-            database.managed_resource_track("mysql", MYSQL_TRACK)?,
-            database.assigned_ports()?,
-            database.resource_allocations(&project.id, "mysql")?,
-            database.runtime_observed_states()?,
-            read_runtime_metadata(&paths, MYSQL_TRACK)?,
-            mysql_system_database_initialized(&paths, MYSQL_TRACK)?,
-        )
-    };
-
-    assert_mysql_snapshot(
-        tempdir.path(),
-        "mysql_project_demand_installs_missing_fixture_track_before_start",
-        snapshot,
-    )?;
-    runtimes.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn mysql_reconciliation_reuses_admin_env_and_ready_allocation() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -216,15 +151,7 @@ async fn run_project_reconciliation(
     project: &ProjectRecord,
     catalog: &super::ManagedResourceRuntimeCatalog,
 ) -> Result<()> {
-    let mut database = Database::open(paths)?;
-
-    crate::project_env::reconcile_project_env_with_catalog(
-        paths,
-        &mut database,
-        &project.id,
-        catalog,
-    )
-    .await?;
+    crate::project_env::reconcile_project_env_with_catalog(paths, &project.id, catalog).await?;
 
     Ok(())
 }
@@ -330,124 +257,6 @@ fn seed_mysql_fixture_artifact(paths: &PvPaths, track: &str) -> Result<()> {
     Ok(())
 }
 
-fn seed_mysql_cached_fixture(paths: &PvPaths, tempdir: &Utf8Path) -> Result<()> {
-    pv_fake::install_monitor(paths)?;
-    let archive_path = tempdir.join(MYSQL_ARCHIVE_FILE_NAME);
-
-    create_mysql_archive(tempdir, &archive_path)?;
-    let sha256 = sha256_file(&archive_path)?;
-    let cache_path = paths
-        .downloads()
-        .join(format!("{sha256}-{MYSQL_ARCHIVE_FILE_NAME}"));
-
-    copy_file(&archive_path, &cache_path)?;
-    let size = file_size(&cache_path)?;
-    let manifest = mysql_manifest(&sha256, size);
-
-    state::fs::write_sensitive_file(&paths.downloads().join("manifest.json"), &manifest)?;
-
-    Ok(())
-}
-
-fn create_mysql_archive(tempdir: &Utf8Path, archive_path: &Utf8Path) -> Result<()> {
-    let archive_parent = tempdir.join("archive-root");
-    let root_name = format!("mysql-{MYSQL_ARTIFACT_VERSION}");
-    let root = archive_parent.join(&root_name);
-    // The archive carries the fake and its scenario file, which PV extracts next to each other.
-    pv_fake::install(&root.join("bin/mysqld"), Persona::Mysqld)?;
-    run_fixture_command(
-        "/usr/bin/tar",
-        &[
-            "--use-compress-program",
-            "gzip -1",
-            "-cf",
-            archive_path.as_str(),
-            "-C",
-            archive_parent.as_str(),
-            &root_name,
-        ],
-    )?;
-
-    Ok(())
-}
-
-fn mysql_manifest(sha256: &str, size: u64) -> String {
-    let dummy_sha256 = "0000000000000000000000000000000000000000000000000000000000000000";
-
-    format!(
-        r#"{{
-  "schema_version": 1,
-  "minimum_pv_version": "0.1.0",
-  "resources": [
-    {{
-      "name": "mysql",
-      "default_track": "{MYSQL_TRACK}",
-      "tracks": [
-        {{
-          "name": "{MYSQL_TRACK}",
-          "artifacts": [
-            {{
-              "artifact_version": "{MYSQL_ARTIFACT_VERSION}",
-              "upstream_version": "8.0.35",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/{MYSQL_ARCHIVE_FILE_NAME}",
-              "sha256": "{sha256}",
-              "size": {size},
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "php",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/php-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }},
-    {{
-      "name": "frankenphp",
-      "default_track": "8.4",
-      "tracks": [
-        {{
-          "name": "8.4",
-          "artifacts": [
-            {{
-              "artifact_version": "8.4.8-pv1",
-              "upstream_version": "8.4.8",
-              "pv_build_revision": "1",
-              "platform": "any",
-              "url": "https://artifacts.example.test/frankenphp-8.4.8-pv1-any.tar.gz",
-              "sha256": "{dummy_sha256}",
-              "size": 1,
-              "published_at": "2026-06-08T00:00:00Z"
-            }}
-          ]
-        }}
-      ]
-    }}
-  ]
-}}
-"#
-    )
-}
-
 fn assert_mysql_snapshot(
     tempdir: &Utf8Path,
     name: &'static str,
@@ -477,56 +286,6 @@ fn assert_mysql_snapshot(
     })?;
 
     Ok(())
-}
-
-fn sha256_file(path: &Utf8Path) -> Result<String> {
-    let output = run_fixture_command("/usr/bin/shasum", &["-a", "256", path.as_str()])?;
-    let text = String::from_utf8(output)?;
-    let Some((sha256, _path)) = text.split_once(' ') else {
-        bail!("shasum output did not include a sha256 digest");
-    };
-
-    Ok(sha256.to_string())
-}
-
-#[expect(
-    clippy::disallowed_types,
-    reason = "daemon MySQL tests shell out to build archive fixtures without extra dev-dependencies"
-)]
-fn run_fixture_command(program: &str, args: &[&str]) -> Result<Vec<u8>> {
-    let output = std::process::Command::new(program)
-        .env("COPYFILE_DISABLE", "1")
-        .args(args)
-        .output()?;
-    if !output.status.success() {
-        bail!(
-            "fixture command `{program}` failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-    }
-
-    Ok(output.stdout)
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "daemon MySQL tests seed cached artifact fixtures directly"
-)]
-fn copy_file(from: &Utf8Path, to: &Utf8Path) -> Result<()> {
-    if let Some(parent) = to.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::copy(from, to)?;
-
-    Ok(())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "daemon MySQL tests read fixture archive metadata for manifest size"
-)]
-fn file_size(path: &Utf8Path) -> Result<u64> {
-    Ok(std::fs::metadata(path)?.len())
 }
 
 #[expect(

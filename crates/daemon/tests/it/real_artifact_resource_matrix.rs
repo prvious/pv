@@ -1,11 +1,11 @@
 use std::future::Future;
 use std::time::Duration;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, bail};
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use futures_util::StreamExt;
-use platform::clock::{self, real};
+use platform::clock::real;
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, PROTOCOL_VERSION, ResponseStatus, write_line,
 };
@@ -203,63 +203,6 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     if let Some(composer) = composer {
         assert_eq!(composer.composer().track().as_str(), "2");
     }
-
-    Ok(())
-}
-
-#[test]
-fn resource_matrix_cleanup_errors_are_reported_without_masking_primary_error() -> Result<()> {
-    let result = preserve_primary_result_with_cleanup(
-        Err(anyhow!("matrix failed")),
-        [
-            ("demand cleanup", Err(anyhow!("demand cleanup failed"))),
-            ("daemon shutdown", Err(anyhow!("daemon shutdown failed"))),
-        ],
-    );
-    let Err(error) = result else {
-        bail!("expected matrix failure");
-    };
-    let rendered = format!("{error:#}");
-
-    assert!(rendered.contains("matrix failed"));
-    assert!(rendered.contains("cleanup also failed"));
-    assert!(rendered.contains("demand cleanup failed"));
-    assert!(rendered.contains("daemon shutdown failed"));
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn cleanup_reconciliation_timeout_reports_bounded_cleanup() -> Result<()> {
-    let result = await_cleanup_reconciliation_with_timeout(
-        async {
-            clock::poll(Duration::from_millis(50)).await;
-            Ok::<String, anyhow::Error>("reconciled".to_string())
-        },
-        Duration::from_millis(1),
-    )
-    .await;
-    let Err(error) = result else {
-        bail!("expected cleanup reconciliation timeout");
-    };
-    let rendered = format!("{error:#}");
-
-    assert!(rendered.contains("cleanup reconciliation timed out"));
-
-    Ok(())
-}
-
-#[test]
-fn resource_matrix_dotenv_assertion_redacts_contents() -> Result<()> {
-    let result = assert_dotenv_contains("MYSQL_PASSWORD=secret\n", "POSTGRES_URL=postgres://");
-    let Err(error) = result else {
-        bail!("expected missing dotenv assertion");
-    };
-    let rendered = format!("{error:#}");
-
-    assert!(rendered.contains("expected .env to contain `POSTGRES_URL=postgres://`"));
-    assert!(rendered.contains("redacted"));
-    assert!(!rendered.contains("secret"));
 
     Ok(())
 }

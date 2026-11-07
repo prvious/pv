@@ -10,88 +10,48 @@ use platform::{PlatformCapability, PlatformError};
 use state::PvPaths;
 
 #[tokio::test]
-async fn public_daemon_start_rejects_unsupported_platform_without_creating_home()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-    let result = RunningDaemon::start(paths.clone()).await;
-
-    assert!(matches!(
-        result,
-        Err(DaemonError::Platform(PlatformError::Unsupported {
-            capability: PlatformCapability::DaemonIpc,
-            ..
-        }))
-    ));
-    assert!(!paths.home().exists());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn public_daemon_start_without_adapters_rejects_unsupported_platform_without_creating_home()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-    let result = RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await;
-
-    assert!(matches!(
-        result,
-        Err(DaemonError::Platform(PlatformError::Unsupported {
-            capability: PlatformCapability::DaemonIpc,
-            ..
-        }))
-    ));
-    assert!(!paths.home().exists());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn public_daemon_start_with_manifest_client_rejects_unsupported_platform_without_side_effects()
+async fn public_daemon_starts_reject_unsupported_platform_without_side_effects()
 -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let client = RecordingClient::default();
 
-    let result = RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
-        paths.clone(),
-        "https://artifacts.example.test/manifest.json",
-        client.clone(),
-    )
-    .await;
+    let results = [
+        ("start", RunningDaemon::start(paths.clone()).await.map(drop)),
+        (
+            "start_without_managed_resource_adapters",
+            RunningDaemon::start_without_managed_resource_adapters(paths.clone())
+                .await
+                .map(drop),
+        ),
+        (
+            "start_without_managed_resource_adapters_with_manifest_client",
+            RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
+                paths.clone(),
+                "https://artifacts.example.test/manifest.json",
+                client.clone(),
+            )
+            .await
+            .map(drop),
+        ),
+        // The platform check comes before `run_blocking` builds its own runtime.
+        ("run_blocking", run_blocking(paths.clone())),
+    ];
 
-    assert!(matches!(
-        result,
-        Err(DaemonError::Platform(PlatformError::Unsupported {
-            capability: PlatformCapability::DaemonIpc,
-            ..
-        }))
-    ));
+    for (name, result) in results {
+        assert!(
+            matches!(
+                result,
+                Err(DaemonError::Platform(PlatformError::Unsupported {
+                    capability: PlatformCapability::DaemonIpc,
+                    ..
+                }))
+            ),
+            "{name}"
+        );
+    }
     assert!(!paths.home().exists());
     assert_eq!(client.request_count(), 0);
-
-    Ok(())
-}
-
-#[test]
-fn public_blocking_daemon_start_rejects_unsupported_platform_without_creating_home()
--> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-    let result = run_blocking(paths.clone());
-
-    assert!(matches!(
-        result,
-        Err(DaemonError::Platform(PlatformError::Unsupported {
-            capability: PlatformCapability::DaemonIpc,
-            ..
-        }))
-    ));
-    assert!(!paths.home().exists());
 
     Ok(())
 }

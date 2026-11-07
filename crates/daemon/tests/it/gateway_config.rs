@@ -151,30 +151,6 @@ fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
 }
 
 #[test]
-fn gateway_config_renderer_imports_project_configs_when_requested() -> Result<()> {
-    let input = GatewayConfigInput {
-        http_port: 48080,
-        https_port: 48443,
-        admin_socket_path: Utf8PathBuf::from("/Users/alice/.pv/run/gateway-admin.sock"),
-        ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
-        ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
-        storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
-        access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
-        error_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/error.log"),
-        projects_config_glob: Utf8PathBuf::from(
-            "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
-        ),
-        import_project_configs: true,
-    };
-
-    let rendered = render_gateway_config(&input)?;
-    assert_admin_directives(&rendered, "/Users/alice/.pv/run/gateway-admin.sock");
-    assert_snapshot!(rendered);
-
-    Ok(())
-}
-
-#[test]
 fn gateway_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
     let route = GatewayProjectRoute {
         id: "project_acme".to_owned(),

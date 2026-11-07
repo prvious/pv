@@ -7,10 +7,7 @@ use std::time::Duration;
 use crate::DaemonError;
 use crate::gateway::{
     CADDY_NOT_INSTALLED, GatewayPfRoutingState, ProjectGatewayReconciliationOutcome,
-    ReconciliationOutcome, reconcile_gateway_runtimes, reconcile_gateway_runtimes_with_phase_log,
-    reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown,
-    reconcile_project_gateway_runtimes_with_phase_log,
-    reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown,
+    reconcile_gateway_runtimes_with_phase_log, reconcile_project_gateway_runtimes_with_phase_log,
 };
 use crate::hooks::DaemonHooks;
 use crate::ipc::LocalStream;
@@ -20,11 +17,9 @@ use crate::managed_resources::{
     reconcile_system_resources_with_catalog_and_progress, reconcile_system_resources_with_progress,
     stop_undemanded_system_resource_runtimes, verify_system_resource_installations,
 };
-#[cfg(test)]
-use crate::project_env::reconcile_project_env_with_runtime_catalog_and_progress;
 use crate::project_env::{
     DemandedResourceTrack, ProjectApplyOptions, ProjectApplyStage, ProjectDemand,
-    discover_project_demand, reconcile_project_env_with_runtime_catalog_and_progress_outcome,
+    discover_project_demand, reconcile_project_env_with_runtime_catalog,
     record_project_env_failure,
 };
 use crate::reconciliation::{
@@ -336,21 +331,12 @@ pub(crate) async fn run_job(
     kind: &str,
     scope: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let parsed_scope = scope.parse::<ReconciliationScope>();
     if kind == "reconcile" {
         return match parsed_scope {
             Ok(parsed_scope) => {
-                run_reconciliation_job(
-                    paths,
-                    queue,
-                    transport,
-                    parsed_scope,
-                    runtime_catalog,
-                    fallback_shutdown,
-                )
-                .await
+                run_reconciliation_job(paths, queue, transport, parsed_scope, runtime_catalog).await
             }
             Err(error) => {
                 run_invalid_reconciliation_scope_job(paths, transport, scope, error).await
@@ -358,7 +344,7 @@ pub(crate) async fn run_job(
         };
     }
     if kind == "update" && scope == "system" {
-        return run_update_job(paths, queue, transport, runtime_catalog, fallback_shutdown).await;
+        return run_update_job(paths, queue, transport, runtime_catalog).await;
     }
 
     run_started_job(paths, transport, kind, scope).await
@@ -408,7 +394,7 @@ pub(crate) async fn run_background_reconciliation_job_with_origin(
         return Ok(());
     };
 
-    complete_queued_background_reconciliation_job(&paths, queued, runtime_catalog, None).await
+    complete_queued_background_reconciliation_job(&paths, queued, runtime_catalog).await
 }
 
 pub(crate) fn enqueue_background_reconciliation_job(
@@ -437,7 +423,6 @@ pub(crate) async fn run_startup_reconciliation_job(
     queue: ReconciliationQueue,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     mut shutdown: oneshot::Receiver<()>,
-    fallback_shutdown: watch::Receiver<bool>,
 ) -> Result<(), BackgroundReconciliationError> {
     let mut waiting_for_jobs_lock = false;
     let result = loop {
@@ -503,7 +488,6 @@ pub(crate) async fn run_startup_reconciliation_job(
         running,
         runtime_catalog,
         Some(&shutdown),
-        Some(&fallback_shutdown),
     )
     .await
 }
@@ -519,42 +503,14 @@ async fn wait_for_startup_reconciliation_turn(
     }
 }
 
-async fn wait_for_fallback_shutdown(shutdown: &mut watch::Receiver<bool>) {
-    if shutdown.wait_for(|requested| *requested).await.is_err() {
-        std::future::pending::<()>().await;
-    }
-}
-
-fn fallback_shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
-    shutdown.is_some_and(|shutdown| *shutdown.borrow())
-}
-
 pub(crate) async fn complete_queued_background_reconciliation_job(
     paths: &PvPaths,
     queued: QueuedReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<(), BackgroundReconciliationError> {
-    let running = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            let mut fallback_shutdown = fallback_shutdown.clone();
-            tokio::select! {
-                biased;
-                _ = wait_for_fallback_shutdown(&mut fallback_shutdown) => return Ok(()),
-                running = queued.wait_for_turn() => running,
-            }
-        }
-        None => queued.wait_for_turn().await,
-    };
+    let running = queued.wait_for_turn().await;
 
-    complete_running_background_reconciliation_job(
-        paths,
-        running,
-        runtime_catalog,
-        None,
-        fallback_shutdown,
-    )
-    .await
+    complete_running_background_reconciliation_job(paths, running, runtime_catalog, None).await
 }
 
 pub(crate) async fn complete_running_background_reconciliation_job(
@@ -562,7 +518,6 @@ pub(crate) async fn complete_running_background_reconciliation_job(
     running: RunningReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     shutdown: Option<&oneshot::Receiver<()>>,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> Result<(), BackgroundReconciliationError> {
     let job_id = running.job_id().to_string();
     let scope = running.scope().clone();
@@ -575,21 +530,16 @@ pub(crate) async fn complete_running_background_reconciliation_job(
         running.timing(),
         ReconciliationJobOptions {
             discard_obsolete_project: true,
-            fallback_shutdown,
             hooks: running.hooks(),
+            shutdown,
             ..ReconciliationJobOptions::default()
         },
-        shutdown,
     )
     .await;
 
     match completion {
         ReconciliationJobCompletion::Succeeded(_summary) => {
             running.finish();
-            Ok(())
-        }
-        ReconciliationJobCompletion::Cancelled => {
-            drop(running);
             Ok(())
         }
         ReconciliationJobCompletion::Failed {
@@ -612,7 +562,6 @@ async fn run_reconciliation_job(
     mut transport: DaemonTransport<LocalStream>,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let result = match enqueue_foreground_reconciliation_job(&paths, &queue, scope) {
         Ok(result) => result,
@@ -636,18 +585,10 @@ async fn run_reconciliation_job(
             .await
             .map_err(DaemonError::from);
             let stream_is_open = accepted_result.is_ok();
-            let Some((running, stream_is_open)) = wait_for_foreground_turn(
-                queued,
-                &mut transport,
-                stream_is_open,
-                Some(fallback_shutdown),
-            )
-            .await
-            else {
-                return accepted_result;
-            };
+            let (running, stream_is_open) =
+                wait_for_foreground_turn(queued, &mut transport, stream_is_open).await;
             let scope = running.scope().clone();
-            let result = stream_started_reconciliation_job_with_fallback(
+            let result = stream_started_reconciliation_job_with_options(
                 paths,
                 transport,
                 stream_is_open,
@@ -656,24 +597,11 @@ async fn run_reconciliation_job(
                 runtime_catalog,
                 ForegroundReconciliationOptions {
                     timing: running.timing(),
-                    fallback_shutdown: Some(fallback_shutdown),
                     hooks: running.hooks(),
                 },
             )
             .await;
-
-            let result = match result {
-                ForegroundReconciliationCompletion::Finalized(result) => {
-                    running.finish();
-                    result
-                }
-                ForegroundReconciliationCompletion::Cancelled => {
-                    drop(running);
-                    ReconciliationJobCompletion::Cancelled
-                        .into_result()
-                        .map(|_summary| ())
-                }
-            };
+            running.finish();
 
             foreground_reconciliation_result(accepted_result, result)
         }
@@ -757,7 +685,6 @@ async fn run_update_job(
     queue: ReconciliationQueue,
     mut transport: DaemonTransport<LocalStream>,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    fallback_shutdown: &watch::Receiver<bool>,
 ) -> Result<(), DaemonError> {
     let result = match enqueue_update_job(&paths, &queue) {
         Ok(result) => result,
@@ -779,16 +706,8 @@ async fn run_update_job(
             .await
             .map_err(DaemonError::from);
             let stream_is_open = accepted_result.is_ok();
-            let Some((running, stream_is_open)) = wait_for_foreground_turn(
-                queued,
-                &mut transport,
-                stream_is_open,
-                Some(fallback_shutdown),
-            )
-            .await
-            else {
-                return accepted_result;
-            };
+            let (running, stream_is_open) =
+                wait_for_foreground_turn(queued, &mut transport, stream_is_open).await;
             let result = stream_started_update_job(
                 paths,
                 transport,
@@ -797,25 +716,12 @@ async fn run_update_job(
                 runtime_catalog,
                 running.timing(),
                 ReconciliationJobOptions {
-                    fallback_shutdown: Some(fallback_shutdown),
                     hooks: running.hooks(),
                     ..ReconciliationJobOptions::default()
                 },
             )
             .await;
-
-            let result = match result {
-                ForegroundReconciliationCompletion::Finalized(result) => {
-                    running.finish();
-                    result
-                }
-                ForegroundReconciliationCompletion::Cancelled => {
-                    drop(running);
-                    ReconciliationJobCompletion::Cancelled
-                        .into_result()
-                        .map(|_summary| ())
-                }
-            };
+            running.finish();
 
             foreground_reconciliation_result(accepted_result, result)
         }
@@ -865,7 +771,7 @@ async fn stream_started_update_job<Stream>(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     timing: ReconciliationJobTiming,
     options: ReconciliationJobOptions<'_>,
-) -> ForegroundReconciliationCompletion
+) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
 {
@@ -932,49 +838,36 @@ where
             false,
         )
     };
-    if matches!(update_result, ReconciliationJobCompletion::Cancelled) {
-        return ForegroundReconciliationCompletion::Cancelled;
-    }
     let update_result = update_result.into_result();
-    if let Err(error) = started_stream_result {
-        return ForegroundReconciliationCompletion::Finalized(Err(error));
-    }
+    started_stream_result?;
 
     if !stream_is_open || !transport_is_open {
-        return ForegroundReconciliationCompletion::Finalized(update_result.map(|_summary| ()));
+        return update_result.map(|_summary| ());
     }
 
     match update_result {
         Ok(summary) => {
-            let result = write_foreground_terminal_event(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobCompleted {
                     job_id,
                     summary: &summary,
                 },
             )
-            .await;
-            if let Err(error) = result {
-                return ForegroundReconciliationCompletion::Finalized(Err(error));
-            }
+            .await
         }
         Err(error) => {
             let error_message = error.to_string();
-            let result = write_foreground_terminal_event(
+            write_foreground_terminal_event(
                 &mut transport,
                 &DaemonEvent::JobFailed {
                     job_id,
                     error: &error_message,
                 },
             )
-            .await;
-            if let Err(error) = result {
-                return ForegroundReconciliationCompletion::Finalized(Err(error));
-            }
+            .await
         }
     }
-
-    ForegroundReconciliationCompletion::Finalized(Ok(()))
 }
 
 fn foreground_reconciliation_result(
@@ -989,29 +882,20 @@ async fn wait_for_foreground_turn<Stream>(
     queued: QueuedReconciliation,
     transport: &mut DaemonTransport<Stream>,
     mut stream_is_open: bool,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
-) -> Option<(RunningReconciliation, bool)>
+) -> (RunningReconciliation, bool)
 where
     Stream: AsyncWrite + Unpin,
 {
     let job_id = queued.job_id().to_string();
     let wait_for_turn = queued.wait_for_turn();
     tokio::pin!(wait_for_turn);
-    let mut fallback_shutdown = fallback_shutdown.cloned();
     let heartbeat = clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL);
     tokio::pin!(heartbeat);
 
     loop {
         tokio::select! {
             biased;
-            _ = async {
-                if let Some(fallback_shutdown) = fallback_shutdown.as_mut() {
-                    wait_for_fallback_shutdown(fallback_shutdown).await;
-                } else {
-                    std::future::pending::<()>().await;
-                }
-            } => return None,
-            running = &mut wait_for_turn => return Some((running, stream_is_open)),
+            running = &mut wait_for_turn => return (running, stream_is_open),
             _ = &mut heartbeat, if stream_is_open => {
                 heartbeat.set(clock::sleep(&FOREGROUND_JOB_HEARTBEAT_INTERVAL));
                 let event = DaemonEvent::Log {
@@ -1046,7 +930,7 @@ async fn stream_started_reconciliation_job<Stream>(
 where
     Stream: AsyncWrite + Unpin,
 {
-    stream_started_reconciliation_job_with_fallback(
+    stream_started_reconciliation_job_with_options(
         paths,
         transport,
         stream_is_open,
@@ -1055,54 +939,30 @@ where
         runtime_catalog,
         ForegroundReconciliationOptions {
             timing,
-            fallback_shutdown: None,
             hooks: None,
         },
     )
     .await
-    .into_result()
 }
 
-struct ForegroundReconciliationOptions<'a> {
+struct ForegroundReconciliationOptions {
     timing: ReconciliationJobTiming,
-    fallback_shutdown: Option<&'a watch::Receiver<bool>>,
     hooks: Option<DaemonHooks>,
 }
 
-enum ForegroundReconciliationCompletion {
-    Finalized(Result<(), DaemonError>),
-    Cancelled,
-}
-
-impl ForegroundReconciliationCompletion {
-    #[cfg(test)]
-    fn into_result(self) -> Result<(), DaemonError> {
-        match self {
-            Self::Finalized(result) => result,
-            Self::Cancelled => ReconciliationJobCompletion::Cancelled
-                .into_result()
-                .map(|_summary| ()),
-        }
-    }
-}
-
-async fn stream_started_reconciliation_job_with_fallback<Stream>(
+async fn stream_started_reconciliation_job_with_options<Stream>(
     paths: PvPaths,
     mut transport: DaemonTransport<Stream>,
     stream_is_open: bool,
     job_id: &str,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    options: ForegroundReconciliationOptions<'_>,
-) -> ForegroundReconciliationCompletion
+    options: ForegroundReconciliationOptions,
+) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
 {
-    let ForegroundReconciliationOptions {
-        timing,
-        fallback_shutdown,
-        hooks,
-    } = options;
+    let ForegroundReconciliationOptions { timing, hooks } = options;
     let scope_text = scope.to_string();
     let started_stream_result = if stream_is_open {
         async {
@@ -1142,11 +1002,9 @@ where
                     progress,
                     timing,
                     ReconciliationJobOptions {
-                        fallback_shutdown,
                         hooks,
                         ..ReconciliationJobOptions::default()
                     },
-                    None,
                 ),
                 event_receiver,
                 phase_receiver,
@@ -1164,34 +1022,22 @@ where
                     DaemonDownloadProgress::disabled(),
                     timing,
                     ReconciliationJobOptions {
-                        fallback_shutdown,
                         hooks,
                         ..ReconciliationJobOptions::default()
                     },
-                    None,
                 )
                 .await,
                 false,
             )
         };
-    if matches!(
-        reconciliation_result,
-        ReconciliationJobCompletion::Cancelled
-    ) {
-        return ForegroundReconciliationCompletion::Cancelled;
-    }
     let reconciliation_result = reconciliation_result.into_result();
-    if let Err(error) = started_stream_result {
-        return ForegroundReconciliationCompletion::Finalized(Err(error));
-    }
+    started_stream_result?;
 
     if !stream_is_open || !transport_is_open {
-        return ForegroundReconciliationCompletion::Finalized(
-            reconciliation_result.map(|_summary| ()),
-        );
+        return reconciliation_result.map(|_summary| ());
     }
 
-    let result = match reconciliation_result {
+    match reconciliation_result {
         Ok(summary) => {
             write_foreground_terminal_event(
                 &mut transport,
@@ -1213,9 +1059,7 @@ where
             )
             .await
         }
-    };
-
-    ForegroundReconciliationCompletion::Finalized(result)
+    }
 }
 
 #[cfg(test)]
@@ -1578,11 +1422,6 @@ async fn complete_update_job_with_progress(
     let progress = progress.with_phase_log(phase_log.clone());
     let result =
         complete_update_job_inner(paths, runtime_catalog, progress, &phase_log, options).await;
-    let result = match result {
-        Ok(ReconciliationOutcome::Completed(completed)) => Ok(completed),
-        Ok(ReconciliationOutcome::Cancelled) => return ReconciliationJobCompletion::Cancelled,
-        Err(error) => Err(error),
-    };
     let finalization_timer = phase_log.start(ReconciliationPhase::Finalization, "job");
 
     let completion = match result {
@@ -1664,11 +1503,7 @@ async fn complete_update_job_inner(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
     options: ReconciliationJobOptions<'_>,
-) -> Result<ReconciliationOutcome<CompletedUpdateJob>, FailedUpdateJob> {
-    let fallback_shutdown = options.fallback_shutdown;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+) -> Result<CompletedUpdateJob, FailedUpdateJob> {
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
         let update_progress = progress.clone();
@@ -1695,12 +1530,6 @@ async fn complete_update_job_inner(
     let report = match report.into_result() {
         Ok(report) => report,
         Err(update_error) => {
-            if fallback_shutdown_requested(fallback_shutdown) {
-                return Err(FailedUpdateJob::new(
-                    update_error,
-                    JobDiagnosticSubject::UpdateAssessment,
-                ));
-            }
             return Err(reconcile_partial_update_failure(
                 paths,
                 runtime_catalog,
@@ -1714,13 +1543,10 @@ async fn complete_update_job_inner(
     };
 
     if report.updated_count == 0 {
-        return Ok(ReconciliationOutcome::Completed(CompletedUpdateJob {
+        return Ok(CompletedUpdateJob {
             summary: unchanged_update_summary(&report),
             coverage: Vec::new(),
-        }));
-    }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
+        });
     }
 
     let mut failure_subject = JobDiagnosticSubject::SystemReconciliation;
@@ -1729,14 +1555,12 @@ async fn complete_update_job_inner(
         runtime_catalog,
         progress,
         phase_log,
-        None,
         options,
         Some(&mut failure_subject),
     )
     .await;
     let completed = match reconciliation_result {
-        Ok(ReconciliationOutcome::Completed(completed)) => completed,
-        Ok(ReconciliationOutcome::Cancelled) => return Ok(ReconciliationOutcome::Cancelled),
+        Ok(completed) => completed,
         Err(error) => {
             return Err(compensate_caddy_update_failure(
                 paths,
@@ -1744,7 +1568,6 @@ async fn complete_update_job_inner(
                 error,
                 failure_subject,
                 phase_log,
-                fallback_shutdown,
             )
             .await);
         }
@@ -1755,10 +1578,10 @@ async fn complete_update_job_inner(
         report.updated_count, completed.summary,
     );
 
-    Ok(ReconciliationOutcome::Completed(CompletedUpdateJob {
+    Ok(CompletedUpdateJob {
         summary,
         coverage: completed.coverage,
-    }))
+    })
 }
 
 async fn compensate_caddy_update_failure(
@@ -1767,51 +1590,21 @@ async fn compensate_caddy_update_failure(
     original_error: DaemonError,
     subject: JobDiagnosticSubject,
     phase_log: &ReconciliationPhaseLog,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
 ) -> FailedUpdateJob {
     match report.rollback_caddy(paths) {
-        Ok(true) if fallback_shutdown_requested(fallback_shutdown) => {
-            FailedUpdateJob::new(original_error, subject)
-        }
-        Ok(true) => match fallback_shutdown {
-            Some(fallback_shutdown) => {
-                match reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                    paths,
-                    phase_log,
-                    fallback_shutdown,
-                )
-                .await
-                {
-                    Ok(ReconciliationOutcome::Completed(_) | ReconciliationOutcome::Cancelled) => {
-                        FailedUpdateJob::new(
-                            original_error,
-                            if subject == JobDiagnosticSubject::GatewayRuntime {
-                                JobDiagnosticSubject::UpdateAssessment
-                            } else {
-                                subject
-                            },
-                        )
-                    }
-                    Err(recovery_error) => FailedUpdateJob::new(
-                        caddy_compensation_error(original_error, recovery_error),
-                        subject,
-                    ),
-                }
-            }
-            None => match reconcile_gateway_runtimes(paths).await {
-                Ok(_summary) => FailedUpdateJob::new(
-                    original_error,
-                    if subject == JobDiagnosticSubject::GatewayRuntime {
-                        JobDiagnosticSubject::UpdateAssessment
-                    } else {
-                        subject
-                    },
-                ),
-                Err(recovery_error) => FailedUpdateJob::new(
-                    caddy_compensation_error(original_error, recovery_error),
-                    subject,
-                ),
-            },
+        Ok(true) => match reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await {
+            Ok(_summary) => FailedUpdateJob::new(
+                original_error,
+                if subject == JobDiagnosticSubject::GatewayRuntime {
+                    JobDiagnosticSubject::UpdateAssessment
+                } else {
+                    subject
+                },
+            ),
+            Err(recovery_error) => FailedUpdateJob::new(
+                caddy_compensation_error(original_error, recovery_error),
+                subject,
+            ),
         },
         Ok(false) => FailedUpdateJob::new(original_error, subject),
         Err(rollback_error) => FailedUpdateJob::new(
@@ -1834,13 +1627,12 @@ async fn reconcile_partial_update_failure(
         runtime_catalog,
         progress,
         phase_log,
-        None,
         options,
         None,
     )
     .await;
     match reconciliation_result {
-        Ok(ReconciliationOutcome::Completed(_) | ReconciliationOutcome::Cancelled) => {
+        Ok(_completed) => {
             FailedUpdateJob::new(update_error, JobDiagnosticSubject::UpdateAssessment)
         }
         Err(reconciliation_error) => FailedUpdateJob::new(
@@ -2020,7 +1812,7 @@ async fn complete_managed_resource_reconciliation_with_progress(
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    complete_managed_resource_reconciliation_with_progress_and_fallback_shutdown(
+    complete_managed_resource_reconciliation_with_options(
         paths,
         name,
         track,
@@ -2029,11 +1821,10 @@ async fn complete_managed_resource_reconciliation_with_progress(
         phase_log,
         ReconciliationJobOptions::default(),
     )
-    .await?
-    .into_completed()
+    .await
 }
 
-async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shutdown(
+async fn complete_managed_resource_reconciliation_with_options(
     paths: &PvPaths,
     name: &crate::reconciliation::ReconciliationScopeComponent,
     track: &crate::reconciliation::ReconciliationScopeComponent,
@@ -2041,12 +1832,7 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
     options: ReconciliationJobOptions<'_>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let fallback_shutdown = options.fallback_shutdown;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
-
+) -> Result<CompletedReconciliationJob, DaemonError> {
     let dependent_projects = Database::open(paths)?
         .projects_demanding_managed_resource_track(name.as_str(), track.as_str())?;
     let strict_failures = unready_established_resource_projects(
@@ -2069,31 +1855,21 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
             skip_projects.insert(project_id.clone());
         }
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_reconciliation_errors(strict_failures.into_values());
-    }
 
     let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let record_result = reconcile_system_projects_with_progress(
+    let record_result = reconcile_system_projects(
         paths,
         runtime_catalog,
         &BTreeSet::new(),
         &BTreeMap::new(),
-        &progress,
         ProjectApplyStage::RecordRequirements,
         &linked_projects(paths)?,
         &skip_projects,
-        fallback_shutdown,
         options.hooks.as_ref(),
     )
     .await;
     finish_project_phase(record_timer, &record_result);
-    let record_failures = record_result?.failures;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_reconciliation_errors(
-            strict_failures.into_values().chain(record_failures),
-        );
-    }
+    record_result?;
 
     let resources_timer = phase_log.start(
         ReconciliationPhase::Resources,
@@ -2106,7 +1882,6 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
         runtime_catalog,
         &dependent_projects,
         progress.clone().suppressing_operation_phases(),
-        fallback_shutdown,
     )
     .await;
     resources_timer.finish(
@@ -2125,29 +1900,19 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
             skip_projects.insert(project_id.clone());
         }
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_reconciliation_errors(
-            strict_failures
-                .into_values()
-                .chain(resource_failures.into_values())
-                .chain(record_failures),
-        );
-    }
 
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
     // The staged apply covers established dependents only: Projects that never
     // demanded this track have no persisted state for it, and recording their
     // requirements above must not pull them into this scope's apply.
-    let project_result = reconcile_system_projects_with_progress(
+    let project_result = reconcile_system_projects(
         paths,
         runtime_catalog,
         &BTreeSet::new(),
         &BTreeMap::new(),
-        &progress,
         ProjectApplyStage::CompleteStagedApply,
         &dependent_projects,
         &skip_projects,
-        fallback_shutdown,
         options.hooks.as_ref(),
     )
     .await;
@@ -2172,14 +1937,6 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
                 source: Box::new(error),
             });
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        let failures = record_failures
-            .into_iter()
-            .chain(resource_failures.into_values())
-            .chain(project_report.failures)
-            .collect::<Vec<_>>();
-        return cancel_or_preserve_reconciliation_errors(failures);
-    }
     let summary =
         managed_resource_reconciliation_summary(name.as_str(), track.as_str(), &project_report);
     let mut coverage = vec![JobDiagnosticSubject::Resource {
@@ -2188,9 +1945,7 @@ async fn complete_managed_resource_reconciliation_with_progress_and_fallback_shu
     }];
     coverage.extend(project_report.successful_project_coverage());
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob { summary, coverage },
-    ))
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 /// Applies persisted environments after a resource change. Only tests exercise this path
@@ -2253,27 +2008,6 @@ fn reconcile_persisted_project_envs(
 }
 
 #[cfg(test)]
-async fn complete_reconciliation_job(
-    paths: &PvPaths,
-    job_id: &str,
-    scope: &ReconciliationScope,
-    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    timing: ReconciliationJobTiming,
-    pf_routing_state: Option<GatewayPfRoutingState>,
-) -> Result<String, DaemonError> {
-    complete_reconciliation_job_with_progress(
-        paths,
-        job_id,
-        scope,
-        runtime_catalog,
-        DaemonDownloadProgress::disabled(),
-        timing,
-        pf_routing_state,
-    )
-    .await
-}
-
-#[cfg(test)]
 async fn complete_reconciliation_job_with_progress(
     paths: &PvPaths,
     job_id: &str,
@@ -2294,7 +2028,6 @@ async fn complete_reconciliation_job_with_progress(
             pf_routing_state,
             ..ReconciliationJobOptions::default()
         },
-        None,
     )
     .await
     .into_result()
@@ -2302,7 +2035,6 @@ async fn complete_reconciliation_job_with_progress(
 
 enum ReconciliationJobCompletion {
     Succeeded(String),
-    Cancelled,
     Failed {
         error: Box<DaemonError>,
         recording_error: Option<Box<DaemonError>>,
@@ -2313,10 +2045,6 @@ impl ReconciliationJobCompletion {
     fn into_result(self) -> Result<String, DaemonError> {
         match self {
             Self::Succeeded(summary) => Ok(summary),
-            Self::Cancelled => Err(DaemonError::UnexpectedProtocolResponse {
-                reason: "foreground reconciliation was cancelled without a shutdown signal"
-                    .to_owned(),
-            }),
             Self::Failed {
                 error,
                 recording_error,
@@ -2333,14 +2061,11 @@ impl ReconciliationJobCompletion {
 struct ReconciliationJobOptions<'a> {
     discard_obsolete_project: bool,
     pf_routing_state: Option<GatewayPfRoutingState>,
-    fallback_shutdown: Option<&'a watch::Receiver<bool>>,
     hooks: Option<DaemonHooks>,
+    /// The startup job's shutdown signal; only the system scope reads it.
+    shutdown: Option<&'a oneshot::Receiver<()>>,
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the startup-only shutdown signal and cloneable test fallback have distinct scopes"
-)]
 async fn complete_reconciliation_job_with_progress_outcome(
     paths: &PvPaths,
     job_id: &str,
@@ -2349,11 +2074,9 @@ async fn complete_reconciliation_job_with_progress_outcome(
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
     options: ReconciliationJobOptions<'_>,
-    shutdown: Option<&oneshot::Receiver<()>>,
 ) -> ReconciliationJobCompletion {
     let discard_obsolete_project = options.discard_obsolete_project;
     let pf_routing_state = options.pf_routing_state;
-    let fallback_shutdown = options.fallback_shutdown;
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, "reconcile", &scope_text)
         .with_progress(progress.phase_sender.clone());
@@ -2386,13 +2109,10 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     &[],
                 );
             }
-            Ok(ReconciliationOutcome::Completed(
-                CompletedReconciliationJob {
-                    summary: "Project was removed before background reconciliation; skipped"
-                        .to_owned(),
-                    coverage: Vec::new(),
-                },
-            ))
+            Ok(CompletedReconciliationJob {
+                summary: "Project was removed before background reconciliation; skipped".to_owned(),
+                coverage: Vec::new(),
+            })
         }
         Ok(false) => match &effective_scope {
             ReconciliationScope::System => {
@@ -2401,7 +2121,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     runtime_catalog,
                     progress,
                     &phase_log,
-                    shutdown,
                     options,
                     None,
                 )
@@ -2410,10 +2129,10 @@ async fn complete_reconciliation_job_with_progress_outcome(
             ReconciliationScope::Resource { name, .. }
                 if gateway_runtime_resource(name.as_str()) =>
             {
-                complete_gateway_reconciliation(paths, &phase_log, fallback_shutdown).await
+                complete_gateway_reconciliation(paths, &phase_log).await
             }
             ReconciliationScope::Resource { name, track } => {
-                complete_managed_resource_reconciliation_with_progress_and_fallback_shutdown(
+                complete_managed_resource_reconciliation_with_options(
                     paths,
                     name,
                     track,
@@ -2425,7 +2144,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
                 .await
             }
             ReconciliationScope::Project { id } => {
-                complete_project_reconciliation_with_progress_and_fallback(
+                complete_project_reconciliation_with_options(
                     paths,
                     id,
                     runtime_catalog,
@@ -2434,7 +2153,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     &mut failure_subject,
                     ReconciliationJobOptions {
                         pf_routing_state,
-                        fallback_shutdown,
                         hooks: options.hooks,
                         ..ReconciliationJobOptions::default()
                     },
@@ -2442,12 +2160,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
                 .await
             }
         },
-    };
-
-    let result = match result {
-        Ok(ReconciliationOutcome::Completed(completed)) => Ok(completed),
-        Ok(ReconciliationOutcome::Cancelled) => return ReconciliationJobCompletion::Cancelled,
-        Err(error) => Err(error),
     };
 
     let coverage_count = result
@@ -2548,30 +2260,13 @@ fn fail_reconciliation_job(
 async fn complete_gateway_reconciliation(
     paths: &PvPaths,
     phase_log: &ReconciliationPhaseLog,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let summary = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            match reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                paths,
-                phase_log,
-                fallback_shutdown,
-            )
-            .await?
-            {
-                ReconciliationOutcome::Completed(summary) => summary,
-                ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-            }
-        }
-        None => reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?,
-    };
+) -> Result<CompletedReconciliationJob, DaemonError> {
+    let summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob {
-            summary,
-            coverage: vec![JobDiagnosticSubject::GatewayRuntime],
-        },
-    ))
+    Ok(CompletedReconciliationJob {
+        summary,
+        coverage: vec![JobDiagnosticSubject::GatewayRuntime],
+    })
 }
 
 async fn complete_system_reconciliation_with_progress(
@@ -2579,15 +2274,9 @@ async fn complete_system_reconciliation_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
-    shutdown: Option<&oneshot::Receiver<()>>,
     options: ReconciliationJobOptions<'_>,
     mut failure_subject: Option<&mut JobDiagnosticSubject>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let fallback_shutdown = options.fallback_shutdown;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
-
+) -> Result<CompletedReconciliationJob, DaemonError> {
     // Worktree discovery links, moves, and unlinks Projects, so it runs before PV reads them.
     if let Some(context) = &options.hooks {
         context.stop_obsolete().await?;
@@ -2597,9 +2286,6 @@ async fn complete_system_reconciliation_with_progress(
     let discovery_result = discover_system_project_demand(paths);
     finish_demand_discovery_phase(discovery_timer, &discovery_result);
     let demand = discovery_result?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
 
     let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
     let mut resources_progress = progress.clone().suppressing_operation_phases();
@@ -2611,17 +2297,15 @@ async fn complete_system_reconciliation_with_progress(
     )
     .await;
     resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-    }
     // Retry the install once before applying the Projects. No Project Apply downloads, so a
     // retry after one could never recover the apply that needed the artifact. The retry is its
     // own timed phase and suppresses nested operation records, so the log stays coherent. If it
     // still fails, the later read-only check decides whether current applied demand still needs it.
     // Skip the retry when shutdown was already requested: a second blocking download would
     // hold the shutdown drain with no one left to consume its result.
-    let shutdown_requested = shutdown.is_some_and(|shutdown| !shutdown.is_empty())
-        || fallback_shutdown_requested(fallback_shutdown);
+    let shutdown_requested = options
+        .shutdown
+        .is_some_and(|shutdown| !shutdown.is_empty());
     if resources_result.is_err() && !shutdown_requested {
         let retry_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
         resources_progress = progress
@@ -2635,17 +2319,11 @@ async fn complete_system_reconciliation_with_progress(
         )
         .await;
         retry_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-        if fallback_shutdown_requested(fallback_shutdown) {
-            return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-        }
     }
     let mut resource_tracks = demand.resource_tracks;
     let mut project_demands = demand.project_demands;
     let has_late_resource_demand =
         discover_late_system_project_demand(paths, &mut resource_tracks, &mut project_demands)?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-    }
     if has_late_resource_demand {
         let late_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
         resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
@@ -2656,44 +2334,22 @@ async fn complete_system_reconciliation_with_progress(
         )
         .await;
         late_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-        if fallback_shutdown_requested(fallback_shutdown) {
-            return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-        }
     }
     let projects = linked_projects(paths)?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return resources_result.map(|()| ReconciliationOutcome::Cancelled);
-    }
     let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let project_result = reconcile_system_projects_with_progress(
+    let project_result = reconcile_system_projects(
         paths,
         runtime_catalog,
         &resource_tracks,
         &project_demands,
-        &progress,
         ProjectApplyStage::CompleteStagedApply,
         &projects,
         &BTreeSet::new(),
-        fallback_shutdown,
         options.hooks.as_ref(),
     )
     .await;
     finish_project_phase(project_timer, &project_result);
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_system_reconciliation_errors(
-            resources_result,
-            project_result,
-            Ok(()),
-        );
-    }
     let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_system_reconciliation_errors(
-            resources_result,
-            project_result,
-            cleanup_result,
-        );
-    }
     if resources_result.is_err()
         || project_result
             .as_ref()
@@ -2706,13 +2362,6 @@ async fn complete_system_reconciliation_with_progress(
             &progress,
         );
     }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return cancel_or_preserve_system_reconciliation_errors(
-            resources_result,
-            project_result,
-            cleanup_result,
-        );
-    }
     let has_system_failure = resources_result.is_err()
         || project_result
             .as_ref()
@@ -2721,33 +2370,17 @@ async fn complete_system_reconciliation_with_progress(
     if let Some(subject) = failure_subject.as_deref_mut() {
         *subject = JobDiagnosticSubject::GatewayRuntime;
     }
-    let gateway_result = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                paths,
-                phase_log,
-                fallback_shutdown,
-            )
-            .await
-        }
-        None => reconcile_gateway_runtimes_with_phase_log(paths, phase_log)
-            .await
-            .map(ReconciliationOutcome::Completed),
-    };
+    let gateway_result = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await;
     // The Gateway now runs without removed worktrees' routes, so their data can go. Cleanup keeps
     // its failures on the cleanup list instead of failing this job.
-    if matches!(gateway_result, Ok(ReconciliationOutcome::Completed(_))) {
+    if gateway_result.is_ok() {
         // Git or a terminal unlink may have changed since discovery's initial barrier.
         // A stopped group, not a removed Project row, admits allocation deletion.
         if let Some(context) = &options.hooks {
             context.stop_obsolete().await?;
         }
-        if let Err(error) = crate::managed_resources::clean_up_removed_allocations(
-            paths,
-            runtime_catalog,
-            fallback_shutdown,
-        )
-        .await
+        if let Err(error) =
+            crate::managed_resources::clean_up_removed_allocations(paths, runtime_catalog).await
         {
             structured_log::worktree_cleanup_failed(paths, &error.to_string());
         }
@@ -2758,23 +2391,8 @@ async fn complete_system_reconciliation_with_progress(
         cleanup_result,
         gateway_result,
     ) {
-        (
-            Ok(()),
-            Ok(project_report),
-            Ok(()),
-            Ok(ReconciliationOutcome::Completed(gateway_summary)),
-        ) => (project_report, gateway_summary),
-        (Ok(()), Ok(project_report), Ok(()), Ok(ReconciliationOutcome::Cancelled)) => {
-            if !project_report.failures.is_empty()
-                && let Some(subject) = failure_subject.as_deref_mut()
-            {
-                *subject = JobDiagnosticSubject::SystemReconciliation;
-            }
-            return cancel_or_preserve_system_reconciliation_errors(
-                Ok(()),
-                Ok(project_report),
-                Ok(()),
-            );
+        (Ok(()), Ok(project_report), Ok(()), Ok(gateway_summary)) => {
+            (project_report, gateway_summary)
         }
         (resources_result, project_result, cleanup_result, gateway_result) => {
             if has_system_failure && let Some(subject) = failure_subject.as_deref_mut() {
@@ -2801,37 +2419,7 @@ async fn complete_system_reconciliation_with_progress(
     }
     let coverage = completed_system_reconciliation_coverage(paths, &project_report)?;
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob { summary, coverage },
-    ))
-}
-
-fn cancel_or_preserve_system_reconciliation_errors(
-    resources_result: Result<(), DaemonError>,
-    project_result: Result<SystemProjectReconciliationReport, DaemonError>,
-    cleanup_result: Result<(), DaemonError>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
-    let project_failures = match project_result {
-        Ok(report) => report.failures,
-        Err(error) => vec![error],
-    };
-    let failures = resources_result
-        .err()
-        .into_iter()
-        .chain(project_failures)
-        .chain(cleanup_result.err());
-    cancel_or_preserve_reconciliation_errors(failures)
-}
-
-fn cancel_or_preserve_reconciliation_errors<T>(
-    failures: impl IntoIterator<Item = DaemonError>,
-) -> Result<ReconciliationOutcome<T>, DaemonError> {
-    let failures = failures.into_iter().collect::<Vec<_>>();
-    if failures.is_empty() {
-        Ok(ReconciliationOutcome::Cancelled)
-    } else {
-        Err(combined_system_reconciliation_error(failures))
-    }
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 #[cfg(test)]
@@ -2844,7 +2432,7 @@ async fn complete_project_reconciliation_with_progress(
     pf_routing_state: Option<GatewayPfRoutingState>,
     failure_subject: &mut Option<JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    complete_project_reconciliation_with_progress_and_fallback(
+    complete_project_reconciliation_with_options(
         paths,
         id,
         runtime_catalog,
@@ -2856,11 +2444,10 @@ async fn complete_project_reconciliation_with_progress(
             ..ReconciliationJobOptions::default()
         },
     )
-    .await?
-    .into_completed()
+    .await
 }
 
-async fn complete_project_reconciliation_with_progress_and_fallback(
+async fn complete_project_reconciliation_with_options(
     paths: &PvPaths,
     id: &crate::reconciliation::ReconciliationScopeComponent,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -2868,44 +2455,22 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
     phase_log: &ReconciliationPhaseLog,
     failure_subject: &mut Option<JobDiagnosticSubject>,
     options: ReconciliationJobOptions<'_>,
-) -> Result<ReconciliationOutcome<CompletedReconciliationJob>, DaemonError> {
+) -> Result<CompletedReconciliationJob, DaemonError> {
     let pf_routing_state = options.pf_routing_state;
-    let fallback_shutdown = options.fallback_shutdown;
-    let project_result =
-        reconcile_project_env_and_missing_resources_with_progress_and_fallback_shutdown(
-            paths,
-            id.as_str(),
-            runtime_catalog,
-            progress.clone(),
-            phase_log,
-            fallback_shutdown,
-            options.hooks.as_ref(),
-        )
-        .await;
+    let project_result = reconcile_project_env_and_missing_resources_with_progress(
+        paths,
+        id.as_str(),
+        runtime_catalog,
+        progress.clone(),
+        phase_log,
+        options.hooks.as_ref(),
+    )
+    .await;
     let project_env_summary = match project_result {
-        Ok(ReconciliationOutcome::Completed(summary)) => summary,
-        Ok(ReconciliationOutcome::Cancelled) => return Ok(ReconciliationOutcome::Cancelled),
+        Ok(summary) => summary,
         Err(project_error) => {
-            if fallback_shutdown_requested(fallback_shutdown) {
-                return Err(project_error);
-            }
-            let gateway_result = match fallback_shutdown {
-                Some(fallback_shutdown) => {
-                    reconcile_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                        paths,
-                        phase_log,
-                        fallback_shutdown,
-                    )
-                    .await
-                }
-                None => reconcile_gateway_runtimes_with_phase_log(paths, phase_log)
-                    .await
-                    .map(ReconciliationOutcome::Completed),
-            };
-            return match gateway_result {
-                Ok(ReconciliationOutcome::Completed(_) | ReconciliationOutcome::Cancelled) => {
-                    Err(project_error)
-                }
+            return match reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await {
+                Ok(_summary) => Err(project_error),
                 Err(gateway_error) => Err(combined_system_reconciliation_error(vec![
                     project_error,
                     gateway_error,
@@ -2913,31 +2478,13 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
             };
         }
     };
-    let gateway_outcome = match fallback_shutdown {
-        Some(fallback_shutdown) => {
-            match reconcile_project_gateway_runtimes_with_phase_log_and_fallback_shutdown(
-                paths,
-                id.as_str(),
-                pf_routing_state,
-                phase_log,
-                Some(fallback_shutdown),
-            )
-            .await?
-            {
-                ReconciliationOutcome::Completed(outcome) => outcome,
-                ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-            }
-        }
-        None => {
-            reconcile_project_gateway_runtimes_with_phase_log(
-                paths,
-                id.as_str(),
-                pf_routing_state,
-                phase_log,
-            )
-            .await?
-        }
-    };
+    let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
+        paths,
+        id.as_str(),
+        pf_routing_state,
+        phase_log,
+    )
+    .await?;
     let (gateway_summary, gateway_evaluated) = match gateway_outcome {
         ProjectGatewayReconciliationOutcome::Reconciled {
             summary,
@@ -2950,7 +2497,6 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
                 runtime_catalog,
                 progress,
                 phase_log,
-                None,
                 options,
                 None,
             )
@@ -2969,9 +2515,7 @@ async fn complete_project_reconciliation_with_progress_and_fallback(
         coverage.push(JobDiagnosticSubject::GatewayRuntime);
     }
 
-    Ok(ReconciliationOutcome::Completed(
-        CompletedReconciliationJob { summary, coverage },
-    ))
+    Ok(CompletedReconciliationJob { summary, coverage })
 }
 
 fn finish_project_phase(
@@ -3026,12 +2570,12 @@ fn usize_as_u64(value: usize) -> u64 {
 }
 
 #[cfg(test)]
-async fn reconcile_project_env_and_missing_resources(
+pub(crate) async fn reconcile_project_env_and_missing_resources(
     paths: &PvPaths,
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
-    reconcile_project_env_and_missing_resources_with_progress_and_fallback_shutdown(
+    reconcile_project_env_and_missing_resources_with_progress(
         paths,
         project_id,
         runtime_catalog,
@@ -3043,52 +2587,33 @@ async fn reconcile_project_env_and_missing_resources(
             &format!("project:{project_id}"),
         ),
         None,
-        None,
     )
-    .await?
-    .into_completed()
+    .await
 }
 
-async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_shutdown(
+async fn reconcile_project_env_and_missing_resources_with_progress(
     paths: &PvPaths,
     project_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
     hooks: Option<&DaemonHooks>,
-) -> Result<ReconciliationOutcome<crate::project_env::ProjectEnvReconciliationSummary>, DaemonError>
-{
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
-
+) -> Result<crate::project_env::ProjectEnvReconciliationSummary, DaemonError> {
     let record_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
-    let record_result = reconcile_project_env_with_runtime_catalog_and_progress_outcome(
+    let record_result = reconcile_project_env_with_runtime_catalog(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
-        progress.clone(),
-        ProjectApplyOptions::new(ProjectApplyStage::RecordRequirements, fallback_shutdown),
+        ProjectApplyOptions::new(ProjectApplyStage::RecordRequirements),
     )
     .await;
     record_timer.finish(
-        match &record_result {
-            Ok(ReconciliationOutcome::Completed(_)) => PhaseOutcome::Succeeded,
-            Ok(ReconciliationOutcome::Cancelled) => PhaseOutcome::Skipped,
-            Err(_) => PhaseOutcome::Failed,
-        },
+        PhaseOutcome::from_succeeded(record_result.is_ok()),
         &[("project_count", 1)],
     );
-    let recorded = match record_result? {
-        ReconciliationOutcome::Completed(recorded) => recorded,
-        ReconciliationOutcome::Cancelled => return Ok(ReconciliationOutcome::Cancelled),
-    };
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+    let recorded = record_result?;
     let requested_php_extensions = recorded.requested_php_extensions();
     let recorded_tracks = recorded.recorded_tracks().clone();
 
@@ -3112,39 +2637,24 @@ async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_
         &[],
     );
     let deferred_resources_error = resources_result?.deferred_error;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return match deferred_resources_error {
-            Some(error) => Err(error),
-            None => Ok(ReconciliationOutcome::Cancelled),
-        };
-    }
 
     let apply_timer = phase_log.start(ReconciliationPhase::ProjectApply, project_id);
-    let apply_result = reconcile_project_env_with_runtime_catalog_and_progress_outcome(
+    let apply_result = reconcile_project_env_with_runtime_catalog(
         paths,
         project_id,
         runtime_catalog,
         None,
         &BTreeSet::new(),
-        progress,
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply, fallback_shutdown)
-            .with_hooks(hooks),
+        ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply).with_hooks(hooks),
     )
     .await;
     apply_timer.finish(
-        match &apply_result {
-            Ok(ReconciliationOutcome::Completed(_)) => PhaseOutcome::Succeeded,
-            Ok(ReconciliationOutcome::Cancelled) => PhaseOutcome::Skipped,
-            Err(_) => PhaseOutcome::Failed,
-        },
+        PhaseOutcome::from_succeeded(apply_result.is_ok()),
         &[("project_count", 1)],
     );
 
-    let result = match (apply_result, deferred_resources_error) {
-        (Ok(ReconciliationOutcome::Completed(summary)), None) => Ok(summary),
-        (Ok(ReconciliationOutcome::Cancelled), None) => {
-            return Ok(ReconciliationOutcome::Cancelled);
-        }
+    match (apply_result, deferred_resources_error) {
+        (Ok(summary), None) => Ok(summary),
         (Ok(_), Some(repair_error)) => Err(repair_error),
         (Err(apply_error), None) => Err(apply_error),
         // Both stages failed. The apply is reported as primary because it is the later,
@@ -3156,13 +2666,7 @@ async fn reconcile_project_env_and_missing_resources_with_progress_and_fallback_
                 repair: Box::new(repair_error),
             })
         }
-    };
-    let summary = result?;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
     }
-
-    Ok(ReconciliationOutcome::Completed(summary))
 }
 
 /// Installs the Managed Resource tracks the Project declares, then, under the original
@@ -3276,16 +2780,14 @@ impl SystemProjectReconciliationReport {
               `skip_project_ids` carries established-demand failures that must be reported \
               without being re-applied; neither is derivable from the other."
 )]
-async fn reconcile_system_projects_with_progress(
+async fn reconcile_system_projects(
     paths: &PvPaths,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
     project_demands: &BTreeMap<String, ProjectDemand>,
-    progress: &DaemonDownloadProgress,
     stage: ProjectApplyStage,
     projects: &[ProjectRecord],
     skip_project_ids: &BTreeSet<String>,
-    fallback_shutdown: Option<&watch::Receiver<bool>>,
     hooks: Option<&DaemonHooks>,
 ) -> Result<SystemProjectReconciliationReport, DaemonError> {
     let mut report = SystemProjectReconciliationReport {
@@ -3296,29 +2798,24 @@ async fn reconcile_system_projects_with_progress(
     let empty_demand = ProjectDemand::default();
 
     for project in projects {
-        if fallback_shutdown_requested(fallback_shutdown) {
-            break;
-        }
         if skip_project_ids.contains(&project.id) {
             continue;
         }
-        match reconcile_project_env_with_runtime_catalog_and_progress_outcome(
+        match reconcile_project_env_with_runtime_catalog(
             paths,
             &project.id,
             runtime_catalog,
             Some(project_demands.get(&project.id).unwrap_or(&empty_demand)),
             demanded_tracks,
-            progress.clone(),
-            ProjectApplyOptions::new(stage, fallback_shutdown).with_hooks(hooks),
+            ProjectApplyOptions::new(stage).with_hooks(hooks),
         )
         .await
         {
-            Ok(ReconciliationOutcome::Completed(summary)) => {
+            Ok(summary) => {
                 report.succeeded += 1;
                 report.successful_project_ids.push(project.id.clone());
                 report.summaries.push(summary.as_str().to_owned());
             }
-            Ok(ReconciliationOutcome::Cancelled) => break,
             Err(error @ DaemonError::ProjectEnvFailureRecordingFailed { .. }) => {
                 return Err(error);
             }
@@ -3356,105 +2853,6 @@ fn discover_late_system_project_demand(
     }
 
     Ok(has_late_resource_demand)
-}
-
-#[cfg(test)]
-async fn reconcile_system_projects_and_resources_with_progress(
-    paths: &PvPaths,
-    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    progress: DaemonDownloadProgress,
-    phase_log: &ReconciliationPhaseLog,
-) -> Result<SystemProjectReconciliationReport, DaemonError> {
-    let discovery_timer = phase_log.start(ReconciliationPhase::DemandDiscovery, "linked_projects");
-    let discovery_result = discover_system_project_demand(paths);
-    finish_demand_discovery_phase(discovery_timer, &discovery_result);
-    let SystemProjectDemandReport {
-        mut resource_tracks,
-        mut project_demands,
-        ..
-    } = discovery_result?;
-
-    let resources_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
-    let mut resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
-        paths,
-        runtime_catalog,
-        &resource_tracks,
-        progress.clone(),
-    )
-    .await;
-    resources_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    // Retry the install once before applying the Projects, for the same reason as the logged
-    // flow: no Project Apply downloads, so a later retry could not recover this apply.
-    if resources_result.is_err() {
-        let retry_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
-        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
-            paths,
-            runtime_catalog,
-            &resource_tracks,
-            progress.retrying_manifest_snapshot(),
-        )
-        .await;
-        retry_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    }
-    let has_late_resource_demand =
-        discover_late_system_project_demand(paths, &mut resource_tracks, &mut project_demands)?;
-    if has_late_resource_demand {
-        let late_timer = phase_log.start(ReconciliationPhase::Resources, "desired_resources");
-        resources_result = reconcile_system_resources_with_runtime_catalog_and_progress(
-            paths,
-            runtime_catalog,
-            &resource_tracks,
-            progress.clone(),
-        )
-        .await;
-        late_timer.finish(PhaseOutcome::from_succeeded(resources_result.is_ok()), &[]);
-    }
-    let project_timer = phase_log.start(ReconciliationPhase::ProjectApply, "linked_projects");
-    let project_result = reconcile_system_projects_with_progress(
-        paths,
-        runtime_catalog,
-        &resource_tracks,
-        &project_demands,
-        &progress,
-        ProjectApplyStage::CompleteStagedApply,
-        &linked_projects(paths)?,
-        &BTreeSet::new(),
-        None,
-        None,
-    )
-    .await;
-    finish_project_phase(project_timer, &project_result);
-    let cleanup_result = stop_undemanded_system_resource_runtimes(paths, runtime_catalog).await;
-    if resources_result.is_err()
-        || project_result
-            .as_ref()
-            .is_ok_and(|report| !report.failures.is_empty())
-    {
-        resources_result = verify_system_resources_after_project_application(
-            paths,
-            runtime_catalog,
-            project_result.as_ref().ok(),
-            &progress,
-        );
-    }
-
-    match (resources_result, project_result, cleanup_result) {
-        (Ok(()), Ok(report), Ok(())) => Ok(report),
-        (resources_result, project_result, cleanup_result) => {
-            let project_failures = match project_result {
-                Ok(report) => report.failures,
-                Err(error) => vec![error],
-            };
-            Err(combined_system_reconciliation_error(
-                resources_result
-                    .err()
-                    .into_iter()
-                    .chain(project_failures)
-                    .chain(cleanup_result.err())
-                    .collect(),
-            ))
-        }
-    }
 }
 
 fn verify_system_resources_after_project_application(
@@ -3633,24 +3031,6 @@ fn reconciliation_started_message(scope: &ReconciliationScope) -> &'static str {
 
 fn gateway_runtime_resource(resource_name: &str) -> bool {
     matches!(resource_name, "caddy" | "php" | "frankenphp")
-}
-
-#[cfg(test)]
-fn complete_or_fail_background_reconciliation(
-    paths: &PvPaths,
-    job_id: &str,
-    operation: impl FnOnce() -> Result<(), DaemonError>,
-) -> Result<(), DaemonError> {
-    match operation() {
-        Ok(()) => Ok(()),
-        Err(error) => {
-            let error_message = error.to_string();
-            let mut database = Database::open(paths)?;
-            database.fail_job(job_id, &error_message)?;
-
-            Err(error)
-        }
-    }
 }
 
 pub(crate) fn record_background_reconciliation_error(
@@ -3867,30 +3247,25 @@ mod tests {
     #[cfg(target_os = "macos")]
     use super::run_reconciliation_job;
     use super::{
-        BackgroundReconciliationError, DaemonDownloadProgress, FOREGROUND_JOB_HEARTBEAT_INTERVAL,
-        FOREGROUND_JOB_PROGRESS_BUFFER, FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent,
-        ReconciliationJobCompletion, ReconciliationJobOptions, SystemProjectReconciliationReport,
-        abandon_reconciliation_job, cancel_or_preserve_system_reconciliation_errors,
+        DaemonDownloadProgress, FOREGROUND_JOB_HEARTBEAT_INTERVAL, FOREGROUND_JOB_PROGRESS_BUFFER,
+        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent, ReconciliationJobOptions,
+        SystemProjectReconciliationReport, abandon_reconciliation_job,
         complete_managed_resource_reconciliation_with_progress,
-        complete_or_fail_background_reconciliation, complete_project_reconciliation_with_progress,
-        complete_queued_background_reconciliation_job, complete_reconciliation_job_with_progress,
+        complete_project_reconciliation_with_progress, complete_reconciliation_job_with_progress,
         complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
         complete_system_reconciliation_with_progress, complete_update_job,
-        complete_update_job_with_progress, completed_system_reconciliation_coverage,
-        discover_system_project_demand, enqueue_foreground_reconciliation_job,
-        enqueue_reconciliation_job, enqueue_startup_reconciliation_job, enqueue_update_job,
-        foreground_reconciliation_result, linked_projects, managed_resource_reconciliation_summary,
-        reconcile_persisted_project_envs, reconcile_project_env_and_missing_resources,
-        reconcile_project_env_with_runtime_catalog_and_progress,
-        reconcile_system_projects_and_resources_with_progress,
-        reconcile_system_projects_with_progress,
-        reconcile_system_resources_with_runtime_catalog_and_progress,
-        record_background_reconciliation_error, run_background_reconciliation_job,
-        run_startup_reconciliation_job, start_reconciliation_job, start_update_job,
-        stop_undemanded_system_resource_runtimes, stream_started_reconciliation_job,
-        stream_started_update_job, system_project_summary, unready_established_resource_projects,
-        wait_for_foreground_turn, wait_for_startup_reconciliation_turn,
-        write_coalesced_update_response, write_foreground_terminal_event,
+        completed_system_reconciliation_coverage, discover_system_project_demand,
+        enqueue_foreground_reconciliation_job, enqueue_reconciliation_job,
+        enqueue_startup_reconciliation_job, enqueue_update_job, foreground_reconciliation_result,
+        linked_projects, managed_resource_reconciliation_summary, reconcile_persisted_project_envs,
+        reconcile_project_env_and_missing_resources, reconcile_project_env_with_runtime_catalog,
+        reconcile_system_projects, record_background_reconciliation_error,
+        run_background_reconciliation_job, run_startup_reconciliation_job,
+        start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
+        stream_started_reconciliation_job, stream_started_update_job,
+        unready_established_resource_projects, wait_for_foreground_turn,
+        wait_for_startup_reconciliation_turn, write_coalesced_update_response,
+        write_foreground_terminal_event,
     };
     use crate::project_env::{ProjectApplyOptions, ProjectApplyStage};
     use crate::reconciliation::{
@@ -3909,8 +3284,6 @@ mod tests {
     const COMPOSER_TEST_TRACK: &str = "2";
     const COMPOSER_TEST_ARTIFACT_VERSION: &str = "2.8.0-pv1";
     const COMPOSER_TEST_ARCHIVE_FILE_NAME: &str = "composer-2.8.0-pv1-any.tar.gz";
-    const STREAMED_RECONCILIATION_PROGRESS_SETUP_TIMEOUT: Duration = Duration::from_secs(3);
-    const STREAMED_RECONCILIATION_COMPLETION_TIMEOUT: Duration = Duration::from_secs(5);
     const MAILPIT_TEST_TRACK: &str = "1.0";
     const MAILPIT_TEST_ARTIFACT_VERSION: &str = "1.0.0-pv1";
     const MAILPIT_TEST_ARCHIVE_FILE_NAME: &str = "mailpit-1.0.0-pv1-any.tar.gz";
@@ -4335,127 +3708,6 @@ mod tests {
             2
         );
 
-        caddy_guard.cleanup().await?;
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn promoted_project_failure_retains_system_diagnostic_subject() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let mut database = Database::open(&paths)?;
-        let mut projects = Vec::new();
-        for name in ["target", "peer"] {
-            let project_path = tempdir.path().join(name);
-            let config_path = project_path.join("pv.yml");
-            state::fs::write_sensitive_file(&config_path, "serve: [\n")?;
-            projects.push(
-                database
-                    .link_project_with_mode(
-                        LinkProjectInput {
-                            path: project_path.clone(),
-                            original_path: project_path,
-                            primary_hostname: format!("{name}.test"),
-                            config_path,
-                            desired_php_track: None,
-                        },
-                        ProjectMode::ResourceOnly,
-                    )?
-                    .project,
-            );
-        }
-        database.record_managed_resource_track_removal_intent("mailpit", "1.0", false, true)?;
-        state::fs::write_sensitive_file(
-            &projects[1].config_path,
-            "serve: false\nmailpit:\n  version: \"1.0\"\n",
-        )?;
-        drop(database);
-        seed_installed_caddy(&paths)?;
-        let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        let target = &projects[0];
-        let scope = ReconciliationScope::project(target.id.clone())?;
-        let project_failure = start_reconciliation_job(&paths, &scope.to_string())?;
-        let result = super::complete_reconciliation_job(
-            &paths,
-            &project_failure,
-            &scope,
-            None,
-            ReconciliationJobTiming::immediate(),
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
-        )
-        .await;
-        assert!(matches!(result, Err(DaemonError::Config(_))));
-        let unresolved = Database::open(&paths)?.unresolved_job_failures()?;
-        assert_eq!(unresolved.len(), 1);
-        assert_eq!(
-            unresolved[0].subject,
-            JobDiagnosticSubject::Project {
-                id: target.id.clone()
-            }
-        );
-
-        state::fs::write_sensitive_file(&target.config_path, "serve: false\n")?;
-        let stale_fragment = paths.gateway_projects_config_dir().join("stale.Caddyfile");
-        state::fs::write_sensitive_file(&stale_fragment, "# unverified routing snapshot\n")?;
-        let promoted_failure = start_reconciliation_job(&paths, &scope.to_string())?;
-        let result = super::complete_reconciliation_job(
-            &paths,
-            &promoted_failure,
-            &scope,
-            None,
-            ReconciliationJobTiming::immediate(),
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
-        )
-        .await;
-        assert!(
-            matches!(
-                result,
-                Err(DaemonError::SystemReconciliationFailures { .. })
-            ),
-            "{result:?}"
-        );
-        let unresolved = Database::open(&paths)?.unresolved_job_failures()?;
-        let promoted = unresolved
-            .iter()
-            .find(|failure| failure.job.id == promoted_failure)
-            .ok_or_else(|| anyhow::anyhow!("missing promoted failure"))?;
-        assert_eq!(promoted.subject, JobDiagnosticSubject::SystemReconciliation);
-
-        state::fs::remove_file_if_exists(&stale_fragment)?;
-        let project_success = start_reconciliation_job(&paths, &scope.to_string())?;
-        super::complete_reconciliation_job(
-            &paths,
-            &project_success,
-            &scope,
-            None,
-            ReconciliationJobTiming::immediate(),
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
-        )
-        .await?;
-        let unresolved = Database::open(&paths)?.unresolved_job_failures()?;
-        assert_eq!(unresolved.len(), 1);
-        assert_eq!(unresolved[0].job.id, promoted_failure);
-        assert_eq!(
-            unresolved[0].subject,
-            JobDiagnosticSubject::SystemReconciliation
-        );
-
-        state::fs::write_sensitive_file(&projects[1].config_path, "serve: false\n")?;
-        let system_success = start_reconciliation_job(&paths, "system")?;
-        super::complete_reconciliation_job(
-            &paths,
-            &system_success,
-            &ReconciliationScope::System,
-            None,
-            ReconciliationJobTiming::immediate(),
-            None,
-        )
-        .await?;
-        assert!(
-            Database::open(&paths)?
-                .unresolved_job_failures()?
-                .is_empty()
-        );
         caddy_guard.cleanup().await?;
         Ok(())
     }
@@ -5705,65 +4957,6 @@ mod tests {
     }
 
     #[test]
-    fn targeted_resource_scope_requires_applied_tls_artifacts() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let project_path = tempdir.path().join("project");
-        let config_path = project_path.join("pv.yml");
-        state::fs::write_sensitive_file(
-            &config_path,
-            "env:\n  CERTIFICATE: \"${tls.cert}\"\nmailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n",
-        )?;
-        let mut database = Database::open(&paths)?;
-        let project = database
-            .link_project(LinkProjectInput {
-                path: project_path.clone(),
-                original_path: project_path.clone(),
-                primary_hostname: "project.test".to_owned(),
-                config_path,
-                desired_php_track: None,
-            })?
-            .project;
-        database.replace_project_managed_resources(
-            &project.id,
-            &[ProjectManagedResourceInput {
-                resource_name: "mailpit".to_owned(),
-                track: "1.0".to_owned(),
-            }],
-        )?;
-        database.record_managed_resource_track_env_context(
-            "mailpit",
-            "1.0",
-            &BTreeMap::from([("smtp_host".to_owned(), "127.0.0.1".to_owned())]),
-        )?;
-        database.record_runtime_observed_snapshot(
-            RuntimeSubject::Resource {
-                name: "mailpit".to_owned(),
-                track: "1.0".to_owned(),
-            },
-            RuntimeObservedStatus::Running,
-            Some("fixture mailpit is ready"),
-        )?;
-
-        let result = reconcile_project_env_from_persisted_state(&paths, &mut database, &project.id);
-
-        assert!(matches!(
-            result,
-            Err(DaemonError::State(StateError::Filesystem { ref path, .. }))
-                if path == &paths.ca_certificate()
-        ));
-        assert_eq!(
-            database
-                .project_env_observed_state(&project.id)?
-                .map(|observed| observed.status),
-            Some(ProjectEnvObservedStatus::Failed)
-        );
-        assert!(!state::fs::path_entry_exists(&project.path.join(".env"))?);
-
-        Ok(())
-    }
-
-    #[test]
     fn unsafe_resource_scopes_are_promoted_exactly() -> anyhow::Result<()> {
         let scopes = [
             ReconciliationScope::resource("php", "8.4")?,
@@ -5848,22 +5041,13 @@ mod tests {
     async fn system_reconciliation_verifies_php_for_project_linked_after_discovery()
     -> anyhow::Result<()> {
         let mut mixed_errors = Vec::new();
-        for (update_path, fail_install, fail_env) in [
-            (true, false, false),
-            (false, false, false),
-            (true, true, false),
-            (false, true, false),
-            (true, true, true),
-            (false, true, true),
-        ] {
+        for (fail_install, fail_env) in [(false, false), (true, false), (true, true)] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
             let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-            if !update_path {
-                seed_gateway_ports(&mut Database::open(&paths)?)?;
-                seed_local_ca(&paths)?;
-            }
+            seed_gateway_ports(&mut Database::open(&paths)?)?;
+            seed_local_ca(&paths)?;
             if fail_install {
                 let sha256 = sha256_file(&tempdir.path().join(PHP_TEST_ARCHIVE_FILE_NAME))?;
                 state::fs::remove_file(
@@ -5926,7 +5110,7 @@ mod tests {
                     .all(|project| project.path != project_path)
             );
 
-            let job_id = if !update_path && fail_env {
+            let job_id = if fail_env {
                 start_reconciliation_job(&paths, "system")?
             } else {
                 "system-late-project-test".to_owned()
@@ -5939,21 +5123,7 @@ mod tests {
             );
             let progress = super::DaemonDownloadProgress::disabled();
             let mut streamed_error = None;
-            let result = if update_path {
-                reconcile_system_projects_and_resources_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                )
-                .await
-                .map(|report| {
-                    if !fail_install {
-                        assert_eq!((report.total, report.succeeded), (1, 1));
-                        assert!(report.failures.is_empty());
-                    }
-                })
-            } else if fail_env {
+            let result = if fail_env {
                 let (client, daemon) = duplex(64 * 1024);
                 stream_started_reconciliation_job(
                     paths.clone(),
@@ -5987,7 +5157,6 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
-                    None,
                     ReconciliationJobOptions::default(),
                     None,
                 )
@@ -6006,28 +5175,26 @@ mod tests {
                 .into_iter()
                 .find(|project| project.path == project_path)
                 .ok_or_else(|| anyhow::anyhow!("expected late Project"))?;
-            if !update_path {
-                let phases = reconciliation_phase_events(&paths, &job_id)?;
-                let expected = if fail_install {
-                    [
-                        "resources/desired_resources/succeeded",
-                        "resources/desired_resources/failed",
-                        "project_apply/linked_projects/failed",
-                    ]
-                } else {
-                    [
-                        "resources/desired_resources/succeeded",
-                        "resources/desired_resources/succeeded",
-                        "project_apply/linked_projects/succeeded",
-                    ]
-                };
-                assert_eq!(
-                    project_resource_phases(&phases, &project.id),
-                    expected,
-                    "phases were {:?}",
-                    job_phase_outcomes(&phases)
-                );
-            }
+            let phases = reconciliation_phase_events(&paths, &job_id)?;
+            let expected = if fail_install {
+                [
+                    "resources/desired_resources/succeeded",
+                    "resources/desired_resources/failed",
+                    "project_apply/linked_projects/failed",
+                ]
+            } else {
+                [
+                    "resources/desired_resources/succeeded",
+                    "resources/desired_resources/succeeded",
+                    "project_apply/linked_projects/succeeded",
+                ]
+            };
+            assert_eq!(
+                project_resource_phases(&phases, &project.id),
+                expected,
+                "phases were {:?}",
+                job_phase_outcomes(&phases)
+            );
             if fail_install {
                 if let Some(env_project) = env_project {
                     let message = if let Some(message) = streamed_error {
@@ -6073,7 +5240,7 @@ mod tests {
                         ));
                         error.to_string()
                     };
-                    mixed_errors.push((update_path, message));
+                    mixed_errors.push(message);
                     assert_eq!(
                         state::fs::read_to_string(&env_project.path.join(".env"))?,
                         malformed_env
@@ -6134,17 +5301,19 @@ mod tests {
                     Some(ProjectEnvObservedStatus::Failed)
                 );
                 assert!(!state::fs::path_exists(&project_path.join(".env")));
-                if !update_path {
-                    let phases = reconciliation_phase_events(&paths, &job_id)?;
-                    assert!(
-                        phases.iter().any(|phase| phase["phase"] == "resources"
+                let phases = reconciliation_phase_events(&paths, &job_id)?;
+                assert!(
+                    phases
+                        .iter()
+                        .any(|phase| phase["phase"] == "resources"
                             && phase["outcome"] == "succeeded")
-                    );
-                    assert!(
-                        phases.iter().any(|phase| phase["phase"] == "project_apply"
+                );
+                assert!(
+                    phases
+                        .iter()
+                        .any(|phase| phase["phase"] == "project_apply"
                             && phase["outcome"] == "failed")
-                    );
-                }
+                );
                 caddy_guard.cleanup().await?;
                 continue;
             }
@@ -6176,146 +5345,73 @@ mod tests {
         }
         assert_debug_snapshot!(mixed_errors, @r#"
         [
-            (
-                true,
-                "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
-            ),
-            (
-                false,
-                "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
-            ),
+            "System reconciliation failed: Managed Resource default installs failed: php/frankenphp 8.5: php 8.5: Managed Resource command failed: HTTP request failed for `https://artifacts.example.test/php-8.5.0-pv1-any.tar.gz`: missing scripted archive; invalid-env: Project config error: malformed PV-managed .env block: start marker without end marker; late.test: Project application stopped after resource installation failed",
         ]
         "#);
         Ok(())
     }
 
     #[tokio::test]
-    async fn system_reconciliation_retains_partial_project_env_failure() -> anyhow::Result<()> {
+    async fn system_reconciliation_pins_discovered_php_track_across_manifest_refresh()
+    -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths)?;
         let project_path = tempdir.path().join("project");
         let config_path = project_path.join("pv.yml");
-        state::fs::write_sensitive_file(&config_path, "serve: false\nenv:\n  APP_NAME: project\n")?;
-        let env_path = project_path.join(".env");
-        let env_before = "USER_VALUE=kept\n# >>> PV MANAGED\nAPP_NAME=old\n";
-        state::fs::write_sensitive_file(&env_path, env_before)?;
-        let linked = Database::open(&paths)?.link_project(LinkProjectInput {
+
+        state::fs::write_sensitive_file(
+            &config_path,
+            "serve: true\nphp:\n  version: latest\n  extensions: [redis]\nenv:\n  APP_NAME: project\n",
+        )?;
+        seed_cached_php_pair(&paths, tempdir.path())?;
+        let cached_manifest_path = paths.downloads().join("manifest.json");
+        let cached_manifest = state::fs::read_to_string(&cached_manifest_path)?;
+        let mut refreshed_manifest = serde_json::from_str::<serde_json::Value>(&cached_manifest)?;
+        let resources = refreshed_manifest
+            .get_mut("resources")
+            .and_then(serde_json::Value::as_array_mut)
+            .ok_or_else(|| anyhow::anyhow!("expected manifest resources"))?;
+        for resource in resources {
+            let resource = resource
+                .as_object_mut()
+                .ok_or_else(|| anyhow::anyhow!("expected manifest resource object"))?;
+            let resource_name = resource
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("expected manifest resource name"))?;
+            if !matches!(resource_name, "php" | "frankenphp") {
+                continue;
+            }
+            let tracks = resource
+                .get_mut("tracks")
+                .and_then(serde_json::Value::as_array_mut)
+                .ok_or_else(|| anyhow::anyhow!("expected manifest tracks"))?;
+            let mut previous_track = tracks
+                .first()
+                .cloned()
+                .ok_or_else(|| anyhow::anyhow!("expected manifest track"))?;
+            let track_name = previous_track
+                .get_mut("name")
+                .ok_or_else(|| anyhow::anyhow!("expected manifest track name"))?;
+            *track_name = json!("8.4");
+            tracks.push(previous_track);
+            resource.insert("default_track".to_owned(), json!("8.4"));
+        }
+        let refreshed_manifest = serde_json::to_string_pretty(&refreshed_manifest)?;
+        seed_installed_caddy(&paths)?;
+        let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
+        let mut database = Database::open(&paths)?;
+        database.link_project(LinkProjectInput {
             path: project_path.clone(),
             original_path: project_path,
             primary_hostname: "project.test".to_owned(),
-            config_path,
+            config_path: config_path.clone(),
             desired_php_track: None,
         })?;
-        let catalog = crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
-
-        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
-            &paths,
-            "system-partial-project-env-test",
-            "reconcile",
-            "system",
-        );
-
-        let report = reconcile_system_projects_and_resources_with_progress(
-            &paths,
-            Some(&catalog),
-            super::DaemonDownloadProgress::disabled(),
-            &phase_log,
-        )
-        .await?;
-
-        assert_eq!((report.total, report.succeeded), (1, 0));
-        assert_debug_snapshot!(system_project_summary(&report), @r#"
-        Some(
-            "Project env reconciled for 0 of 1 Projects; failures: project.test: Project config error: malformed PV-managed .env block: start marker without end marker",
-        )
-        "#);
-        assert_eq!(state::fs::read_to_string(&env_path)?, env_before);
-        assert_eq!(
-            Database::open(&paths)?
-                .project_env_observed_state(&linked.project.id)?
-                .map(|state| state.status),
-            Some(ProjectEnvObservedStatus::Failed)
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn system_reconciliation_pins_discovered_php_track_across_manifest_refresh()
-    -> anyhow::Result<()> {
-        for (version, applied_version, initially_served) in [
-            ("  version: latest\n", "  version: latest\n", false),
-            ("  version: latest\n", "  version: latest\n", true),
-            ("", "", true),
-            ("", "  version: latest\n", true),
-            ("  version: latest\n", "", true),
-        ] {
-            let tempdir = tempdir()?;
-            let paths = PvPaths::for_home(tempdir.path().join("home"));
-            let project_path = tempdir.path().join("project");
-            let config_path = project_path.join("pv.yml");
-
-            let mailpit_config = if version.is_empty() {
-                "mailpit:\n  version: \"1.0\"\n"
-            } else {
-                ""
-            };
-            state::fs::write_sensitive_file(
-                &config_path,
-                &format!(
-                    "serve: {initially_served}\nphp:\n{version}  extensions: [redis]\nenv:\n  APP_NAME: project\n{mailpit_config}"
-                ),
-            )?;
-            seed_cached_php_pair(&paths, tempdir.path())?;
-            let cached_manifest_path = paths.downloads().join("manifest.json");
-            let cached_manifest = state::fs::read_to_string(&cached_manifest_path)?;
-            let mut refreshed_manifest =
-                serde_json::from_str::<serde_json::Value>(&cached_manifest)?;
-            let resources = refreshed_manifest
-                .get_mut("resources")
-                .and_then(serde_json::Value::as_array_mut)
-                .ok_or_else(|| anyhow::anyhow!("expected manifest resources"))?;
-            for resource in resources {
-                let resource = resource
-                    .as_object_mut()
-                    .ok_or_else(|| anyhow::anyhow!("expected manifest resource object"))?;
-                let resource_name = resource
-                    .get("name")
-                    .and_then(serde_json::Value::as_str)
-                    .ok_or_else(|| anyhow::anyhow!("expected manifest resource name"))?;
-                if !matches!(resource_name, "php" | "frankenphp") {
-                    continue;
-                }
-                let tracks = resource
-                    .get_mut("tracks")
-                    .and_then(serde_json::Value::as_array_mut)
-                    .ok_or_else(|| anyhow::anyhow!("expected manifest tracks"))?;
-                let mut previous_track = tracks
-                    .first()
-                    .cloned()
-                    .ok_or_else(|| anyhow::anyhow!("expected manifest track"))?;
-                let track_name = previous_track
-                    .get_mut("name")
-                    .ok_or_else(|| anyhow::anyhow!("expected manifest track name"))?;
-                *track_name = json!("8.4");
-                tracks.push(previous_track);
-                resource.insert("default_track".to_owned(), json!("8.4"));
-            }
-            let refreshed_manifest = serde_json::to_string_pretty(&refreshed_manifest)?;
-            seed_installed_caddy(&paths)?;
-            let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-            let mut database = Database::open(&paths)?;
-            database.link_project(LinkProjectInput {
-                path: project_path.clone(),
-                original_path: project_path,
-                primary_hostname: "project.test".to_owned(),
-                config_path: config_path.clone(),
-                desired_php_track: None,
-            })?;
-            drop(database);
-            let write_counter = Connection::open(paths.db().as_std_path())?;
-            write_counter.execute_batch(
-                "CREATE TABLE test_project_env_writes (count INTEGER NOT NULL);
+        drop(database);
+        let write_counter = Connection::open(paths.db().as_std_path())?;
+        write_counter.execute_batch(
+            "CREATE TABLE test_project_env_writes (count INTEGER NOT NULL);
              INSERT INTO test_project_env_writes (count) VALUES (0);
              CREATE TRIGGER test_project_env_insert
              AFTER INSERT ON observed_states
@@ -6329,8 +5425,8 @@ mod tests {
              BEGIN
                  UPDATE test_project_env_writes SET count = count + 1;
              END;",
-            )?;
-            let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
+        )?;
+        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
             OFFLINE_TEST_MANIFEST_URL,
             ReconfiguringProjectArtifactClient {
                 inner: MultiArtifactClient {
@@ -6338,70 +5434,67 @@ mod tests {
                     archives: BTreeMap::new(),
                 },
                 config_path,
-                config: format!("serve: false\nphp:\n{applied_version}  extensions: [redis]\nenv:\n  APP_NAME: project\n"),
+                config: "serve: false\nphp:\n  version: latest\n  extensions: [redis]\nenv:\n  APP_NAME: project\n".to_owned(),
             },
         )?;
 
-            let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
-                &paths,
-                "system-demand-discovery-test",
-                "reconcile",
-                "system",
-            );
-            complete_system_reconciliation_with_progress(
-                &paths,
-                Some(&catalog),
-                super::DaemonDownloadProgress::disabled(),
-                &phase_log,
-                None,
-                ReconciliationJobOptions::default(),
-                None,
-            )
-            .await?;
+        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
+            &paths,
+            "system-demand-discovery-test",
+            "reconcile",
+            "system",
+        );
+        complete_system_reconciliation_with_progress(
+            &paths,
+            Some(&catalog),
+            super::DaemonDownloadProgress::disabled(),
+            &phase_log,
+            ReconciliationJobOptions::default(),
+            None,
+        )
+        .await?;
 
-            let database = Database::open(&paths)?;
-            let project = database
-                .projects()?
-                .into_iter()
-                .next()
-                .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
+        let database = Database::open(&paths)?;
+        let project = database
+            .projects()?
+            .into_iter()
+            .next()
+            .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
 
-            assert_eq!(project.php_runtime.track.as_deref(), Some(PHP_TEST_TRACK));
-            assert_eq!(project.mode, ProjectMode::ResourceOnly);
-            let installed_php_tracks = database
-                .managed_resource_tracks()?
-                .into_iter()
-                .filter(|track| {
-                    matches!(track.resource_name.as_str(), "php" | "frankenphp")
-                        && track.current_artifact_path.is_some()
-                })
-                .map(|track| (track.resource_name, track.track))
-                .collect::<Vec<_>>();
-            assert_eq!(
-                installed_php_tracks,
-                [
-                    ("frankenphp".to_owned(), PHP_TEST_TRACK.to_owned()),
-                    ("php".to_owned(), PHP_TEST_TRACK.to_owned()),
-                ]
-            );
-            assert_eq!(project.php_runtime.requested_extensions, ["redis"]);
-            assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
-            assert!(project.php_runtime.ignored_extensions.is_empty());
-            assert_eq!(
-                state::fs::read_to_string(&cached_manifest_path)?,
-                refreshed_manifest
-            );
-            assert!(
-                state::fs::read_to_string(&project.path.join(".env"))?.contains("APP_NAME=project")
-            );
-            let observed_writes = write_counter.query_row(
-                "SELECT count FROM test_project_env_writes",
-                [],
-                |row| row.get::<_, i64>(0),
-            )?;
-            assert_eq!(observed_writes, 1);
-            caddy_guard.cleanup().await?;
-        }
+        assert_eq!(project.php_runtime.track.as_deref(), Some(PHP_TEST_TRACK));
+        assert_eq!(project.mode, ProjectMode::ResourceOnly);
+        let installed_php_tracks = database
+            .managed_resource_tracks()?
+            .into_iter()
+            .filter(|track| {
+                matches!(track.resource_name.as_str(), "php" | "frankenphp")
+                    && track.current_artifact_path.is_some()
+            })
+            .map(|track| (track.resource_name, track.track))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            installed_php_tracks,
+            [
+                ("frankenphp".to_owned(), PHP_TEST_TRACK.to_owned()),
+                ("php".to_owned(), PHP_TEST_TRACK.to_owned()),
+            ]
+        );
+        assert_eq!(project.php_runtime.requested_extensions, ["redis"]);
+        assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
+        assert!(project.php_runtime.ignored_extensions.is_empty());
+        assert_eq!(
+            state::fs::read_to_string(&cached_manifest_path)?,
+            refreshed_manifest
+        );
+        assert!(
+            state::fs::read_to_string(&project.path.join(".env"))?.contains("APP_NAME=project")
+        );
+        let observed_writes =
+            write_counter.query_row("SELECT count FROM test_project_env_writes", [], |row| {
+                row.get::<_, i64>(0)
+            })?;
+        assert_eq!(observed_writes, 1);
+        caddy_guard.cleanup().await?;
 
         Ok(())
     }
@@ -6461,7 +5554,6 @@ mod tests {
             Some(&catalog),
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            None,
             ReconciliationJobOptions::default(),
             None,
         )
@@ -6589,16 +5681,8 @@ mod tests {
         }
         let smtp_address = SocketAddr::from((Ipv4Addr::LOCALHOST, smtp_port));
         drop(database);
-        reconcile_project_env_with_runtime_catalog_and_progress(
-            &paths,
-            &linked.project.id,
-            Some(&catalog),
-            None,
-            &BTreeSet::new(),
-            super::DaemonDownloadProgress::disabled(),
-            ProjectApplyOptions::new(ProjectApplyStage::CompleteApply, None),
-        )
-        .await?;
+        reconcile_project_env_and_missing_resources(&paths, &linked.project.id, Some(&catalog))
+            .await?;
         let verification = async {
             let previous_env = state::fs::read_to_string(&project_path.join(".env"))?;
             let previous_metadata = state::fs::read_to_string(
@@ -6629,7 +5713,6 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
-                None,
                 ReconciliationJobOptions::default(),
                 None,
             )
@@ -6742,7 +5825,7 @@ mod tests {
     #[tokio::test]
     async fn system_reconciliation_recovers_initial_artifact_download_failure() -> anyhow::Result<()>
     {
-        for (update_path, download_failures) in [(false, 1), (true, 1), (false, 2), (true, 2)] {
+        for download_failures in [1, 2] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
@@ -6788,48 +5871,32 @@ mod tests {
                 "system",
             );
             let progress = super::DaemonDownloadProgress::disabled();
-            let result = if update_path {
-                reconcile_system_projects_and_resources_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                )
-                .await
-                .map(|report| {
-                    assert!(report.failures.is_empty());
-                    assert_eq!(report.succeeded, 1);
-                })
-            } else {
-                let result = complete_system_reconciliation_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                    None,
-                    ReconciliationJobOptions::default(),
-                    None,
-                )
-                .await
-                .map(|_| ());
-                if download_failures == 1 {
-                    // The retry is a second timed Resources phase that runs before Project Apply,
-                    // and it suppresses nested operation records so artifact work is counted only
-                    // by its owning phase.
-                    let events = reconciliation_phase_events(&paths, job_id)?;
-                    assert_eq!(
-                        project_resource_phases(&events, &linked.project.id),
-                        [
-                            "resources/desired_resources/failed",
-                            "resources/desired_resources/succeeded",
-                            "project_apply/linked_projects/succeeded",
-                        ],
-                        "phases were {:?}",
-                        job_phase_outcomes(&events)
-                    );
-                }
-                result
-            };
+            let result = complete_system_reconciliation_with_progress(
+                &paths,
+                Some(&catalog),
+                progress,
+                &phase_log,
+                ReconciliationJobOptions::default(),
+                None,
+            )
+            .await
+            .map(|_| ());
+            if download_failures == 1 {
+                // The retry is a second timed Resources phase that runs before Project Apply,
+                // and it suppresses nested operation records so artifact work is counted only
+                // by its owning phase.
+                let events = reconciliation_phase_events(&paths, job_id)?;
+                assert_eq!(
+                    project_resource_phases(&events, &linked.project.id),
+                    [
+                        "resources/desired_resources/failed",
+                        "resources/desired_resources/succeeded",
+                        "project_apply/linked_projects/succeeded",
+                    ],
+                    "phases were {:?}",
+                    job_phase_outcomes(&events)
+                );
+            }
             assert_eq!(download_attempts.load(Ordering::SeqCst), 2);
             assert_eq!(manifest_requests.load(Ordering::SeqCst), 1);
             let database = Database::open(&paths)?;
@@ -6910,54 +5977,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn system_reconciliation_retains_artifact_layout_failure() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let (client, _) = scripted_artifact_client(
-            tempdir.path(),
-            "caddy",
-            CADDY_TEST_TRACK,
-            CADDY_TEST_ARTIFACT_VERSION,
-            CADDY_TEST_ARCHIVE_FILE_NAME,
-            "bin/not-caddy",
-        )?;
-        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(OFFLINE_TEST_MANIFEST_URL, client)?;
-
-        let phase_log = crate::structured_log::ReconciliationPhaseLog::new(
-            &paths,
-            "system-artifact-layout-test",
-            "reconcile",
-            "system",
-        );
-
-        let result = reconcile_system_projects_and_resources_with_progress(
-            &paths,
-            Some(&catalog),
-            super::DaemonDownloadProgress::disabled(),
-            &phase_log,
-        )
-        .await;
-
-        let Err(DaemonError::ManagedResourceDefaultInstallFailures { failures }) = result else {
-            anyhow::bail!("expected invalid Caddy layout: {result:?}");
-        };
-        assert_debug_snapshot!(failures, @r#"
-        [
-            "caddy 2: Managed Resource command failed: invalid artifact layout for `caddy`: missing executable `bin/caddy`",
-        ]
-        "#);
-        assert!(
-            Database::open(&paths)?
-                .managed_resource_track("caddy", CADDY_TEST_TRACK)?
-                .current_artifact_path
-                .is_none()
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn system_recovery_uses_applied_project_demand() -> anyhow::Result<()> {
-        for (update_path, replacement) in [(false, false), (true, false), (false, true)] {
+        for replacement in [false, true] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_installed_caddy(&paths)?;
@@ -7009,28 +6030,16 @@ mod tests {
                 "system",
             );
             let progress = super::DaemonDownloadProgress::disabled();
-            let result = if update_path {
-                reconcile_system_projects_and_resources_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                )
-                .await
-                .map(|_| ())
-            } else {
-                complete_system_reconciliation_with_progress(
-                    &paths,
-                    Some(&catalog),
-                    progress,
-                    &phase_log,
-                    None,
-                    ReconciliationJobOptions::default(),
-                    None,
-                )
-                .await
-                .map(|_| ())
-            };
+            let result = complete_system_reconciliation_with_progress(
+                &paths,
+                Some(&catalog),
+                progress,
+                &phase_log,
+                ReconciliationJobOptions::default(),
+                None,
+            )
+            .await
+            .map(|_| ());
             let database = Database::open(&paths)?;
             assert!(
                 database
@@ -7194,7 +6203,6 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
-                None,
                 ReconciliationJobOptions::default(),
                 None,
             )
@@ -7360,181 +6368,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn project_application_rereads_config_after_discovery() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let project_path = tempdir.path().join("project");
-        let config_path = project_path.join("pv.yml");
-        state::fs::write_sensitive_file(
-            &config_path,
-            "serve: false\nmailpit:\n  version: \"1.0\"\nenv:\n  APP_NAME: discovered\n",
-        )?;
-        seed_cached_php_pair(&paths, tempdir.path())?;
-        let mut database = Database::open(&paths)?;
-        let linked = database.link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path.clone(),
-            primary_hostname: "project.test".to_owned(),
-            config_path: config_path.clone(),
-            desired_php_track: None,
-        })?;
-        database.record_managed_resource_track_installed(
-            "mailpit",
-            MAILPIT_TEST_TRACK,
-            MAILPIT_TEST_ARTIFACT_VERSION,
-            &paths.resources().join("mailpit/1.0/releases/1.0.0-pv1"),
-        )?;
-        drop(database);
-        let demand = discover_system_project_demand(&paths)?;
-        assert!(!project_path.join(".env").exists());
-        // Mailpit leaves the config and nothing new is demanded, so the reread is proved by the
-        // rendered env rather than by an artifact the Resources phase was never asked to install.
-        state::fs::write_sensitive_file(&config_path, "serve: false\nenv:\n  APP_NAME: applied\n")?;
-        let catalog = crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
-        let progress = super::DaemonDownloadProgress::disabled();
-
-        reconcile_system_resources_with_runtime_catalog_and_progress(
-            &paths,
-            Some(&catalog),
-            &demand.resource_tracks,
-            progress.clone(),
-        )
-        .await?;
-        let report = reconcile_system_projects_with_progress(
-            &paths,
-            Some(&catalog),
-            &demand.resource_tracks,
-            &demand.project_demands,
-            &progress,
-            ProjectApplyStage::CompleteStagedApply,
-            &linked_projects(&paths)?,
-            &BTreeSet::new(),
-            None,
-            None,
-        )
-        .await?;
-        stop_undemanded_system_resource_runtimes(&paths, Some(&catalog)).await?;
-
-        assert!(report.failures.is_empty(), "got {:?}", report.failures);
-        assert_eq!(report.succeeded, 1);
-        let env = state::fs::read_to_string(&project_path.join(".env"))?;
-        assert!(env.contains("APP_NAME=applied"));
-        assert!(!env.contains("APP_NAME=discovered"));
-        let database = Database::open(&paths)?;
-        let project = database
-            .project_by_id(&linked.project.id)?
-            .ok_or_else(|| anyhow::anyhow!("expected linked project"))?;
-        assert_eq!(project.mode, ProjectMode::ResourceOnly);
-        // The Project Apply installs nothing, so a pair the Resources phase never demanded stays
-        // uninstalled even though its archives are cached.
-        assert!(
-            database
-                .managed_resource_tracks()?
-                .iter()
-                .filter(|track| track.resource_name == "php" || track.resource_name == "frankenphp")
-                .all(|track| track.current_artifact_path.is_none()),
-            "neither PHP side may gain an installed artifact path, got {:?}",
-            database.managed_resource_tracks()?
-        );
-        assert!(
-            database
-                .runtime_observed_states()?
-                .into_iter()
-                .any(|state| {
-                    state.subject
-                        == (RuntimeSubject::Resource {
-                            name: "mailpit".to_owned(),
-                            track: MAILPIT_TEST_TRACK.to_owned(),
-                        })
-                        && state.status == RuntimeObservedStatus::Stopped
-                })
-        );
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn project_php_demand_preserves_removed_pair_members() -> anyhow::Result<()> {
-        for removed_resource in ["php", "frankenphp"] {
-            let tempdir = tempdir()?;
-            let paths = PvPaths::for_home(tempdir.path().join("home"));
-            seed_cached_php_pair(&paths, tempdir.path())?;
-            for resource in ["php", "frankenphp"] {
-                seed_installed_artifact(
-                    &paths,
-                    resource,
-                    "8.5",
-                    "8.5.0-pv1",
-                    &format!("bin/{resource}"),
-                )?;
-            }
-            let project_path = tempdir.path().join("project");
-            let config_path = project_path.join("pv.yml");
-            state::fs::write_sensitive_file(&config_path, "serve: false\nphp: \"8.5\"\n")?;
-            let mut database = Database::open(&paths)?;
-            let linked = database.link_project(LinkProjectInput {
-                path: project_path.clone(),
-                original_path: project_path,
-                primary_hostname: "project.test".to_owned(),
-                config_path,
-                desired_php_track: None,
-            })?;
-            let before = database.record_managed_resource_track_removal_intent(
-                removed_resource,
-                "8.5",
-                false,
-                true,
-            )?;
-            let catalog =
-                crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
-            let result = crate::project_env::reconcile_project_env_with_catalog(
-                &paths,
-                &mut database,
-                &linked.project.id,
-                &catalog,
-            )
-            .await;
-
-            assert!(
-                matches!(result, Err(DaemonError::ManagedResourceTrackRemoved { resource, track })
-                if resource == removed_resource && track == "8.5")
-            );
-            assert_eq!(
-                database.managed_resource_track(removed_resource, "8.5")?,
-                before
-            );
-            assert_eq!(
-                database
-                    .project_env_observed_state(&linked.project.id)?
-                    .map(|state| state.status),
-                Some(ProjectEnvObservedStatus::Failed)
-            );
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
     async fn project_application_rereads_global_php_after_discovery() -> anyhow::Result<()> {
         let mut applied_tracks = Vec::new();
         for (name, config, global_track) in [
             ("served", "root: .\n", Some("8.5")),
-            (
-                "mapping",
-                "serve: false\nphp:\n  extensions: []\n",
-                Some("8.5"),
-            ),
-            ("new-global", "root: .\n", None),
             ("latest", "serve: false\nphp: latest\n", Some("8.5")),
-            (
-                "latest-to-global",
-                "serve: false\nphp: latest\n",
-                Some("8.5"),
-            ),
-            (
-                "global-to-latest",
-                "serve: false\nphp:\n  extensions: []\n",
-                Some("8.5"),
-            ),
         ] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -7574,15 +6412,7 @@ mod tests {
             );
 
             database.record_global_php_default_track("8.4")?;
-            if name == "latest-to-global" {
-                state::fs::write_sensitive_file(
-                    &config_path,
-                    "serve: false\nphp:\n  extensions: []\n",
-                )?;
-            } else if name == "global-to-latest" {
-                state::fs::write_sensitive_file(&config_path, "serve: false\nphp: latest\n")?;
-            }
-            if matches!(name, "latest" | "global-to-latest") {
+            if name == "latest" {
                 let manifest_path = paths.downloads().join("manifest.json");
                 let manifest = state::fs::read_to_string(&manifest_path)?;
                 state::fs::write_sensitive_file(
@@ -7593,16 +6423,14 @@ mod tests {
             drop(database);
             let catalog =
                 crate::managed_resources::fake_runtime_catalog(OFFLINE_TEST_MANIFEST_URL)?;
-            let report = reconcile_system_projects_with_progress(
+            let report = reconcile_system_projects(
                 &paths,
                 Some(&catalog),
                 &demand.resource_tracks,
                 &demand.project_demands,
-                &super::DaemonDownloadProgress::disabled(),
                 ProjectApplyStage::CompleteStagedApply,
                 &linked_projects(&paths)?,
                 &BTreeSet::new(),
-                None,
                 None,
             )
             .await?;
@@ -7628,48 +6456,12 @@ mod tests {
                 ),
             ),
             (
-                "mapping",
-                Some(
-                    "8.4",
-                ),
-                Some(
-                    "8.4",
-                ),
-            ),
-            (
-                "new-global",
-                Some(
-                    "8.4",
-                ),
-                Some(
-                    "8.4",
-                ),
-            ),
-            (
                 "latest",
                 Some(
                     "8.5",
                 ),
                 Some(
                     "8.5",
-                ),
-            ),
-            (
-                "latest-to-global",
-                Some(
-                    "8.4",
-                ),
-                Some(
-                    "8.4",
-                ),
-            ),
-            (
-                "global-to-latest",
-                Some(
-                    "8.4",
-                ),
-                Some(
-                    "8.4",
                 ),
             ),
         ]
@@ -7732,257 +6524,6 @@ mod tests {
         assert_eq!(project.php_runtime.requested_extensions, ["redis"]);
         assert_eq!(project.php_runtime.loaded_extensions, ["redis"]);
         assert!(project.php_runtime.ignored_extensions.is_empty());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn project_reconciliation_reports_disjoint_project_and_resource_phases()
-    -> anyhow::Result<()> {
-        for (scenario, label, expected_phases) in [
-            (
-                ProjectPhaseScenario::DeclaredBackingResource,
-                "declared backing resource",
-                vec![
-                    "project_apply/project/succeeded",
-                    "resources/desired_resources/skipped",
-                    "project_apply/project/failed",
-                ],
-            ),
-            (
-                ProjectPhaseScenario::InvalidProjectConfig,
-                "invalid project config",
-                vec!["project_apply/project/failed"],
-            ),
-            (
-                ProjectPhaseScenario::MissingPhpArtifact,
-                "missing PHP artifact",
-                vec![
-                    "project_apply/project/succeeded",
-                    "resources/desired_resources/failed",
-                    "project_apply/project/succeeded",
-                ],
-            ),
-            (
-                ProjectPhaseScenario::UnreadablePhpExtensions,
-                "unreadable PHP extensions",
-                vec![
-                    "project_apply/project/succeeded",
-                    "resources/desired_resources/succeeded",
-                    "project_apply/project/failed",
-                ],
-            ),
-            (
-                ProjectPhaseScenario::DeclaredBackingResourceInstallFailure,
-                "declared backing resource install failure",
-                vec![
-                    "project_apply/project/succeeded",
-                    "resources/desired_resources/failed",
-                ],
-            ),
-        ] {
-            let scenario_tempdir = tempdir()?;
-            let scenario_paths = PvPaths::for_home(scenario_tempdir.path().join("home"));
-            let (scenario_events, scenario_project_id, scenario_succeeded) =
-                run_project_php_extension_reconciliation(
-                    &scenario_paths,
-                    scenario_tempdir.path(),
-                    scenario,
-                )
-                .await?;
-
-            assert!(!scenario_succeeded, "expected {label} to fail the job");
-            assert_eq!(
-                project_resource_phases(&scenario_events, &scenario_project_id),
-                expected_phases,
-                "unexpected phases for {label}; all phases were {:?}",
-                job_phase_outcomes(&scenario_events)
-            );
-            assert_phase_time_within_execution(&scenario_events)?;
-        }
-
-        let success_tempdir = tempdir()?;
-        let success_paths = PvPaths::for_home(success_tempdir.path().join("home"));
-        let (events, project_id, _succeeded) = run_project_php_extension_reconciliation(
-            &success_paths,
-            success_tempdir.path(),
-            ProjectPhaseScenario::Success,
-        )
-        .await?;
-
-        // The stub FrankenPHP artifact cannot serve, so the job still fails at the worker
-        // stage. What matters here is that nothing before Gateway work is blamed for it.
-        assert_eq!(
-            failed_phases(&events),
-            ["workers/php_workers", "finalization/job"],
-            "resource installation must not be blamed for a worker failure"
-        );
-        // This cold fixture has no active Gateway snapshot, so targeted proof safely promotes
-        // to System after the Project-scoped resource stages complete.
-        assert_eq!(
-            project_resource_phases(&events, &project_id),
-            [
-                "project_apply/project/succeeded",
-                "resources/desired_resources/succeeded",
-                "project_apply/project/succeeded",
-                "resources/desired_resources/succeeded",
-                "project_apply/linked_projects/succeeded",
-            ],
-            "installing a missing artifact must be owned by Resources"
-        );
-        assert_phase_time_within_execution(&events)?;
-
-        // This scenario's manifest URL is unreachable and its cached copy is seeded, so the
-        // install falls back. Suppressing the operation phase must not suppress that
-        // diagnostic, and the diagnostic must not itself be a phase record.
-        let fallback = daemon_log_events(&success_paths)?
-            .into_iter()
-            .find(|event| event["event"] == "artifact_manifest_fallback")
-            .ok_or_else(|| anyhow::anyhow!("missing artifact_manifest_fallback event"))?;
-        assert_eq!(fallback["level"], "warn");
-        assert_eq!(fallback["scope"], format!("project:{project_id}"));
-        assert_eq!(fallback["manifest_source"], "cached");
-        assert!(
-            fallback["fallback_reason"]
-                .as_str()
-                .is_some_and(|reason| !reason.is_empty()),
-            "fallback reason must be recorded, got {fallback:?}"
-        );
-        assert!(
-            fallback.get("phase").is_none() && fallback.get("elapsed_ms").is_none(),
-            "the fallback diagnostic must not be a phase record, got {fallback:?}"
-        );
-
-        let (settled_events, _settled_succeeded) = run_scenario_reconciliation_job(
-            &success_paths,
-            format!("project:{project_id}").parse::<ReconciliationScope>()?,
-        )
-        .await?;
-
-        assert_eq!(
-            project_resource_phases(&settled_events, &project_id),
-            [
-                "project_apply/project/succeeded",
-                "resources/desired_resources/skipped",
-                "project_apply/project/succeeded",
-                "resources/desired_resources/succeeded",
-                "project_apply/linked_projects/succeeded",
-            ],
-            "a settled project must still report Resources and complete the apply"
-        );
-        assert_phase_time_within_execution(&settled_events)?;
-
-        // A Project that demands no artifact work must not be charged with installing
-        // unrelated desired tracks, even though they are missing.
-        let idle_tempdir = tempdir()?;
-        let idle_paths = PvPaths::for_home(idle_tempdir.path().join("home"));
-        let (idle_events, idle_project_id, idle_succeeded) =
-            run_project_php_extension_reconciliation(
-                &idle_paths,
-                idle_tempdir.path(),
-                ProjectPhaseScenario::NoProjectArtifactDemand,
-            )
-            .await?;
-
-        assert!(
-            idle_succeeded,
-            "a Project with no artifact demand must not fail; phases were {:?}",
-            job_phase_outcomes(&idle_events)
-        );
-        assert_eq!(
-            project_resource_phases(&idle_events, &idle_project_id),
-            [
-                "project_apply/project/succeeded",
-                "resources/desired_resources/skipped",
-                "project_apply/project/succeeded",
-            ],
-            "Resources must not install tracks the Project never demanded"
-        );
-        assert_phase_time_within_execution(&idle_events)?;
-
-        // A declared track with no adapter but seeded env context has no artifact to install,
-        // so Resources must leave it alone and the apply must still tolerate it.
-        let seeded_tempdir = tempdir()?;
-        let seeded_paths = PvPaths::for_home(seeded_tempdir.path().join("home"));
-        let (seeded_events, seeded_project_id, seeded_succeeded) =
-            run_project_php_extension_reconciliation(
-                &seeded_paths,
-                seeded_tempdir.path(),
-                ProjectPhaseScenario::SeededResourceWithoutAdapter,
-            )
-            .await?;
-
-        assert!(
-            seeded_succeeded,
-            "a seeded adapterless track must not fail the job; phases were {:?}",
-            job_phase_outcomes(&seeded_events)
-        );
-        assert_eq!(
-            project_resource_phases(&seeded_events, &seeded_project_id),
-            [
-                "project_apply/project/succeeded",
-                "resources/desired_resources/skipped",
-                "project_apply/project/succeeded",
-            ],
-            "Resources must skip a declared track that has no artifact to install"
-        );
-        assert_phase_time_within_execution(&seeded_events)?;
-
-        // When the repair pass and the apply both fail, the apply is primary but the repair
-        // failure that preceded it is preserved alongside it.
-        let both_tempdir = tempdir()?;
-        let both_paths = PvPaths::for_home(both_tempdir.path().join("home"));
-        let (both_events, both_project_id, both_succeeded) =
-            run_project_php_extension_reconciliation(
-                &both_paths,
-                both_tempdir.path(),
-                ProjectPhaseScenario::RepairAndApplyFailure,
-            )
-            .await?;
-
-        assert!(!both_succeeded, "expected the combined failure to fail");
-        assert_eq!(
-            project_resource_phases(&both_events, &both_project_id),
-            [
-                "project_apply/project/succeeded",
-                "resources/desired_resources/failed",
-                "project_apply/project/failed",
-            ],
-            "a deferred repair failure must still let the apply run and be reported"
-        );
-        assert_phase_time_within_execution(&both_events)?;
-
-        let failure = Database::open(&both_paths)?
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.scope == format!("project:{both_project_id}"))
-            .and_then(|job| job.error)
-            .ok_or_else(|| anyhow::anyhow!("missing persisted job failure"))?;
-
-        assert!(
-            failure.contains("Project apply failed with"),
-            "apply must be the primary failure, got {failure}"
-        );
-        assert!(
-            failure.contains("Managed Resource runtime `mailpit` is not supported yet"),
-            "the apply failure must be the primary cause, got {failure}"
-        );
-        assert!(
-            failure.contains("resource repair also failed"),
-            "repair failure must be preserved, got {failure}"
-        );
-        assert!(
-            failure.contains("php 8.5"),
-            "the repair failure must name the PHP track it could not install, got {failure}"
-        );
-        assert!(
-            failure.contains("frankenphp 8.5"),
-            "the repair failure must name the FrankenPHP track it could not install, got {failure}"
-        );
-        assert!(
-            failure.contains("HTTP request failed for"),
-            "the repair failure detail must be preserved, got {failure}"
-        );
 
         Ok(())
     }
@@ -8183,14 +6724,13 @@ mod tests {
             resource_client,
         )?;
 
-        let staged = reconcile_project_env_with_runtime_catalog_and_progress(
+        let staged = reconcile_project_env_with_runtime_catalog(
             &paths,
             &linked.project.id,
             Some(&catalog),
             None,
             &BTreeSet::new(),
-            DaemonDownloadProgress::disabled(),
-            ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply, None),
+            ProjectApplyOptions::new(ProjectApplyStage::CompleteStagedApply),
         )
         .await;
 
@@ -8212,46 +6752,6 @@ mod tests {
             "staged apply must not install the missing artifact"
         );
 
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn stream_write_error_is_returned_after_job_completion_is_persisted() -> anyhow::Result<()>
-    {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths)?;
-        let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        let job_id = start_reconciliation_job(&paths, "system")?;
-        let (client, server) = duplex(64);
-        drop(client);
-
-        let result = stream_started_reconciliation_job(
-            paths.clone(),
-            protocol::transport(server),
-            true,
-            &job_id,
-            ReconciliationScope::System,
-            None,
-            ReconciliationJobTiming::immediate(),
-        )
-        .await;
-
-        assert!(result.is_err());
-        let database = Database::open(&paths)?;
-        let job = database
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.id == job_id)
-            .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
-        assert_eq!(
-            job.status,
-            JobStatus::Succeeded,
-            "unexpected persisted job error: {:?}",
-            job.error
-        );
-
-        caddy_guard.cleanup().await?;
         Ok(())
     }
 
@@ -8295,8 +6795,7 @@ mod tests {
             running.timing(),
             ReconciliationJobOptions::default(),
         )
-        .await
-        .into_result()?;
+        .await?;
         running.finish();
 
         let phases = reconciliation_phase_events(&paths, &job_id)?;
@@ -8603,170 +7102,6 @@ mod tests {
             .find(|failure| failure.job.id == job_id)
             .ok_or_else(|| anyhow::anyhow!("missing update failure {job_id}"))?;
         assert_eq!(failure.subject, JobDiagnosticSubject::UpdateAssessment);
-
-        caddy_guard.cleanup().await?;
-        Ok(())
-    }
-
-    #[test]
-    fn caddy_rollback_restores_new_pointer_when_database_update_fails() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths)?;
-        let (client, _total_bytes) = scripted_artifact_client(
-            tempdir.path(),
-            "caddy",
-            CADDY_TEST_TRACK,
-            "2.11.5-pv1",
-            "caddy-2.11.5-pv1-any.tar.gz",
-            "bin/caddy",
-        )?;
-        let catalog = crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-            OFFLINE_TEST_MANIFEST_URL,
-            client,
-        )?;
-        let report = crate::managed_resources::update_installed_with_progress(
-            paths.clone(),
-            Some(&catalog),
-            &super::DaemonDownloadProgress::disabled(),
-        )?;
-        let database_lock = Connection::open(paths.db().as_std_path())?;
-        database_lock.execute_batch("BEGIN EXCLUSIVE")?;
-
-        let rollback_error = report
-            .rollback_caddy(&paths)
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("Caddy rollback unexpectedly succeeded"))?;
-
-        database_lock.execute_batch("ROLLBACK")?;
-        assert!(matches!(
-            rollback_error,
-            crate::DaemonError::ManagedResourceCommand(
-                resources::ManagedResourceCommandError::State(_)
-            )
-        ));
-        let new_release = paths
-            .resources()
-            .join("caddy")
-            .join(CADDY_TEST_TRACK)
-            .join("releases")
-            .join("2.11.5-pv1");
-        let current_path = paths
-            .resources()
-            .join("caddy")
-            .join(CADDY_TEST_TRACK)
-            .join("current");
-        assert_eq!(
-            state::fs::read_link(&current_path)?,
-            Utf8PathBuf::from("releases/2.11.5-pv1"),
-        );
-        assert!(state::fs::path_entry_exists(&new_release)?);
-        let caddy_track =
-            Database::open(&paths)?.managed_resource_track("caddy", CADDY_TEST_TRACK)?;
-        assert_eq!(caddy_track.installed_version.as_deref(), Some("2.11.5-pv1"));
-        assert_eq!(caddy_track.current_artifact_path, Some(new_release));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn streamed_reconciliation_returns_after_progress_write_times_out() -> anyhow::Result<()>
-    {
-        let clock = platform::clock::install_fake_for_test();
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths)?;
-        let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        let (client, _total_bytes) = scripted_artifact_client(
-            tempdir.path(),
-            "composer",
-            COMPOSER_TEST_TRACK,
-            COMPOSER_TEST_ARTIFACT_VERSION,
-            COMPOSER_TEST_ARCHIVE_FILE_NAME,
-            "composer.phar",
-        )?;
-        let mut database = Database::open(&paths)?;
-        database.record_managed_resource_track_desired(
-            "composer",
-            COMPOSER_TEST_TRACK,
-            ManagedResourceDesiredState::Installed,
-        )?;
-        drop(database);
-        let job_id = start_reconciliation_job(&paths, "system")?;
-        let (release_sender, release_receiver) = mpsc::channel();
-        let catalog = Arc::new(
-            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-                OFFLINE_TEST_MANIFEST_URL,
-                HeldDownloadArtifactClient {
-                    inner: client,
-                    release_receiver: Mutex::new(release_receiver),
-                },
-            )?,
-        );
-        let (blocked_write_sender, blocked_write_receiver) = oneshot::channel();
-        let task_catalog = Arc::clone(&catalog);
-        let task_paths = paths.clone();
-        let task_job_id = job_id.clone();
-        let mut task = tokio::spawn(async move {
-            stream_started_reconciliation_job(
-                task_paths,
-                protocol::transport(InitiallyWritableStream::with_blocked_write_signal(
-                    2,
-                    blocked_write_sender,
-                )),
-                true,
-                &task_job_id,
-                ReconciliationScope::System,
-                Some(task_catalog.as_ref()),
-                ReconciliationJobTiming::immediate(),
-            )
-            .await
-        });
-
-        real::timeout(
-            STREAMED_RECONCILIATION_PROGRESS_SETUP_TIMEOUT,
-            blocked_write_receiver,
-        )
-        .await
-        .map_err(|_error| {
-            anyhow::anyhow!(
-                "streamed reconciliation did not reach the blocked progress write during setup"
-            )
-        })?
-        .map_err(|_error| anyhow::anyhow!("streamed reconciliation task dropped early"))?;
-        // The download is held, so the job can't finish before its blocked writes give up: first
-        // a phase write, then a download progress write. That one closes the stream, so no later
-        // write blocks.
-        for _blocked_write in 0..2 {
-            clock
-                .advance_when_waiting(&FOREGROUND_JOB_STREAM_WRITE_TIMEOUT)
-                .await?;
-        }
-        // Let the stream task act on the timeout before the job can finish.
-        tokio::task::yield_now().await;
-        release_sender
-            .send(())
-            .map_err(|_error| anyhow::anyhow!("held download dropped"))?;
-        let completion_result =
-            real::timeout(STREAMED_RECONCILIATION_COMPLETION_TIMEOUT, &mut task).await;
-        let task_result = match completion_result {
-            Ok(result) => result,
-            Err(_error) => {
-                task.abort();
-                let cleanup_result = task.await;
-                return Err(anyhow::anyhow!(
-                    "streamed reconciliation exceeded the progress-write assertion budget; completion cleanup result: {cleanup_result:?}"
-                ));
-            }
-        };
-        task_result??;
-        let database = Database::open(&paths)?;
-        let job = database
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.id == job_id)
-            .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
-        assert_eq!(job.status, JobStatus::Succeeded);
 
         caddy_guard.cleanup().await?;
         Ok(())
@@ -10061,29 +8396,6 @@ mod tests {
     }
 
     #[test]
-    fn background_reconciliation_failure_marks_started_job_failed() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let job_id = start_reconciliation_job(&paths, "system")?;
-
-        let result = complete_or_fail_background_reconciliation(&paths, &job_id, || {
-            Err(crate::DaemonError::Io(io::Error::other("reconcile failed")))
-        });
-
-        assert!(result.is_err());
-        let database = Database::open(&paths)?;
-        let job = database
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.id == job_id)
-            .ok_or_else(|| anyhow::anyhow!("missing job {job_id}"))?;
-        assert_eq!(job.status, JobStatus::Failed);
-        assert_eq!(job.error.as_deref(), Some("I/O error: reconcile failed"));
-
-        Ok(())
-    }
-
-    #[test]
     fn background_reconciliation_error_records_failed_job() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -10252,7 +8564,6 @@ mod tests {
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(paths.db(), "not a database")?;
         let (shutdown_sender, shutdown_receiver) = oneshot::channel();
-        let (_fallback_shutdown_sender, fallback_shutdown_receiver) = watch::channel(false);
         shutdown_sender
             .send(())
             .map_err(|()| anyhow::anyhow!("startup shutdown receiver was dropped"))?;
@@ -10262,7 +8573,6 @@ mod tests {
             ReconciliationQueue::new(),
             None,
             shutdown_receiver,
-            fallback_shutdown_receiver,
         )
         .await;
 
@@ -10465,7 +8775,7 @@ mod tests {
         let (client, server) = duplex(1024);
         let task = tokio::spawn(async move {
             let mut transport = protocol::transport(server);
-            wait_for_foreground_turn(waiting, &mut transport, true, None).await
+            wait_for_foreground_turn(waiting, &mut transport, true).await
         });
         let mut reader = protocol::transport(client);
 
@@ -10487,9 +8797,7 @@ mod tests {
         }
 
         running.finish();
-        let (waiting_running, stream_is_open) = task
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("queued foreground job was cancelled"))?;
+        let (waiting_running, stream_is_open) = task.await?;
         assert!(stream_is_open);
         assert_eq!(waiting_running.job_id(), waiting_job_id);
         waiting_running.finish();
@@ -10515,7 +8823,7 @@ mod tests {
         let task = tokio::spawn(async move {
             let mut transport =
                 protocol::transport(FailingWriteStream::with_signal(failed_write_sender));
-            wait_for_foreground_turn(waiting, &mut transport, true, None).await
+            wait_for_foreground_turn(waiting, &mut transport, true).await
         });
 
         clock
@@ -10525,9 +8833,7 @@ mod tests {
             .await?
             .map_err(|_error| anyhow::anyhow!("queued heartbeat writer dropped"))?;
         running.finish();
-        let (waiting_running, stream_is_open) = task
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("queued foreground job was cancelled"))?;
+        let (waiting_running, stream_is_open) = task.await?;
 
         assert!(!stream_is_open);
         assert_eq!(waiting_running.job_id(), waiting_job_id);
@@ -10548,7 +8854,6 @@ mod tests {
         let task_paths = paths.clone();
         let task_queue = queue.clone();
         let scope = ReconciliationScope::resource("caddy", "2")?;
-        let (_fallback_sender, fallback_receiver) = watch::channel(false);
         let task = tokio::spawn(async move {
             run_reconciliation_job(
                 task_paths,
@@ -10556,7 +8861,6 @@ mod tests {
                 protocol::transport(server),
                 scope,
                 None,
-                &fallback_receiver,
             )
             .await
         });
@@ -10601,393 +8905,6 @@ mod tests {
             Some("job_completed")
         );
         task.await??;
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn cancelled_queued_foreground_reconciliation_is_abandoned_before_its_turn()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let (client, server) = UnixStream::pair()?;
-        let mut client = protocol::transport(client);
-        let queue = ReconciliationQueue::new();
-        let active = queued(enqueue_update_job(&paths, &queue)?)?
-            .wait_for_turn()
-            .await;
-        let (fallback_sender, fallback_receiver) = watch::channel(false);
-        let task_paths = paths.clone();
-        let mut task = tokio::spawn(async move {
-            run_reconciliation_job(
-                task_paths,
-                queue,
-                protocol::transport(server),
-                ReconciliationScope::resource("caddy", "2")?,
-                None,
-                &fallback_receiver,
-            )
-            .await
-        });
-
-        let accepted = real::timeout(Duration::from_millis(300), client.next())
-            .await?
-            .ok_or_else(|| anyhow::anyhow!("foreground stream ended before queue admission"))??;
-        let accepted = serde_json::from_str::<serde_json::Value>(&accepted)?;
-        assert_eq!(accepted["status"], "accepted");
-        assert!(!task.is_finished());
-        fallback_sender
-            .send(true)
-            .map_err(|_| anyhow::anyhow!("queued foreground reconciliation stopped early"))?;
-        let result = real::timeout(Duration::from_millis(300), &mut task).await??;
-
-        assert!(result.is_ok());
-        let job = Database::open(&paths)?
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.kind == "reconcile")
-            .ok_or_else(|| anyhow::anyhow!("missing queued reconciliation job"))?;
-        assert_eq!(job.status, JobStatus::Failed);
-        assert_eq!(
-            job.error.as_deref(),
-            Some("reconciliation was abandoned before completion")
-        );
-        let coverage_count = Connection::open(paths.db().as_std_path())?.query_row(
-            "SELECT COUNT(*) FROM job_diagnostic_outcomes WHERE job_id = ?1 AND outcome = 'success'",
-            [&job.id],
-            |row| row.get::<_, i64>(0),
-        )?;
-        assert_eq!(coverage_count, 0);
-        active.finish();
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn cancelled_queued_background_reconciliation_is_abandoned() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let queue = ReconciliationQueue::new();
-        let active = queued(enqueue_update_job(&paths, &queue)?)?
-            .wait_for_turn()
-            .await;
-        let waiting = queued(enqueue_reconciliation_job(
-            &paths,
-            &queue,
-            ReconciliationScope::resource("caddy", "2")?,
-        )?)?;
-        let waiting_job_id = waiting.job_id().to_owned();
-        let (fallback_sender, fallback_receiver) = watch::channel(false);
-        let completion_paths = paths.clone();
-        let completion_task = tokio::spawn(async move {
-            complete_queued_background_reconciliation_job(
-                &completion_paths,
-                waiting,
-                None,
-                Some(&fallback_receiver),
-            )
-            .await
-        });
-
-        tokio::task::yield_now().await;
-        assert!(!completion_task.is_finished());
-        fallback_sender
-            .send(true)
-            .map_err(|_| anyhow::anyhow!("queued reconciliation stopped before cancellation"))?;
-        real::timeout(Duration::from_millis(300), completion_task)
-            .await??
-            .map_err(BackgroundReconciliationError::into_error)?;
-
-        let job = Database::open(&paths)?
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.id == waiting_job_id)
-            .ok_or_else(|| anyhow::anyhow!("missing queued reconciliation job"))?;
-        assert_eq!(job.status, JobStatus::Failed);
-        assert_eq!(
-            job.error.as_deref(),
-            Some("reconciliation was abandoned before completion")
-        );
-        active.finish();
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn fallback_shutdown_finishes_resource_phase_before_abandoning_system_job()
-    -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        seed_installed_caddy(&paths)?;
-        let _caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        let (client, _archive_size) = scripted_artifact_client(
-            tempdir.path(),
-            "composer",
-            COMPOSER_TEST_TRACK,
-            COMPOSER_TEST_ARTIFACT_VERSION,
-            COMPOSER_TEST_ARCHIVE_FILE_NAME,
-            "composer.phar",
-        )?;
-        let started = Arc::new(AtomicBool::new(false));
-        let (release_sender, release_receiver) = mpsc::channel();
-        let client = HeldManifestArtifactClient {
-            inner: client,
-            release_receiver: Mutex::new(release_receiver),
-            started: Some(Arc::clone(&started)),
-        };
-        Database::open(&paths)?.record_managed_resource_track_desired(
-            "composer",
-            COMPOSER_TEST_TRACK,
-            ManagedResourceDesiredState::Installed,
-        )?;
-        let catalog = Arc::new(
-            crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-                OFFLINE_TEST_MANIFEST_URL,
-                client,
-            )?,
-        );
-        let queue = ReconciliationQueue::new();
-        let queued = queued(enqueue_reconciliation_job(
-            &paths,
-            &queue,
-            ReconciliationScope::System,
-        )?)?;
-        let job_id = queued.job_id().to_owned();
-        let (fallback_sender, fallback_receiver) = watch::channel(false);
-        let task_paths = paths.clone();
-        let task_catalog = Arc::clone(&catalog);
-        let mut completion_task = tokio::spawn(async move {
-            complete_queued_background_reconciliation_job(
-                &task_paths,
-                queued,
-                Some(task_catalog.as_ref()),
-                Some(&fallback_receiver),
-            )
-            .await
-        });
-        real::timeout(Duration::from_secs(5), async {
-            while !started.load(Ordering::SeqCst) {
-                tokio::task::yield_now().await;
-            }
-        })
-        .await?;
-
-        fallback_sender
-            .send(true)
-            .map_err(|_| anyhow::anyhow!("system reconciliation stopped before cancellation"))?;
-        assert!(
-            real::timeout(Duration::from_millis(100), &mut completion_task)
-                .await
-                .is_err()
-        );
-        assert!(matches!(
-            JobsLock::acquire(&paths),
-            Err(StateError::CoordinationLockHeld { .. })
-        ));
-        release_sender.send(())?;
-        real::timeout(Duration::from_secs(5), completion_task)
-            .await??
-            .map_err(BackgroundReconciliationError::into_error)?;
-
-        let job = Database::open(&paths)?
-            .recent_jobs()?
-            .into_iter()
-            .find(|job| job.id == job_id)
-            .ok_or_else(|| anyhow::anyhow!("missing system reconciliation job"))?;
-        assert_eq!(job.status, JobStatus::Failed);
-        assert_eq!(
-            job.error.as_deref(),
-            Some("reconciliation was abandoned before completion")
-        );
-        let completed_phases = reconciliation_phase_events(&paths, &job.id)?
-            .into_iter()
-            .filter_map(|event| event["phase"].as_str().map(str::to_owned))
-            .collect::<Vec<_>>();
-        assert_eq!(completed_phases, ["queue", "demand_discovery", "resources"]);
-        let coverage_count = Connection::open(paths.db().as_std_path())?.query_row(
-            "SELECT COUNT(*) FROM job_diagnostic_outcomes WHERE job_id = ?1 AND outcome = 'success'",
-            [&job.id],
-            |row| row.get::<_, i64>(0),
-        )?;
-        assert_eq!(coverage_count, 0);
-        assert!(!paths.gateway_runtime_metadata().exists());
-        assert!(!paths.gateway_root_config().exists());
-
-        Ok(())
-    }
-
-    #[test]
-    fn fallback_after_update_mutation_preserves_changed_and_no_op_boundaries() -> anyhow::Result<()>
-    {
-        for (artifact_version, archive_file_name, expected_summary) in [
-            ("2.8.1-pv1", "composer-2.8.1-pv1-any.tar.gz", None),
-            (
-                COMPOSER_TEST_ARTIFACT_VERSION,
-                COMPOSER_TEST_ARCHIVE_FILE_NAME,
-                Some("current"),
-            ),
-        ] {
-            let tempdir = tempdir()?;
-            let paths = PvPaths::for_home(tempdir.path().join("home"));
-            seed_installed_artifact(
-                &paths,
-                "composer",
-                COMPOSER_TEST_TRACK,
-                COMPOSER_TEST_ARTIFACT_VERSION,
-                "composer.phar",
-            )?;
-            let (client, _archive_size) = scripted_artifact_client(
-                tempdir.path(),
-                "composer",
-                COMPOSER_TEST_TRACK,
-                artifact_version,
-                archive_file_name,
-                "composer.phar",
-            )?;
-            let started = Arc::new(AtomicBool::new(false));
-            let (release_sender, release_receiver) = mpsc::channel();
-            let client = HeldManifestArtifactClient {
-                inner: client,
-                release_receiver: Mutex::new(release_receiver),
-                started: Some(Arc::clone(&started)),
-            };
-            let catalog = Arc::new(
-                crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-                    OFFLINE_TEST_MANIFEST_URL,
-                    client,
-                )?,
-            );
-            let queue = ReconciliationQueue::new();
-            let runtime = crate::build_runtime()?;
-            let waiting = queued(enqueue_update_job(&paths, &queue)?)?;
-            let running = runtime.block_on(waiting.wait_for_turn());
-            let job_id = running.job_id().to_owned();
-            let (fallback_sender, fallback_receiver) = watch::channel(false);
-            let completion_paths = paths.clone();
-            let completion_catalog = Arc::clone(&catalog);
-            let completion_job_id = job_id.clone();
-            let completion_thread = std::thread::Builder::new()
-                .name("held-update-fallback".to_owned())
-                .spawn(move || -> anyhow::Result<_> {
-                    let runtime = crate::build_runtime()?;
-                    let completion = runtime.block_on(complete_update_job_with_progress(
-                        &completion_paths,
-                        &completion_job_id,
-                        Some(completion_catalog.as_ref()),
-                        DaemonDownloadProgress::disabled(),
-                        running.timing(),
-                        ReconciliationJobOptions {
-                            fallback_shutdown: Some(&fallback_receiver),
-                            ..ReconciliationJobOptions::default()
-                        },
-                    ));
-                    if matches!(completion, ReconciliationJobCompletion::Cancelled) {
-                        drop(running);
-                    } else {
-                        running.finish();
-                    }
-
-                    Ok(completion)
-                })?;
-            let deadline = real::now() + Duration::from_secs(5);
-            while !started.load(Ordering::SeqCst) {
-                if real::now() >= deadline {
-                    return Err(anyhow::anyhow!(
-                        "update manifest request did not reach its test gate"
-                    ));
-                }
-                clock::poll_blocking(Duration::from_millis(10));
-            }
-            assert!(matches!(
-                JobsLock::acquire(&paths),
-                Err(StateError::CoordinationLockHeld { path }) if path == paths.jobs_lock()
-            ));
-
-            fallback_sender
-                .send(true)
-                .map_err(|_| anyhow::anyhow!("update stopped before fallback was signalled"))?;
-            assert!(
-                !completion_thread.is_finished(),
-                "update returned before its non-interruptible mutation completed"
-            );
-            release_sender
-                .send(())
-                .map_err(|_| anyhow::anyhow!("update dropped its manifest gate"))?;
-            let completion = completion_thread
-                .join()
-                .map_err(|_| anyhow::anyhow!("update completion thread panicked"))??;
-            let job = Database::open(&paths)?
-                .recent_jobs()?
-                .into_iter()
-                .find(|job| job.id == job_id)
-                .ok_or_else(|| anyhow::anyhow!("missing update job {job_id}"))?;
-
-            match (expected_summary, completion) {
-                (Some(expected_summary), ReconciliationJobCompletion::Succeeded(summary)) => {
-                    assert_eq!(summary, expected_summary);
-                    assert_eq!(job.status, JobStatus::Succeeded);
-                }
-                (None, ReconciliationJobCompletion::Cancelled) => {
-                    assert_eq!(job.status, JobStatus::Failed);
-                    assert_eq!(
-                        job.error.as_deref(),
-                        Some("Managed Resource update was abandoned before completion")
-                    );
-                    let current_path = state::fs::read_link(
-                        &paths
-                            .resources()
-                            .join("composer")
-                            .join(COMPOSER_TEST_TRACK)
-                            .join("current"),
-                    )?;
-                    assert_eq!(
-                        current_path,
-                        Utf8PathBuf::from(format!("releases/{artifact_version}"))
-                    );
-                    let phases = reconciliation_phase_events(&paths, &job_id)?;
-                    for phase in [
-                        "demand_discovery",
-                        "resources",
-                        "project_apply",
-                        "workers",
-                        "gateway",
-                    ] {
-                        assert!(
-                            !phases.iter().any(|event| event["phase"] == phase),
-                            "update entered {phase} after fallback: {phases:#?}"
-                        );
-                    }
-                }
-                (expected_summary, _completion) => {
-                    return Err(anyhow::anyhow!(
-                        "unexpected update completion for expected summary {expected_summary:?}"
-                    ));
-                }
-            }
-            let _jobs_lock = JobsLock::acquire(&paths)?;
-        }
-
-        Ok(())
-    }
-
-    #[test]
-    fn system_project_failures_outrank_gateway_cancellation() -> anyhow::Result<()> {
-        let sentinel = DaemonError::UnexpectedProtocolResponse {
-            reason: "project sentinel".to_owned(),
-        };
-        let result = cancel_or_preserve_system_reconciliation_errors(
-            Ok(()),
-            Ok(SystemProjectReconciliationReport {
-                failures: vec![sentinel],
-                ..SystemProjectReconciliationReport::default()
-            }),
-            Ok(()),
-        );
-        let error = result
-            .err()
-            .ok_or_else(|| anyhow::anyhow!("cancellation replaced the Project failure"))?;
-        assert_eq!(error.to_string(), "daemon protocol error: project sentinel");
 
         Ok(())
     }
@@ -11194,125 +9111,6 @@ mod tests {
             .collect::<Result<Vec<_>, _>>()?)
     }
 
-    #[derive(Clone, Copy)]
-    enum ProjectPhaseScenario {
-        /// The initial apply records PHP demand, Resources install the desired Gateway
-        /// runtime artifacts (Caddy plus the PHP/FrankenPHP pair), and the post-install
-        /// apply succeeds.
-        Success,
-        /// Project config is invalid, so the first Project Apply fails before any
-        /// missing-artifact lookup runs.
-        InvalidProjectConfig,
-        /// The cached PHP archive is gone, so resource installation fails.
-        MissingPhpArtifact,
-        /// PHP installs but its extension metadata cannot be read, so only the post-install
-        /// Project Apply fails.
-        UnreadablePhpExtensions,
-        /// The Project declares a backing resource PV has no adapter for and no seeded env
-        /// context, so Resources has nothing to install and the apply records the failure.
-        DeclaredBackingResource,
-        /// The Project declares a backing resource PV does have an adapter for, but its
-        /// artifact cannot be resolved, so the install fails inside Resources.
-        DeclaredBackingResourceInstallFailure,
-        /// The legacy repair pass and the final Project Apply both fail, so the apply error is
-        /// primary and the repair error is preserved alongside it.
-        RepairAndApplyFailure,
-        /// The Project declares no resources and requests no optional PHP extensions, so it
-        /// demands no artifact work even while other tracks are desired but missing.
-        NoProjectArtifactDemand,
-        /// The Project declares a backing resource PV has no adapter for, but whose track env
-        /// context is seeded, so there is no artifact to install and the apply tolerates it.
-        SeededResourceWithoutAdapter,
-    }
-
-    /// Runs one project reconciliation fixture scenario and returns its recorded phases plus
-    /// job outcome.
-    async fn run_project_php_extension_reconciliation(
-        paths: &PvPaths,
-        tempdir: &Utf8Path,
-        scenario: ProjectPhaseScenario,
-    ) -> anyhow::Result<(Vec<serde_json::Value>, String, bool)> {
-        let project_path = tempdir.join("project");
-        let config_path = project_path.join("pv.yml");
-
-        state::fs::write_sensitive_file(
-            &config_path,
-            match scenario {
-                ProjectPhaseScenario::InvalidProjectConfig => {
-                    "php:\n  version: \"8.5\"\n  extensions: [redis]\nbogus_key: true\n"
-                }
-                ProjectPhaseScenario::DeclaredBackingResource => {
-                    "mailpit:\n  version: \"1.0\"\n  env:\n    MAIL_HOST: \"${smtp_host}\"\n"
-                }
-                ProjectPhaseScenario::NoProjectArtifactDemand => "php: \"8.4\"\n",
-                ProjectPhaseScenario::DeclaredBackingResourceInstallFailure => {
-                    "serve: false\nmailpit:\n  version: \"1.0\"\n"
-                }
-                ProjectPhaseScenario::RepairAndApplyFailure => {
-                    "php:\n  version: \"8.5\"\n  extensions: [redis]\nmailpit:\n  version: \"1.0\"\n"
-                }
-                ProjectPhaseScenario::SeededResourceWithoutAdapter => {
-                    "serve: false\npostgres:\n  version: \"18\"\n"
-                }
-                _ => "php:\n  version: \"8.5\"\n  extensions: [redis]\n",
-            },
-        )?;
-        match scenario {
-            ProjectPhaseScenario::UnreadablePhpExtensions => seed_cached_php_pair_with_php_archive(
-                paths,
-                tempdir,
-                seed_php_archive_with_invalid_extension_metadata,
-            )?,
-            // Left unseeded so no required artifact is available to install.
-            ProjectPhaseScenario::DeclaredBackingResource
-            | ProjectPhaseScenario::NoProjectArtifactDemand
-            | ProjectPhaseScenario::SeededResourceWithoutAdapter
-            | ProjectPhaseScenario::DeclaredBackingResourceInstallFailure => {}
-            _ => seed_cached_php_pair(paths, tempdir)?,
-        }
-        if matches!(
-            scenario,
-            ProjectPhaseScenario::MissingPhpArtifact | ProjectPhaseScenario::RepairAndApplyFailure
-        ) {
-            remove_cached_archive(paths, PHP_TEST_ARCHIVE_FILE_NAME)?;
-        }
-        let mut database = Database::open(paths)?;
-        if matches!(scenario, ProjectPhaseScenario::SeededResourceWithoutAdapter) {
-            database.record_managed_resource_track_env_context(
-                "postgres",
-                "18",
-                &BTreeMap::from([("host".to_string(), "127.0.0.1".to_string())]),
-            )?;
-        }
-        let linked = database.link_project(LinkProjectInput {
-            path: project_path.clone(),
-            original_path: project_path,
-            primary_hostname: "project.test".to_owned(),
-            config_path,
-            desired_php_track: None,
-        })?;
-        drop(database);
-        let scope = format!("project:{}", linked.project.id).parse::<ReconciliationScope>()?;
-        let (events, succeeded) = match scenario {
-            // An adapter-backed declaration needs a catalog that can reach the resource, so the
-            // install is attempted and fails on the artifact rather than on a missing adapter.
-            ProjectPhaseScenario::DeclaredBackingResourceInstallFailure => {
-                let catalog = crate::managed_resources::fake_runtime_catalog_with_manifest_client(
-                    OFFLINE_TEST_MANIFEST_URL,
-                    ScriptedArtifactClient {
-                        manifest: "not valid manifest JSON".to_owned(),
-                        archive: Vec::new(),
-                    },
-                )?;
-
-                run_reconciliation_job_with_catalog(paths, scope, &catalog).await?
-            }
-            _ => run_scenario_reconciliation_job(paths, scope).await?,
-        };
-
-        Ok((events, linked.project.id, succeeded))
-    }
-
     /// Returns the job's recorded phases and whether the job itself succeeded, so a scenario
     /// cannot assert the right phases while the overall outcome is wrong.
     async fn run_scenario_reconciliation_job(
@@ -11436,19 +9234,6 @@ mod tests {
             .collect()
     }
 
-    fn remove_cached_archive(paths: &PvPaths, archive_file_name: &str) -> anyhow::Result<()> {
-        for path in state::fs::read_dir_paths(paths.downloads())? {
-            if path
-                .file_name()
-                .is_some_and(|name| name.ends_with(archive_file_name))
-            {
-                state::fs::remove_file(&path)?;
-            }
-        }
-
-        Ok(())
-    }
-
     async fn update_events(
         paths: PvPaths,
         job_id: &str,
@@ -11465,8 +9250,7 @@ mod tests {
             ReconciliationJobTiming::immediate(),
             ReconciliationJobOptions::default(),
         )
-        .await
-        .into_result()?;
+        .await?;
 
         let mut reader = protocol::transport(client);
         let mut events = Vec::new();
@@ -11728,19 +9512,6 @@ mod tests {
         )
     }
 
-    /// Installs cleanly but cannot be read for optional extension modules, so the artifact
-    /// only fails the Project Apply that runs after installation.
-    fn seed_php_archive_with_invalid_extension_metadata(
-        tempdir: &Utf8Path,
-        archive_path: &Utf8Path,
-    ) -> anyhow::Result<()> {
-        seed_php_archive_with_extension_metadata(
-            tempdir,
-            archive_path,
-            "not valid extension metadata",
-        )
-    }
-
     fn seed_php_archive_with_extension_metadata(
         tempdir: &Utf8Path,
         archive_path: &Utf8Path,
@@ -11920,34 +9691,6 @@ mod tests {
 
         fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
             self.inner.download(url, writer)
-        }
-    }
-
-    /// Downloads, then holds the download until the test releases it, so the job can't finish
-    /// while the test still acts on what the download started.
-    #[derive(Debug)]
-    struct HeldDownloadArtifactClient {
-        inner: ScriptedArtifactClient,
-        release_receiver: Mutex<mpsc::Receiver<()>>,
-    }
-
-    impl resources::ResourceHttpClient for HeldDownloadArtifactClient {
-        fn get_text(&self, url: &str) -> resources::Result<String> {
-            self.inner.get_text(url)
-        }
-
-        fn download(&self, url: &str, writer: &mut dyn Write) -> resources::Result<()> {
-            self.inner.download(url, writer)?;
-            let release_receiver = match self.release_receiver.lock() {
-                Ok(release_receiver) => release_receiver,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            release_receiver
-                .recv_timeout(Duration::from_secs(5))
-                .map_err(|error| resources::ResourcesError::HttpRequestFailed {
-                    url: url.to_owned(),
-                    reason: format!("held download was not released: {error}"),
-                })
         }
     }
 

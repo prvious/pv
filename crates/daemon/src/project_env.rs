@@ -1,7 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
-#[cfg(test)]
-use std::sync::{Arc, Barrier, LazyLock, Mutex};
 
 use camino::Utf8PathBuf;
 use config::{
@@ -18,12 +16,10 @@ use state::{
     ProjectMode, ProjectPhpRuntimeInput, ProjectReconciliationStateInput, ProjectRecord, PvPaths,
     ResourceAllocationInput, ResourceAllocationRecord, ResourceAllocationStatus, StateError,
 };
-use tokio::sync::watch;
 
 use crate::DaemonError;
-use crate::gateway::ReconciliationOutcome;
+
 use crate::hooks::DaemonHooks;
-use crate::jobs::DaemonDownloadProgress;
 use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::structured_log;
 
@@ -60,12 +56,12 @@ impl ProjectEnvRender {
     }
 }
 
-/// Which half of a Project Apply to run, and whether that half may install artifacts.
+/// Which half of a Project Apply to run.
 ///
-/// A job-orchestrated apply runs [`ProjectApplyStage::RecordRequirements`], then the Resources
-/// phase, then [`ProjectApplyStage::CompleteStagedApply`]. The staged variant cannot install,
-/// so artifact work can only ever be timed and attributed to Resources even when the Project
-/// config gains a resource after requirements were recorded.
+/// An apply runs [`ProjectApplyStage::RecordRequirements`], then the Resources phase, then
+/// [`ProjectApplyStage::CompleteStagedApply`]. Neither stage installs, so artifact work can only
+/// ever be timed and attributed to Resources even when the Project config gains a resource after
+/// requirements were recorded.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ProjectApplyStage {
     /// Validate the config and record what the Project needs. This may read cached manifest
@@ -75,58 +71,22 @@ pub(crate) enum ProjectApplyStage {
     /// to be installed already. A missing artifact fails with
     /// [`DaemonError::ManagedResourceArtifactMissing`] before any manifest read or install.
     CompleteStagedApply,
-    /// Reconcile the Project's resources and render its environment, installing any missing
-    /// artifact. Only direct test helpers apply without a preceding Resources phase, so no
-    /// job-orchestrated path constructs this.
-    #[cfg(test)]
-    CompleteApply,
 }
 
 #[derive(Clone, Copy)]
 pub(crate) struct ProjectApplyOptions<'a> {
     stage: ProjectApplyStage,
-    fallback_shutdown: Option<&'a watch::Receiver<bool>>,
     hooks: Option<&'a DaemonHooks>,
 }
 
 impl<'a> ProjectApplyOptions<'a> {
-    pub(crate) fn new(
-        stage: ProjectApplyStage,
-        fallback_shutdown: Option<&'a watch::Receiver<bool>>,
-    ) -> Self {
-        Self {
-            stage,
-            fallback_shutdown,
-            hooks: None,
-        }
+    pub(crate) fn new(stage: ProjectApplyStage) -> Self {
+        Self { stage, hooks: None }
     }
 
     pub(crate) fn with_hooks(mut self, hooks: Option<&'a DaemonHooks>) -> Self {
         self.hooks = hooks;
         self
-    }
-}
-
-impl ProjectApplyStage {
-    fn artifact_install(self) -> crate::managed_resources::ArtifactInstall {
-        match self {
-            // Never consulted, because this stage returns before reconciling resources, but
-            // fail closed so a stage that must not install can never gain permission.
-            Self::RecordRequirements => crate::managed_resources::ArtifactInstall::Forbidden,
-            Self::CompleteStagedApply => crate::managed_resources::ArtifactInstall::Forbidden,
-            #[cfg(test)]
-            Self::CompleteApply => crate::managed_resources::ArtifactInstall::Allowed,
-        }
-    }
-
-    /// Whether this stage may install missing artifacts inline. Only applies without a
-    /// preceding Resources phase, so every job-orchestrated staged flow answers false.
-    fn may_install_artifacts(self) -> bool {
-        match self {
-            Self::RecordRequirements | Self::CompleteStagedApply => false,
-            #[cfg(test)]
-            Self::CompleteApply => true,
-        }
     }
 }
 
@@ -230,77 +190,44 @@ impl ProjectEnvReconciliationSummary {
     }
 }
 
+/// Applies one Project the way a Project job does: record its requirements, install them, then
+/// complete the staged apply.
 #[cfg(test)]
 pub(crate) async fn reconcile_project_env(
     paths: &PvPaths,
     project_id: &str,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
-    reconcile_project_env_with_runtime_catalog_and_progress(
-        paths,
-        project_id,
-        None,
-        None,
-        &BTreeSet::new(),
-        DaemonDownloadProgress::disabled(),
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteApply, None),
-    )
-    .await
+    crate::jobs::reconcile_project_env_and_missing_resources(paths, project_id, None).await
 }
 
-#[cfg(test)]
-pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress(
+pub(crate) async fn reconcile_project_env_with_runtime_catalog(
     paths: &PvPaths,
     project_id: &str,
     catalog: Option<&ManagedResourceRuntimeCatalog>,
     discovered_demand: Option<&ProjectDemand>,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
     options: ProjectApplyOptions<'_>,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
-    reconcile_project_env_with_runtime_catalog_and_progress_outcome(
-        paths,
-        project_id,
-        catalog,
-        discovered_demand,
-        demanded_tracks,
-        progress,
-        options,
-    )
-    .await?
-    .into_completed()
-}
-
-pub(crate) async fn reconcile_project_env_with_runtime_catalog_and_progress_outcome(
-    paths: &PvPaths,
-    project_id: &str,
-    catalog: Option<&ManagedResourceRuntimeCatalog>,
-    discovered_demand: Option<&ProjectDemand>,
-    demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
-    options: ProjectApplyOptions<'_>,
-) -> Result<ReconciliationOutcome<ProjectEnvReconciliationSummary>, DaemonError> {
     let mut database = Database::open(paths)?;
-    let result: Result<ReconciliationOutcome<ProjectEnvReconciliationSummary>, DaemonError> =
-        async {
-            let project =
-                database
-                    .project_by_id(project_id)?
-                    .ok_or_else(|| StateError::ProjectNotFound {
-                        target: project_id.to_string(),
-                    })?;
-            reconcile_loaded_project(
-                paths,
-                &mut database,
-                &project,
-                catalog,
-                discovered_demand,
-                demanded_tracks,
-                progress,
-                options,
-            )
-            .await
-        }
-        .await;
+    let result: Result<ProjectEnvReconciliationSummary, DaemonError> = async {
+        let project =
+            database
+                .project_by_id(project_id)?
+                .ok_or_else(|| StateError::ProjectNotFound {
+                    target: project_id.to_string(),
+                })?;
+        reconcile_loaded_project(
+            paths,
+            &mut database,
+            &project,
+            catalog,
+            discovered_demand,
+            demanded_tracks,
+            options,
+        )
+        .await
+    }
+    .await;
     match result {
         Ok(outcome) => Ok(outcome),
         // No project row exists, so there is no env to attribute a failure to;
@@ -397,40 +324,14 @@ pub(crate) fn reconcile_project_env_from_persisted_state(
     }
 }
 
+/// [`reconcile_project_env`] with a runtime catalog.
 #[cfg(test)]
 pub(crate) async fn reconcile_project_env_with_catalog(
     paths: &PvPaths,
-    database: &mut Database,
     project_id: &str,
     catalog: &ManagedResourceRuntimeCatalog,
 ) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
-    let project =
-        database
-            .project_by_id(project_id)?
-            .ok_or_else(|| StateError::ProjectNotFound {
-                target: project_id.to_string(),
-            })?;
-
-    match reconcile_loaded_project(
-        paths,
-        database,
-        &project,
-        Some(catalog),
-        None,
-        &BTreeSet::new(),
-        DaemonDownloadProgress::disabled(),
-        ProjectApplyOptions::new(ProjectApplyStage::CompleteApply, None),
-    )
-    .await
-    {
-        Ok(outcome) => outcome.into_completed(),
-        Err(error) => {
-            let message = error.to_string();
-            record_project_env_failure(database, &project.id, &message)?;
-
-            Err(error)
-        }
-    }
+    crate::jobs::reconcile_project_env_and_missing_resources(paths, project_id, Some(catalog)).await
 }
 
 pub(crate) fn validate_project_config_for_gateway(
@@ -571,12 +472,6 @@ fn persisted_project_demand(
     })
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "`discovered_demand` is this Project's own resolved demand and may be absent, while \
-              `demanded_tracks` is the system-wide union every Project shares; valid callers pass \
-              `None` with a non-empty union, so neither can be derived from the other."
-)]
 async fn reconcile_loaded_project(
     paths: &PvPaths,
     database: &mut Database,
@@ -584,17 +479,9 @@ async fn reconcile_loaded_project(
     catalog: Option<&ManagedResourceRuntimeCatalog>,
     discovered_demand: Option<&ProjectDemand>,
     demanded_tracks: &BTreeSet<DemandedResourceTrack>,
-    progress: DaemonDownloadProgress,
     options: ProjectApplyOptions<'_>,
-) -> Result<ReconciliationOutcome<ProjectEnvReconciliationSummary>, DaemonError> {
-    let ProjectApplyOptions {
-        stage,
-        fallback_shutdown,
-        hooks,
-    } = options;
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+) -> Result<ProjectEnvReconciliationSummary, DaemonError> {
+    let ProjectApplyOptions { stage, hooks } = options;
     let config_file = match ProjectConfigFile::read_from_root(&project.path) {
         Ok(config_file) => config_file,
         Err(error) => {
@@ -652,29 +539,7 @@ async fn reconcile_loaded_project(
             source: Box::new(error),
         });
     }
-    if discovered_demand.is_some()
-        && stage.may_install_artifacts()
-        && let Err(error) = install_project_resources(
-            paths,
-            catalog,
-            &plan,
-            php_track.as_deref(),
-            progress.clone(),
-        )
-        .await
-    {
-        maintain_existing_project_tls_after_config_error(
-            paths,
-            project,
-            config_file.config.uses_tls_placeholders(),
-        );
-        return Err(DaemonError::ProjectResourceInstallation {
-            source: Box::new(error),
-        });
-    }
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
+
     let resolved_php_runtime = match php_track
         .map(|track| {
             resolve_project_php_runtime_for_track(database, config_file.config.php.as_ref(), track)
@@ -709,61 +574,35 @@ async fn reconcile_loaded_project(
         // Record Requirements resolves what the Project needs and returns it; it does not replace
         // usage, because the Resources phase has not installed the artifacts yet.
         if stage != ProjectApplyStage::RecordRequirements {
-            if fallback_shutdown_requested(fallback_shutdown) {
-                return Ok(ReconciliationOutcome::Cancelled);
-            }
             // Fail before replacing usage when an artifact the Resources phase should have
             // installed is missing, so the runtime this apply would replace stays demanded.
-            if stage.artifact_install() == crate::managed_resources::ArtifactInstall::Forbidden {
-                ensure_planned_artifacts_installed(database, &plan, catalog).map_err(|error| {
-                    DaemonError::ProjectResourceInstallation {
-                        source: Box::new(error),
-                    }
-                })?;
-            }
+            ensure_planned_artifacts_installed(database, &plan, catalog).map_err(|error| {
+                DaemonError::ProjectResourceInstallation {
+                    source: Box::new(error),
+                }
+            })?;
             apply_project_resource_plan(database, &candidate_project.id, &plan)?;
-        }
 
-        // The Resources phase owns artifact work, so a staged apply refuses to install and an
-        // unstaged apply installs what its caller never provisioned.
-        let resource_outcome = if stage == ProjectApplyStage::RecordRequirements {
-            ReconciliationOutcome::Completed(())
-        } else if fallback_shutdown_requested(fallback_shutdown) {
-            ReconciliationOutcome::Cancelled
-        } else if let Some(catalog) = catalog {
-            crate::managed_resources::reconcile_project_resources_with_catalog_and_progress(
-                paths,
-                database,
-                &candidate_project,
-                &plan,
-                catalog,
-                demanded_tracks,
-                progress,
-                crate::managed_resources::ResourceReconciliationOptions::new(
-                    stage.artifact_install(),
-                    fallback_shutdown,
-                ),
-            )
-            .await?
-        } else {
-            crate::managed_resources::reconcile_project_resources_with_progress(
-                paths,
-                database,
-                &candidate_project,
-                &plan,
-                demanded_tracks,
-                progress,
-                crate::managed_resources::ResourceReconciliationOptions::new(
-                    stage.artifact_install(),
-                    fallback_shutdown,
-                ),
-            )
-            .await?
-        };
-        if matches!(resource_outcome, ReconciliationOutcome::Cancelled)
-            || fallback_shutdown_requested(fallback_shutdown)
-        {
-            return Ok(ReconciliationOutcome::Cancelled);
+            if let Some(catalog) = catalog {
+                crate::managed_resources::reconcile_project_resources_with_catalog(
+                    paths,
+                    database,
+                    &candidate_project,
+                    &plan,
+                    catalog,
+                    demanded_tracks,
+                )
+                .await?;
+            } else {
+                crate::managed_resources::reconcile_project_resources(
+                    paths,
+                    database,
+                    &candidate_project,
+                    &plan,
+                    demanded_tracks,
+                )
+                .await?;
+            }
         }
 
         let runtime_warnings = resolved_php_runtime
@@ -771,12 +610,11 @@ async fn reconcile_loaded_project(
             .map(|runtime| ignored_php_extension_warnings(&runtime.ignored_extensions))
             .unwrap_or_default();
 
-        Ok::<_, DaemonError>(ReconciliationOutcome::Completed((plan, runtime_warnings)))
+        Ok::<_, DaemonError>((plan, runtime_warnings))
     }
     .await;
-    let completed = match pre_render_result {
-        Ok(ReconciliationOutcome::Completed(values)) => Some(values),
-        Ok(ReconciliationOutcome::Cancelled) => None,
+    let (plan, runtime_warnings) = match pre_render_result {
+        Ok(values) => values,
         Err(error) => {
             if let Some(Err(tls_error)) = tls_maintenance_result.as_ref() {
                 structured_log::project_tls_maintenance_failed(
@@ -792,21 +630,13 @@ async fn reconcile_loaded_project(
     if let Some(Err(error)) = tls_maintenance_result {
         return Err(error);
     }
-    let Some((plan, runtime_warnings)) = completed else {
-        return Ok(ReconciliationOutcome::Cancelled);
-    };
-    if fallback_shutdown_requested(fallback_shutdown) {
-        return Ok(ReconciliationOutcome::Cancelled);
-    }
 
     if stage == ProjectApplyStage::RecordRequirements {
-        return Ok(ReconciliationOutcome::Completed(
-            ProjectEnvReconciliationSummary {
-                message: "project requirements recorded",
-                requested_php_extensions,
-                recorded_tracks,
-            },
-        ));
+        return Ok(ProjectEnvReconciliationSummary {
+            message: "project requirements recorded",
+            requested_php_extensions,
+            recorded_tracks,
+        });
     }
 
     let context = has_env_mappings
@@ -840,17 +670,11 @@ async fn reconcile_loaded_project(
         hooks.queue_setup(&project.id, &job_id, &config_file.config.hooks)?;
     }
 
-    Ok(ReconciliationOutcome::Completed(
-        ProjectEnvReconciliationSummary {
-            message: rendered.summary,
-            requested_php_extensions,
-            recorded_tracks: BTreeSet::new(),
-        },
-    ))
-}
-
-fn fallback_shutdown_requested(shutdown: Option<&watch::Receiver<bool>>) -> bool {
-    shutdown.is_some_and(|shutdown| *shutdown.borrow())
+    Ok(ProjectEnvReconciliationSummary {
+        message: rendered.summary,
+        requested_php_extensions,
+        recorded_tracks: BTreeSet::new(),
+    })
 }
 
 /// The resource tracks a Record Requirements pass resolves from the current config:
@@ -950,41 +774,6 @@ fn read_optional_file(path: &Utf8PathBuf) -> Result<Option<String>, DaemonError>
         }
         Err(error) => Err(error.into()),
     }
-}
-
-async fn install_project_resources(
-    paths: &PvPaths,
-    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    plan: &ProjectResourcePlan,
-    php_track: Option<&str>,
-    progress: DaemonDownloadProgress,
-) -> Result<(), DaemonError> {
-    let production_catalog;
-    let catalog = if let Some(catalog) = runtime_catalog {
-        catalog
-    } else {
-        production_catalog = ManagedResourceRuntimeCatalog::production()?;
-        &production_catalog
-    };
-    let mut demanded_tracks = plan
-        .resources
-        .iter()
-        .map(|resource| {
-            DemandedResourceTrack::new(resource.resource_name.clone(), resource.track.clone())
-        })
-        .collect::<BTreeSet<_>>();
-    if let Some(track) = php_track {
-        demanded_tracks.insert(DemandedResourceTrack::new("php", track));
-        demanded_tracks.insert(DemandedResourceTrack::new("frankenphp", track));
-    }
-
-    crate::managed_resources::install_missing_resource_demands_with_catalog_and_progress(
-        paths,
-        catalog,
-        &demanded_tracks,
-        progress,
-    )
-    .await
 }
 
 fn maybe_resolve_project_php_track(
@@ -1235,9 +1024,6 @@ fn record_project_php_runtime_resource_requirements(
         crate::managed_resources::installed_track(database, resource_name, &runtime.track)?;
     }
 
-    #[cfg(test)]
-    wait_for_project_php_demand_test_barrier(&runtime.track);
-
     let inputs = [
         ManagedResourceTrackDesiredInput {
             resource_name: "php",
@@ -1260,62 +1046,6 @@ fn record_project_php_runtime_resource_requirements(
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-type ProjectPhpDemandTestBarrier = Mutex<Option<(String, Arc<Barrier>)>>;
-
-#[cfg(test)]
-static PROJECT_PHP_DEMAND_TEST_BARRIER: LazyLock<ProjectPhpDemandTestBarrier> =
-    LazyLock::new(|| Mutex::new(None));
-
-#[cfg(test)]
-pub(crate) fn set_project_php_demand_test_barrier(track: &str, barrier: Arc<Barrier>) {
-    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
-        Ok(hook) => hook,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    *hook = Some((track.to_owned(), barrier));
-}
-
-#[cfg(test)]
-pub(crate) fn clear_project_php_demand_test_barrier(track: &str) -> bool {
-    let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
-        Ok(hook) => hook,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    if hook
-        .as_ref()
-        .is_some_and(|(hook_track, _barrier)| hook_track == track)
-    {
-        hook.take();
-        true
-    } else {
-        false
-    }
-}
-
-#[cfg(test)]
-fn wait_for_project_php_demand_test_barrier(track: &str) {
-    let barrier = {
-        let mut hook = match PROJECT_PHP_DEMAND_TEST_BARRIER.lock() {
-            Ok(hook) => hook,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if hook
-            .as_ref()
-            .is_some_and(|(hook_track, _barrier)| hook_track == track)
-        {
-            hook.take().map(|(_track, barrier)| barrier)
-        } else {
-            None
-        }
-    };
-
-    if let Some(barrier) = barrier {
-        barrier.wait();
-        barrier.wait();
-    }
 }
 
 fn validate_project_config_and_plan(

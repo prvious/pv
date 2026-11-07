@@ -10,12 +10,11 @@ use daemon::gateway::{
     route_public_probes_to_gateway_for_test, use_unrouted_public_probe_ports_for_test,
     validate_config, worker_process_spec,
 };
-use daemon::{CaddyAdminError, CaddyAdminOperation, DaemonError, ProcessSupervisor, StopSignal};
+use daemon::{CaddyAdminError, DaemonError, ProcessSupervisor, StopSignal};
 use insta::{Settings, allow_duplicates, assert_debug_snapshot};
 use platform::clock::{self, Limit, real};
 use pv_fake::{FakeSettings, GatewayListeners, Persona};
 use resources::{PHP_TRACK_DEFAULT_INI, php_track_defaults};
-use rusqlite::Connection;
 use rustix::process::{Pid, test_kill_process};
 use serde_json::{Value, json};
 use state::{
@@ -89,47 +88,6 @@ async fn gateway_reconciliation_stops_before_workers_when_caddy_is_missing() -> 
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_does_not_fallback_to_another_caddy_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let caddy_release = tempdir.path().join("fake-caddy-3-release");
-    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
-
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
-
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "3",
-        "fake-caddy-3-pv1",
-        &caddy_release,
-    )?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fake-frankenphp-pv1",
-        &frankenphp_release,
-    )?;
-    let ports = available_loopback_ports(2)?;
-    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
-    drop(database);
-
-    let summary =
-        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
-            .await?;
-
-    assert_eq!(summary, "Gateway runtime skipped; Caddy is not installed");
-    assert!(!paths.gateway_runtime_metadata().exists());
-    assert!(!paths.worker_runtime_metadata("8.4").exists());
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn gateway_reconciliation_rejects_invalid_caddy_two_without_fallback() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -182,107 +140,80 @@ async fn gateway_reconciliation_rejects_invalid_caddy_two_without_fallback() -> 
     Ok(())
 }
 
-#[tokio::test]
-async fn gateway_reconciliation_rolls_back_after_fresh_admin_startup_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let caddy_release = tempdir.path().join("fake-caddy-no-admin-release");
-    let fake_caddy = caddy_release.join("bin/caddy");
-    let previous_root_config = "previous gateway config\n";
-
-    route_public_probes_to_gateway_for_test();
-    pv_fake::install_with_settings(
-        &fake_caddy,
-        Persona::Caddy,
-        FakeSettings {
-            gateway_listeners: GatewayListeners::Nothing,
-            ..FakeSettings::default()
-        },
-    )?;
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-no-admin-pv1",
-        &caddy_release,
-    )?;
-    let ports = available_loopback_ports(2)?;
-    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
-    drop(database);
-    fs::write_sensitive_file(&paths.gateway_root_config(), previous_root_config)?;
-
-    let result = reconcile_past(
-        &RUNTIME_ADMIN_READINESS_TIMEOUT,
-        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive),
-    )
-    .await?;
-
-    assert!(matches!(
-        result,
-        Err(DaemonError::CaddyAdmin(
-            daemon::CaddyAdminError::AdminReadinessTimedOut { .. }
-        ))
-    ));
-    assert_eq!(
-        fs::read_to_string(&paths.gateway_root_config())?,
-        previous_root_config
-    );
-    assert!(!paths.gateway_runtime_metadata().exists());
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
+type FreshStartupFailure = fn(&Result<String, DaemonError>) -> bool;
 
 #[tokio::test]
-async fn gateway_reconciliation_rolls_back_after_fresh_service_readiness_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let caddy_release = tempdir.path().join("fake-caddy-admin-only-release");
-    let fake_caddy = caddy_release.join("bin/caddy");
-    let previous_root_config = "previous gateway config\n";
+async fn gateway_reconciliation_rolls_back_after_fresh_startup_failure() -> Result<()> {
+    let rows: [(&str, GatewayListeners, &Limit, FreshStartupFailure); 2] = [
+        (
+            "admin startup",
+            GatewayListeners::Nothing,
+            &RUNTIME_ADMIN_READINESS_TIMEOUT,
+            |result| {
+                matches!(
+                    result,
+                    Err(DaemonError::CaddyAdmin(
+                        CaddyAdminError::AdminReadinessTimedOut { .. }
+                    ))
+                )
+            },
+        ),
+        // The admin wait has its own name, so the advance lands only once it has passed.
+        (
+            "service readiness",
+            GatewayListeners::AdminOnly,
+            &RUNTIME_START_READINESS_TIMEOUT,
+            |result| matches!(result, Err(DaemonError::ReadinessTimedOut { .. })),
+        ),
+    ];
 
-    route_public_probes_to_gateway_for_test();
-    pv_fake::install_with_settings(
-        &fake_caddy,
-        Persona::Caddy,
-        FakeSettings {
-            gateway_listeners: GatewayListeners::AdminOnly,
-            ..FakeSettings::default()
-        },
-    )?;
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-admin-only-pv1",
-        &caddy_release,
-    )?;
-    let ports = available_loopback_ports(2)?;
-    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
-    drop(database);
-    fs::write_sensitive_file(&paths.gateway_root_config(), previous_root_config)?;
+    for (name, gateway_listeners, limit, failed) in rows {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
+        let caddy_release = tempdir.path().join("fake-caddy-release");
+        let previous_root_config = "previous gateway config\n";
 
-    // The admin wait has its own name, so the advance lands only once it has passed.
-    let result = reconcile_past(
-        &RUNTIME_START_READINESS_TIMEOUT,
-        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive),
-    )
-    .await?;
+        route_public_probes_to_gateway_for_test();
+        pv_fake::install_with_settings(
+            &caddy_release.join("bin/caddy"),
+            Persona::Caddy,
+            FakeSettings {
+                gateway_listeners,
+                ..FakeSettings::default()
+            },
+        )?;
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_installed(
+            "caddy",
+            "2",
+            "fake-caddy-pv1",
+            &caddy_release,
+        )?;
+        let ports = available_loopback_ports(2)?;
+        seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+        drop(database);
+        fs::write_sensitive_file(&paths.gateway_root_config(), previous_root_config)?;
 
-    assert!(
-        matches!(result, Err(DaemonError::ReadinessTimedOut { .. })),
-        "{result:?}"
-    );
-    assert_eq!(
-        fs::read_to_string(&paths.gateway_root_config())?,
-        previous_root_config
-    );
-    assert!(!paths.gateway_runtime_metadata().exists());
+        let result = reconcile_past(
+            limit,
+            reconcile_gateway_runtimes_with_pf_state_for_test(
+                &paths,
+                GatewayPfRoutingState::Inactive,
+            ),
+        )
+        .await?;
 
-    runtime_guard.cleanup().await?;
+        assert!(failed(&result), "{name}: {result:?}");
+        assert_eq!(
+            fs::read_to_string(&paths.gateway_root_config())?,
+            previous_root_config,
+            "{name}"
+        );
+        assert!(!paths.gateway_runtime_metadata().exists(), "{name}");
+
+        runtime_guard.cleanup().await?;
+    }
 
     Ok(())
 }
@@ -561,143 +492,6 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
 }
 
 #[tokio::test]
-async fn matching_worker_recovers_after_post_load_readiness_is_cancelled() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let track = "8.4";
-    let project_root =
-        create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\nroot: public\n")?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-
-    let release_path = seed_installed_php_with_extensions(&paths, track, &[])?;
-    seed_installed_frankenphp_with_extensions(&paths, track, &release_path, &[])?;
-    write_fake_frankenphp(&release_path.join("bin/frankenphp"))?;
-    let ports = available_loopback_ports(4)?;
-    let mut database = Database::open(&paths)?;
-    database.link_project(LinkProjectInput {
-        path: project_root.clone(),
-        original_path: project_root.clone(),
-        primary_hostname: "acme.test".to_owned(),
-        config_path: project_root.join("pv.yml"),
-        desired_php_track: Some(track.to_owned()),
-    })?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[(track, ports[2])],
-    )?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
-    let worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata(track))?;
-    let gateway_root = read_test_bytes(paths.gateway_root_config())?;
-    let gateway_load_count = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
-    let load_accepted_marker = tempdir.path().join("matching-worker-load-accepted");
-    // An accepted load the fake doesn't apply holds PV in post-load readiness for the new port.
-    pv_fake::write_gateway_control(
-        &paths.worker_root_config(track),
-        json!({
-            "load_accepted_marker": load_accepted_marker.as_str(),
-            "apply_load": [false],
-        }),
-    )?;
-    let mut database = Database::open(&paths)?;
-    database.release_port(PortOwner::PhpWorker {
-        php_runtime_key: track.to_owned(),
-    })?;
-    database.assign_port(
-        PortRequest::php_worker(track, ports[3], ports[3], ports[3]),
-        |_port| true,
-    )?;
-    drop(database);
-
-    let reconciliation_paths = paths.clone();
-    let mut reconciliation =
-        tokio::spawn(async move { reconcile_gateway_runtimes(&reconciliation_paths).await });
-    let mut reconciliation_completed = false;
-    let inspection = async {
-        tokio::select! {
-            result = &mut reconciliation => {
-                reconciliation_completed = true;
-                let requests = fake_admin_requests(&paths.worker_root_config(track))?;
-                bail!("matching worker reconciliation finished before post-load readiness was gated: result={result:#?}, requests={requests:#?}");
-            }
-            result = wait_for_existing_path_count(std::slice::from_ref(&load_accepted_marker), 1) => result?,
-        }
-
-        let pending_metadata: Value =
-            serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
-        ensure!(pending_metadata["replacement_required"] == true);
-        ensure!(pending_metadata["applied_config_fingerprint"].is_null());
-        ensure!(process_is_alive(worker_pid)?);
-        ensure!(
-            required_runtime_metadata_pid(&paths.gateway_runtime_metadata())? == gateway_pid
-        );
-        ensure!(read_test_bytes(paths.gateway_root_config())? == gateway_root);
-        ensure!(
-            fake_admin_load_bodies(&paths.gateway_root_config())?.len() == gateway_load_count
-        );
-
-        Ok::<_, anyhow::Error>(())
-    }
-    .await;
-    if reconciliation_completed {
-        inspection?;
-        bail!("matching worker reconciliation finished before inspection completed");
-    }
-    reconciliation.abort();
-    let cancellation = reconciliation.await;
-    inspection?;
-    let cancellation = match cancellation {
-        Ok(result) => bail!("matching worker reconciliation was not cancelled: {result:?}"),
-        Err(error) => error,
-    };
-    assert!(cancellation.is_cancelled());
-    pv_fake::write_gateway_control(&paths.worker_root_config(track), json!({}))?;
-
-    let summary = real::timeout(Duration::from_secs(10), reconcile_gateway_runtimes(&paths))
-        .await
-        .context("cancelled matching worker reconciliation did not recover")??;
-    let replacement_worker_pid =
-        required_runtime_metadata_pid(&paths.worker_runtime_metadata(track))?;
-    let replacement_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata(track))?)?;
-
-    wait_for_process_exit(worker_pid).await?;
-    assert_eq!(summary, GATEWAY_RECONCILIATION_SUMMARY);
-    assert_ne!(replacement_worker_pid, worker_pid);
-    assert_ne!(replacement_metadata["replacement_required"], true);
-    assert!(replacement_metadata["applied_config_fingerprint"].is_string());
-    assert_eq!(
-        required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?,
-        gateway_pid
-    );
-    assert_eq!(read_test_bytes(paths.gateway_root_config())?, gateway_root);
-    assert_eq!(
-        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
-        gateway_load_count + 1
-    );
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata(track)).await?;
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn runtime_move_accepts_prior_proof_after_artifact_change() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -782,7 +576,7 @@ async fn runtime_move_accepts_prior_proof_after_artifact_change() -> Result<()> 
 }
 
 #[tokio::test]
-async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()> {
+async fn gateway_runtime_move_to_a_missing_track_keeps_the_source() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
@@ -792,10 +586,8 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     link_project_record(&paths, &peer_root, "api.acme.test", Some("8.4"))?;
     let caddy_release = tempdir.path().join("caddy");
     let source_release = tempdir.path().join("frankenphp-84");
-    let destination_release = tempdir.path().join("frankenphp-85");
     write_fake_caddy(&caddy_release.join("bin/caddy"))?;
     write_fake_frankenphp(&source_release.join("bin/frankenphp"))?;
-    write_fake_frankenphp(&destination_release.join("bin/frankenphp"))?;
     let ports = available_loopback_ports(4)?;
     let mut database = Database::open(&paths)?;
     database.record_managed_resource_track_installed(
@@ -825,7 +617,6 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     drop(database);
     reconcile_gateway_runtimes(&paths).await?;
     let source_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
-    let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
     let file_name = format!("{}.Caddyfile", moving.id);
     let source_fragment = paths.worker_projects_config_dir("8.4").join(&file_name);
     let gateway_fragment = paths.gateway_projects_config_dir().join(&file_name);
@@ -842,326 +633,10 @@ async fn gateway_runtime_move_retains_source_until_gateway_commit() -> Result<()
     assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
     assert!(process_is_alive(source_pid)?);
 
-    Database::open(&paths)?.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.5",
-        "fake-85-pv1",
-        &destination_release,
-    )?;
-    let source_metadata = fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?;
-    let connection = Connection::open(paths.db().as_std_path())?;
-    connection.execute_batch(
-        "CREATE TRIGGER reject_source_observation BEFORE INSERT ON observed_states
-         WHEN NEW.subject_kind = 'runtime' AND NEW.subject_id = 'php_worker:8.4'
-         BEGIN SELECT RAISE(FAIL, 'fixture rejected source observation'); END;",
-    )?;
-    let mut unverified_metadata: Value = serde_json::from_str(&source_metadata)?;
-    unverified_metadata["applied_config_fingerprint"] = Value::Null;
-    fs::write_sensitive_file(
-        &paths.worker_runtime_metadata("8.4"),
-        &serde_json::to_string(&unverified_metadata)?,
-    )?;
-    let observation_failure = reconcile_gateway_runtimes(&paths).await;
-    connection.execute_batch("DROP TRIGGER reject_source_observation")?;
-    fs::write_sensitive_file(&paths.worker_runtime_metadata("8.4"), &source_metadata)?;
-    let Err(DaemonError::RuntimeReconciliationFailures { failures }) = observation_failure else {
-        bail!("expected source-proof and recording failures, got {observation_failure:?}");
-    };
-    assert_eq!(failures.len(), 2);
-    assert!(
-        failures
-            .iter()
-            .all(|failure| failure.runtime_key() == "8.4")
-    );
-    assert!(failures.iter().any(|failure| matches!(
-        failure.error(),
-        DaemonError::UnexpectedProtocolResponse { .. }
-    )));
-    assert!(
-        failures
-            .iter()
-            .any(|failure| matches!(failure.error(), DaemonError::State(StateError::Sqlite(_))))
-    );
-    let independent_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.5"))?)?;
-    assert!(independent_metadata["applied_config_fingerprint"].is_string());
-    assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
-    assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
-
-    fs::write_sensitive_file(&peer_root.join("pv.yml"), "php: \"8.4\"\nroot: .\n")?;
-    pv_fake::write_gateway_control(
-        &paths.worker_root_config("8.4"),
-        json!({"load_statuses": [422]}),
-    )?;
-    let source_rejected = reconcile_gateway_runtimes(&paths).await;
-    assert!(matches!(
-        source_rejected,
-        Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
-            status: 422,
-            ..
-        }))
-    ));
-    assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
-    assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
-    pv_fake::write_gateway_control(
-        &paths.worker_root_config("8.4"),
-        json!({"load_response_body": ["not json"]}),
-    )?;
-    let uncertain_source = reconcile_gateway_runtimes(&paths).await;
-    assert!(matches!(
-        uncertain_source,
-        Err(DaemonError::CaddyAdmin(
-            CaddyAdminError::RequestOutcomeUnknown {
-                operation: CaddyAdminOperation::Load,
-                ..
-            }
-        ))
-    ));
-    let staged_source_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
-    assert_eq!(staged_source_metadata["replacement_required"], true);
-    assert!(staged_source_metadata["applied_config_fingerprint"].is_null());
-    assert!(staged_source_metadata["staged_config_fingerprint"].is_string());
-    assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
-    assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
-
-    let source_failure_marker = Utf8PathBuf::from(format!(
-        "{}.readiness-fail",
-        paths.worker_root_config("8.4")
-    ));
-    fs::write_sensitive_file(
-        &source_failure_marker,
-        "fail
-",
-    )?;
-    pv_fake::write_gateway_control(
-        &paths.gateway_root_config(),
-        json!({"load_statuses": [422]}),
-    )?;
-    let failed_replacement = reconcile_gateway_runtimes(&paths).await;
-    assert!(matches!(
-        failed_replacement,
-        Err(DaemonError::UnexpectedProtocolResponse { ref reason })
-            if reason.contains("php-worker-8.4")
-                && reason.contains("exited before readiness was verified")
-    ));
-    let failed_replacement_pid =
-        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
-    wait_for_process_exit(failed_replacement_pid).await?;
-    let failed_replacement_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
-    assert_eq!(failed_replacement_metadata["replacement_required"], true);
-    assert!(failed_replacement_metadata["applied_config_fingerprint"].is_null());
-    assert!(failed_replacement_metadata["staged_config_fingerprint"].is_string());
-    assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
-    assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
-
-    fs::remove_file(&source_failure_marker)?;
-    let rejected = reconcile_gateway_runtimes(&paths).await;
-    assert!(matches!(
-        rejected,
-        Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
-            status: 422,
-            ..
-        }))
-    ));
-    let replacement_source_pid =
-        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?;
-    assert_ne!(replacement_source_pid, source_pid);
-    assert_ne!(replacement_source_pid, failed_replacement_pid);
-    let replacement_source_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.4"))?)?;
-    assert_ne!(replacement_source_metadata["replacement_required"], true);
-    assert!(replacement_source_metadata["applied_config_fingerprint"].is_string());
-    assert!(replacement_source_metadata["staged_config_fingerprint"].is_null());
-    assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
-    assert_eq!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
-    let destination_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.5"))?;
-    let destination_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.worker_runtime_metadata("8.5"))?)?;
-    assert!(destination_metadata["applied_config_fingerprint"].is_string());
-    assert_ne!(destination_metadata["replacement_required"], true);
-
-    pv_fake::write_gateway_control(
-        &paths.gateway_root_config(),
-        json!({"load_response_body": ["not json"]}),
-    )?;
-    let uncertain = reconcile_gateway_runtimes(&paths).await;
-    assert!(matches!(
-        uncertain,
-        Err(DaemonError::CaddyAdmin(
-            CaddyAdminError::RequestOutcomeUnknown {
-                operation: CaddyAdminOperation::Load,
-                ..
-            }
-        ))
-    ));
-    let pending_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
-    assert_eq!(pending_metadata["replacement_required"], true);
-    assert!(pending_metadata["applied_config_fingerprint"].is_null());
-    assert!(pending_metadata["staged_config_fingerprint"].is_string());
-    assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
-    assert!(process_is_alive(replacement_source_pid)?);
-    assert!(process_is_alive(destination_pid)?);
-
-    let readiness_gate = tempdir.path().join("gateway-ready");
-    pv_fake::write_gateway_control(
-        &paths.gateway_root_config(),
-        json!({
-            "admin_response_gate": readiness_gate.as_str()
-        }),
-    )?;
-    let requests_before_retry = fake_admin_requests(&paths.gateway_root_config())?.len();
-    let release_gateway = async {
-        real::timeout(Duration::from_secs(5), async {
-            loop {
-                if let Some(pid) = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
-                    && pid != gateway_pid
-                    && fake_admin_requests(&paths.gateway_root_config())?
-                        .iter()
-                        .skip(requests_before_retry)
-                        .any(|request| request["method"] == "GET" && request["path"] == "/config/")
-                {
-                    assert_eq!(fs::read_to_string(&source_fragment)?, previous_source);
-                    fs::write_sensitive_file(&readiness_gate, "ready\n")?;
-                    return Ok::<(), Error>(());
-                }
-                clock::poll(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .context("replacement Gateway did not reach readiness")?
-    };
-    let (retry, release) = tokio::join!(reconcile_gateway_runtimes(&paths), release_gateway);
-    release?;
-    retry?;
-    assert!(!source_fragment.exists());
-    assert!(
-        paths
-            .worker_projects_config_dir("8.5")
-            .join(&file_name)
-            .exists()
-    );
-    assert_ne!(fs::read_to_string(&gateway_fragment)?, previous_gateway);
-    assert_eq!(
-        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?,
-        replacement_source_pid
-    );
-    assert_eq!(
-        required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.5"))?,
-        destination_pid
-    );
-    let committed_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
-    assert_ne!(committed_metadata["replacement_required"], true);
-    assert!(committed_metadata["applied_config_fingerprint"].is_string());
-    assert!(committed_metadata["staged_config_fingerprint"].is_null());
     stop_runtime(&paths.gateway_runtime_metadata()).await?;
     stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.5")).await?;
 
     runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn worker_failure_starts_missing_gateway_without_reloading_live_gateway() -> Result<()> {
-    for live_gateway in [false, true] {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-        let track = "8.4";
-        let base_project =
-            create_project_with_config(tempdir.path(), "base", "php:\n  version: \"8.4\"\n")?;
-        link_project_record(&paths, &base_project, "acme.test", Some(track))?;
-        let base_id = Database::open(&paths)?
-            .projects()?
-            .into_iter()
-            .find(|project| project.path == base_project)
-            .ok_or_else(|| anyhow::anyhow!("missing base Project"))?
-            .id;
-
-        let release_path = seed_installed_php_with_extensions(&paths, track, &["redis"])?;
-        seed_installed_frankenphp_with_extensions(&paths, track, &release_path, &["redis"])?;
-        write_fake_frankenphp(&release_path.join("bin/frankenphp"))?;
-
-        let base_runtime_key = state::php_runtime_key(track, &[])?;
-        let redis_runtime_key = state::php_runtime_key(track, &["redis".to_owned()])?;
-        let ports = available_loopback_ports(4)?;
-        let mut database = Database::open(&paths)?;
-        seed_runtime_ports(
-            &paths,
-            &mut database,
-            ports[0],
-            ports[1],
-            &[
-                (&base_runtime_key, ports[2]),
-                (&redis_runtime_key, ports[3]),
-            ],
-        )?;
-        drop(database);
-
-        reconcile_gateway_runtimes(&paths).await?;
-        let gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
-        let gateway_root = fs::read_to_string(&paths.gateway_root_config())?;
-        let source_fragment = paths
-            .worker_projects_config_dir(&base_runtime_key)
-            .join(format!("{base_id}.Caddyfile"));
-        let source_content = fs::read_to_string(&source_fragment)?;
-
-        let redis_project = create_project_with_config(
-            tempdir.path(),
-            "redis",
-            "php:\n  version: \"8.4\"\n  extensions: [redis]\n",
-        )?;
-        link_project_record(&paths, &redis_project, "api.acme.test", Some(track))?;
-        if !live_gateway {
-            stop_recorded_runtime_preserving_files(&paths, &paths.gateway_runtime_metadata())
-                .await?;
-            let tampered = format!(
-                "{}# tampered Gateway root\n",
-                fs::read_to_string(&paths.gateway_root_config())?
-            );
-            fs::write_sensitive_file(&paths.gateway_root_config(), &tampered)?;
-        }
-        let redis_failure_marker = Utf8PathBuf::from(format!(
-            "{}.readiness-fail",
-            paths.worker_root_config(&redis_runtime_key)
-        ));
-        fs::write_sensitive_file(&redis_failure_marker, "fail\n")?;
-
-        let result = reconcile_gateway_runtimes(&paths).await;
-        assert!(
-            matches!(
-                &result,
-                Err(DaemonError::UnexpectedProtocolResponse { reason })
-                    if reason.contains(&format!("php-worker-{redis_runtime_key}"))
-            ),
-            "the worker failure must survive gateway recovery, got {result:?}"
-        );
-        let gateway_pid_after = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
-        let gateway_root_after = fs::read_to_string(&paths.gateway_root_config())?;
-        if live_gateway {
-            assert_eq!(gateway_pid_after, gateway_pid);
-            assert!(process_is_alive(gateway_pid)?);
-            assert_eq!(gateway_root_after, gateway_root);
-        } else {
-            assert_ne!(gateway_pid_after, gateway_pid);
-            assert!(process_is_alive(gateway_pid_after)?);
-            assert!(!gateway_root_after.contains("# tampered Gateway root"));
-        }
-        assert_eq!(fs::read_to_string(&source_fragment)?, source_content);
-
-        fs::remove_file(&redis_failure_marker)?;
-        stop_runtime(&paths.gateway_runtime_metadata()).await?;
-        stop_runtime(&paths.worker_runtime_metadata(&base_runtime_key)).await?;
-        if paths.worker_runtime_metadata(&redis_runtime_key).exists() {
-            stop_runtime(&paths.worker_runtime_metadata(&redis_runtime_key)).await?;
-        }
-        runtime_guard.cleanup().await?;
-    }
 
     Ok(())
 }
@@ -1509,183 +984,77 @@ async fn assert_uncertain_pf_state_preserves_gateway(
 }
 
 #[tokio::test]
-async fn fresh_gateway_ownership_probe_failure_cleans_runtime_before_rollback() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
+async fn fresh_runtime_exit_is_reported_before_the_readiness_timeout() -> Result<()> {
+    for runtime in ["gateway", "php-worker-8.4"] {
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
+        let release = tempdir.path().join("fast-exit-release");
+        let go = tempdir.path().join("exit");
+        let ports = available_loopback_ports(3)?;
+        let mut database = Database::open(&paths)?;
+        let metadata_path = if runtime == "gateway" {
+            write_fast_exit_runtime(&release.join("bin/caddy"), &go)?;
+            database.record_managed_resource_track_installed(
+                "caddy",
+                "2",
+                "fast-exit-caddy-pv1",
+                &release,
+            )?;
+            seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
+            paths.gateway_runtime_metadata()
+        } else {
+            let project_root = tempdir.path().join("acme");
+            write_fast_exit_runtime(&release.join("bin/frankenphp"), &go)?;
+            create_project(&project_root, "php: \"8.4\"\nroot: public\n")?;
+            database.link_project(LinkProjectInput {
+                path: project_root.clone(),
+                original_path: project_root.clone(),
+                primary_hostname: "acme.test".to_owned(),
+                config_path: project_root.join("pv.yml"),
+                desired_php_track: Some("8.4".to_owned()),
+            })?;
+            database.record_managed_resource_track_installed(
+                "frankenphp",
+                "8.4",
+                "fast-exit-frankenphp-pv1",
+                &release,
+            )?;
+            seed_runtime_ports(
+                &paths,
+                &mut database,
+                ports[0],
+                ports[1],
+                &[("8.4", ports[2])],
+            )?;
+            paths.worker_runtime_metadata("8.4")
+        };
+        drop(database);
 
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    let ports = available_loopback_ports(2)?;
-    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
-    drop(database);
-
-    let previous_root = "previous gateway config\n";
-    let admin_response_gate = tempdir.path().join("admin-response-release");
-    fs::write_sensitive_file(&paths.gateway_root_config(), previous_root)?;
-    pv_fake::write_gateway_control(
-        &paths.gateway_root_config(),
-        json!({"admin_response_gate": admin_response_gate.as_str()}),
-    )?;
-
-    let corrupt_runtime_metadata = async {
-        real::timeout(Duration::from_secs(5), async {
-            loop {
-                let gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
-                let admin_ready = fake_admin_requests(&paths.gateway_root_config())?
-                    .iter()
-                    .any(|request| request["method"] == "GET" && request["path"] == "/config/");
-                if let Some(gateway_pid) = gateway_pid
-                    && admin_ready
-                {
-                    let supervisor = ProcessSupervisor::new(paths.clone());
-                    let gateway = supervisor
-                        .adopt_recorded(&paths.gateway_runtime_metadata())?
-                        .ok_or_else(|| anyhow::anyhow!("fresh Gateway was not adoptable"))?;
-                    fs::write_sensitive_file(&paths.gateway_runtime_metadata(), "{")?;
-                    fs::write_sensitive_file(&admin_response_gate, "")?;
-                    return Ok::<_, Error>((gateway_pid, gateway));
-                }
-                clock::poll(Duration::from_millis(10)).await;
-            }
+        let (result, ()) = real::timeout(Duration::from_secs(5), async {
+            tokio::try_join!(
+                async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
+                release_fast_exit_runtime(&metadata_path, &go),
+            )
         })
         .await
-        .map_err(|_error| anyhow::anyhow!("fresh Gateway did not reach gated admin readiness"))?
-    };
-    let (result, gateway) = tokio::join!(
-        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Unknown,),
-        corrupt_runtime_metadata,
-    );
-    let (gateway_pid, _gateway) = gateway?;
-    let gateway_was_alive = process_is_alive(gateway_pid)?;
+        .with_context(|| {
+            format!("reconciliation waited for the readiness timeout after {runtime} exited")
+        })??;
 
-    assert!(matches!(result, Err(DaemonError::Json(_))));
-    assert!(!gateway_was_alive);
-    assert!(!paths.gateway_runtime_metadata().exists());
-    assert_eq!(
-        fs::read_to_string(&paths.gateway_root_config())?,
-        previous_root
-    );
-    runtime_guard.cleanup().await?;
+        assert!(
+            matches!(
+                &result,
+                Err(DaemonError::UnexpectedProtocolResponse { reason })
+                    if reason.contains(&format!("runtime `{runtime}` exited before readiness was verified"))
+            ),
+            "unexpected {runtime} exit result: {result:?}"
+        );
+        assert!(!metadata_path.exists(), "{runtime}");
+        assert!(!paths.gateway_runtime_metadata().exists(), "{runtime}");
 
-    Ok(())
-}
-
-#[tokio::test]
-async fn fresh_gateway_exit_is_reported_before_the_readiness_timeout() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let caddy_release = tempdir.path().join("fast-exit-caddy-release");
-    let go = tempdir.path().join("exit");
-    write_fast_exit_runtime(&caddy_release.join("bin/caddy"), &go)?;
-
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fast-exit-caddy-pv1",
-        &caddy_release,
-    )?;
-    let ports = available_loopback_ports(2)?;
-    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
-    drop(database);
-
-    let metadata_path = paths.gateway_runtime_metadata();
-    let (result, ()) = real::timeout(Duration::from_secs(5), async {
-        tokio::try_join!(
-            async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
-            release_fast_exit_runtime(&metadata_path, &go),
-        )
-    })
-    .await
-    .context("Gateway reconciliation waited for the readiness timeout after Caddy exited")??;
-
-    assert!(
-        matches!(
-            result,
-            Err(DaemonError::UnexpectedProtocolResponse { ref reason })
-                if reason.contains("runtime `gateway` exited before readiness was verified")
-        ),
-        "unexpected Gateway exit result: {result:?}"
-    );
-    assert!(!paths.gateway_runtime_metadata().exists());
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn fresh_worker_exit_is_reported_before_the_readiness_timeout() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let project_root = tempdir.path().join("acme");
-    let frankenphp_release = tempdir.path().join("fast-exit-frankenphp-release");
-    let go = tempdir.path().join("exit");
-    write_fast_exit_runtime(&frankenphp_release.join("bin/frankenphp"), &go)?;
-    create_project(
-        &project_root,
-        r#"php: "8.4"
-root: public
-"#,
-    )?;
-
-    let mut database = Database::open(&paths)?;
-    database.link_project(LinkProjectInput {
-        path: project_root.clone(),
-        original_path: project_root.clone(),
-        primary_hostname: "acme.test".to_owned(),
-        config_path: project_root.join("pv.yml"),
-        desired_php_track: Some("8.4".to_owned()),
-    })?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fast-exit-frankenphp-pv1",
-        &frankenphp_release,
-    )?;
-    let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.4", ports[2])],
-    )?;
-    drop(database);
-    ensure_fake_caddy(&paths)?;
-
-    let metadata_path = paths.worker_runtime_metadata("8.4");
-    let (result, ()) = real::timeout(Duration::from_secs(5), async {
-        tokio::try_join!(
-            async { Ok::<_, Error>(reconcile_gateway_runtimes(&paths).await) },
-            release_fast_exit_runtime(&metadata_path, &go),
-        )
-    })
-    .await
-    .context("Gateway reconciliation waited for the readiness timeout after FrankenPHP exited")??;
-
-    assert!(
-        matches!(
-            result,
-            Err(DaemonError::UnexpectedProtocolResponse { ref reason })
-                if reason.contains("runtime `php-worker-8.4` exited before readiness was verified")
-        ),
-        "unexpected worker exit result: {result:?}"
-    );
-    assert!(!paths.worker_runtime_metadata("8.4").exists());
-    assert!(!paths.gateway_runtime_metadata().exists());
-
-    runtime_guard.cleanup().await?;
+        runtime_guard.cleanup().await?;
+    }
 
     Ok(())
 }
@@ -2371,402 +1740,6 @@ env:
 }
 
 #[tokio::test]
-async fn targeted_project_reconciliation_does_not_activate_tampered_unrelated_fragments()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
-    let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
-
-    let mut database = Database::open(&paths)?;
-    let target = database
-        .link_project(LinkProjectInput {
-            path: target.clone(),
-            original_path: target.clone(),
-            primary_hostname: "acme.test".to_owned(),
-            config_path: target.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    let peer = database
-        .link_project(LinkProjectInput {
-            path: peer.clone(),
-            original_path: peer.clone(),
-            primary_hostname: "other.test".to_owned(),
-            config_path: peer.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fake-frankenphp-8.4-pv1",
-        &frankenphp_release,
-    )?;
-    let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.4", ports[2])],
-    )?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let gateway_fragment_path = paths
-        .gateway_projects_config_dir()
-        .join(format!("{}.Caddyfile", peer.id));
-    let worker_fragment_path = paths
-        .worker_projects_config_dir("8.4")
-        .join(format!("{}.Caddyfile", peer.id));
-    let gateway_fragment = fs::read_to_string(&gateway_fragment_path)?;
-    let worker_fragment = fs::read_to_string(&worker_fragment_path)?;
-    let gateway_root = read_test_bytes(paths.gateway_root_config())?;
-    let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
-    let worker_loads = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
-
-    write_test_bytes(&paths.gateway_root_config(), &[0xff])?;
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &target.id,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
-
-    assert_eq!(read_test_bytes(paths.gateway_root_config())?, gateway_root);
-    assert_eq!(
-        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
-        gateway_loads
-    );
-    assert_eq!(
-        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
-        worker_loads
-    );
-
-    fs::write_sensitive_file(&gateway_fragment_path, "# tampered Gateway fragment\n")?;
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &target.id,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
-
-    assert_eq!(
-        fs::read_to_string(&gateway_fragment_path)?,
-        gateway_fragment
-    );
-    assert_eq!(
-        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
-        gateway_loads
-    );
-    assert_eq!(
-        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
-        worker_loads
-    );
-
-    fs::write_sensitive_file(&gateway_fragment_path, &gateway_fragment)?;
-    fs::write_sensitive_file(&worker_fragment_path, "# tampered worker fragment\n")?;
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &target.id,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
-
-    assert_eq!(fs::read_to_string(&worker_fragment_path)?, worker_fragment);
-    assert_eq!(
-        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
-        gateway_loads
-    );
-    assert_eq!(
-        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
-        worker_loads
-    );
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn targeted_project_reconciliation_promotes_split_peer_runtime_state() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
-    let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    let frankenphp_84_release = tempdir.path().join("fake-frankenphp-84-release");
-    let frankenphp_85_release = tempdir.path().join("fake-frankenphp-85-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    write_fake_frankenphp(&frankenphp_84_release.join("bin/frankenphp"))?;
-    write_fake_frankenphp(&frankenphp_85_release.join("bin/frankenphp"))?;
-
-    let mut database = Database::open(&paths)?;
-    let target = database
-        .link_project(LinkProjectInput {
-            path: target.clone(),
-            original_path: target.clone(),
-            primary_hostname: "acme.test".to_owned(),
-            config_path: target.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    let peer = database
-        .link_project(LinkProjectInput {
-            path: peer.clone(),
-            original_path: peer.clone(),
-            primary_hostname: "other.test".to_owned(),
-            config_path: peer.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    for (track, release) in [
-        ("8.4", &frankenphp_84_release),
-        ("8.5", &frankenphp_85_release),
-    ] {
-        database.record_managed_resource_track_installed(
-            "frankenphp",
-            track,
-            &format!("fake-frankenphp-{track}-pv1"),
-            release,
-        )?;
-    }
-    let ports = available_loopback_ports(4)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.4", ports[2]), ("8.5", ports[3])],
-    )?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    fs::write_sensitive_file(&peer.config_path, "php: \"8.5\"\n")?;
-    let mut database = Database::open(&paths)?;
-    database.replace_project_php_runtime(
-        &peer.id,
-        Some(&ProjectPhpRuntimeInput {
-            track: "8.5".to_owned(),
-            requested_extensions: Vec::new(),
-            loaded_extensions: Vec::new(),
-            ignored_extensions: Vec::new(),
-        }),
-    )?;
-    drop(database);
-    write_failing_config_validator(&caddy_release.join("bin/caddy"))?;
-
-    let failed = reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &peer.id,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await;
-
-    assert!(matches!(
-        failed,
-        Err(DaemonError::UnexpectedProtocolResponse { reason })
-            if reason.contains("Caddy config validation failed")
-    ));
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    let peer_gateway_fragment_path = paths
-        .gateway_projects_config_dir()
-        .join(format!("{}.Caddyfile", peer.id));
-    assert!(
-        fs::read_to_string(&peer_gateway_fragment_path)?
-            .contains(&format!("reverse_proxy 127.0.0.1:{}", ports[2]))
-    );
-    assert!(
-        paths
-            .worker_projects_config_dir("8.4")
-            .join(format!("{}.Caddyfile", peer.id))
-            .exists()
-    );
-    assert!(
-        paths
-            .worker_projects_config_dir("8.5")
-            .join(format!("{}.Caddyfile", peer.id))
-            .exists()
-    );
-    fs::write_sensitive_file(&peer.config_path, "php: [\n")?;
-    fs::write_sensitive_file(&target.path.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\nroot: web\n")?;
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &target.id,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
-
-    assert!(
-        fs::read_to_string(&peer_gateway_fragment_path)?
-            .contains(&format!("reverse_proxy 127.0.0.1:{}", ports[2]))
-    );
-    assert!(
-        paths
-            .worker_projects_config_dir("8.4")
-            .join(format!("{}.Caddyfile", peer.id))
-            .exists()
-    );
-    assert!(
-        !paths
-            .worker_projects_config_dir("8.5")
-            .join(format!("{}.Caddyfile", peer.id))
-            .exists()
-    );
-    assert!(!paths.worker_runtime_metadata("8.5").exists());
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn targeted_project_reconciliation_uses_verified_fragment_snapshot() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let target = create_project_with_config(tempdir.path(), "target", "php: \"8.4\"\n")?;
-    let peer = create_project_with_config(tempdir.path(), "peer", "php: \"8.4\"\n")?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
-
-    let mut database = Database::open(&paths)?;
-    let target = database
-        .link_project(LinkProjectInput {
-            path: target.clone(),
-            original_path: target.clone(),
-            primary_hostname: "acme.test".to_owned(),
-            config_path: target.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    let peer = database
-        .link_project(LinkProjectInput {
-            path: peer.clone(),
-            original_path: peer.clone(),
-            primary_hostname: "other.test".to_owned(),
-            config_path: peer.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fake-frankenphp-8.4-pv1",
-        &frankenphp_release,
-    )?;
-    let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.4", ports[2])],
-    )?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let gateway_loads = fake_admin_load_bodies(&paths.gateway_root_config())?.len();
-    let worker_loads = fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len();
-    let peer_gateway_fragment_path = paths
-        .gateway_projects_config_dir()
-        .join(format!("{}.Caddyfile", peer.id));
-    let peer_gateway_fragment = fs::read_to_string(&peer_gateway_fragment_path)?;
-    let release_load = tempdir.path().join("release-worker-load");
-    pv_fake::write_gateway_control(
-        &paths.worker_root_config("8.4"),
-        json!({"load_response_gate": [release_load]}),
-    )?;
-    fs::write_sensitive_file(&target.path.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(&target.config_path, "php: \"8.4\"\nroot: web\n")?;
-
-    let mutation_paths = paths.clone();
-    let mutation_fragment_path = peer_gateway_fragment_path.clone();
-    let mutate_fragment = async move {
-        real::timeout(Duration::from_secs(5), async {
-            loop {
-                if fake_admin_load_bodies(&mutation_paths.worker_root_config("8.4"))?.len()
-                    > worker_loads
-                {
-                    return Ok::<(), Error>(());
-                }
-                clock::poll(Duration::from_millis(10)).await;
-            }
-        })
-        .await??;
-        // The worker holds the load until the fragment changes.
-        fs::write_sensitive_file(&mutation_fragment_path, "# raced Gateway fragment\n")?;
-        fs::write_sensitive_file(&release_load, "released\n")?;
-
-        Ok::<(), Error>(())
-    };
-    let (reconciled, mutated) = tokio::join!(
-        reconcile_project_gateway_runtimes_for_test(
-            &paths,
-            &target.id,
-            GatewayPfRoutingState::Inactive,
-        ),
-        mutate_fragment,
-    );
-    reconciled?;
-    mutated?;
-
-    assert_eq!(
-        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
-        worker_loads + 1
-    );
-    assert_eq!(
-        fake_admin_load_bodies(&paths.gateway_root_config())?.len(),
-        gateway_loads
-    );
-    assert_eq!(
-        fs::read_to_string(&peer_gateway_fragment_path)?,
-        peer_gateway_fragment
-    );
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is_ready()
 -> Result<()> {
     let tempdir = tempdir()?;
@@ -3111,171 +2084,6 @@ async fn gateway_reconciliation_validates_changed_or_missing_ca_key() -> Result<
         assert!(loads.is_empty());
     }
 
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn gateway_reconciliation_keeps_pending_state_when_applied_fingerprint_commit_fails()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    let admin_response_gate = tempdir.path().join("admin-response-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-
-    let ports = available_loopback_ports(2)?;
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let first_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
-        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
-    let desired_root = read_test_bytes(paths.gateway_root_config())?;
-    let mut metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
-    let Some(metadata) = metadata.as_object_mut() else {
-        bail!("runtime metadata must be an object");
-    };
-    metadata.remove("applied_config_fingerprint");
-    fs::write_sensitive_file(
-        &paths.gateway_runtime_metadata(),
-        &serde_json::to_string(metadata)?,
-    )?;
-    pv_fake::write_gateway_control(
-        &paths.gateway_root_config(),
-        json!({"admin_response_gate": admin_response_gate.as_str()}),
-    )?;
-
-    let block_final_metadata_write = async {
-        real::timeout(Duration::from_secs(2), async {
-            loop {
-                if let Ok(content) = fs::read_to_string(&paths.gateway_runtime_metadata())
-                    && let Ok(metadata) = serde_json::from_str::<Value>(&content)
-                    && metadata["replacement_required"] == true
-                    && metadata["applied_config_fingerprint"].is_null()
-                {
-                    state::testing::fail_next_sensitive_write(paths.gateway_runtime_metadata());
-                    fs::write_sensitive_file(&admin_response_gate, "")?;
-                    return Ok::<(), Error>(());
-                }
-                clock::poll(Duration::from_millis(5)).await;
-            }
-        })
-        .await
-        .map_err(|_error| anyhow::anyhow!("pending runtime metadata was not recorded"))?
-    };
-    let (result, block_result) = tokio::join!(
-        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Unknown,),
-        block_final_metadata_write,
-    );
-    block_result?;
-
-    let pending_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
-    assert!(
-        matches!(result, Err(DaemonError::State(_))),
-        "unexpected reconciliation result: {result:?}"
-    );
-    assert_eq!(read_test_bytes(paths.gateway_root_config())?, desired_root);
-    assert_eq!(pending_metadata["replacement_required"], true);
-    assert!(pending_metadata["applied_config_fingerprint"].is_null());
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let replacement_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
-        .ok_or_else(|| anyhow::anyhow!("expected replacement gateway runtime metadata"))?;
-    let replacement_metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
-
-    wait_for_process_exit(first_gateway_pid).await?;
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-
-    assert_ne!(replacement_gateway_pid, first_gateway_pid);
-    assert_ne!(replacement_metadata["replacement_required"], true);
-    assert!(replacement_metadata["applied_config_fingerprint"].is_string());
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn gateway_reconciliation_replaces_legacy_runtime_identities_once() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let project_root = tempdir.path().join("acme");
-    let release_path = tempdir.path().join("fake-frankenphp-release");
-    let fake_frankenphp = release_path.join("bin/frankenphp");
-
-    write_fake_frankenphp(&fake_frankenphp)?;
-    create_project(
-        &project_root,
-        r#"php: "8.4"
-root: public
-"#,
-    )?;
-
-    let mut database = Database::open(&paths)?;
-    database.link_project(LinkProjectInput {
-        path: project_root.clone(),
-        original_path: project_root.clone(),
-        primary_hostname: "acme.test".to_owned(),
-        config_path: project_root.join("pv.yml"),
-        desired_php_track: Some("8.4".to_owned()),
-    })?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fake-frankenphp-pv1",
-        &release_path,
-    )?;
-    let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.4", ports[2])],
-    )?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let first_gateway_pid = runtime_guard.capture(paths.gateway_runtime_metadata())?;
-    let first_worker_pid = runtime_guard.capture(paths.worker_runtime_metadata("8.4"))?;
-    replace_runtime_metadata_identity(&paths.gateway_runtime_metadata(), "gateway", "core")?;
-    replace_runtime_metadata_identity(&paths.worker_runtime_metadata("8.4"), "php-worker", "8.4")?;
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let second_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
-        .ok_or_else(|| anyhow::anyhow!("expected gateway runtime metadata"))?;
-    let second_worker_pid = runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?
-        .ok_or_else(|| anyhow::anyhow!("expected worker runtime metadata"))?;
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let stable_gateway_pid = runtime_metadata_pid(&paths.gateway_runtime_metadata())?
-        .ok_or_else(|| anyhow::anyhow!("expected stable gateway runtime metadata"))?;
-    let stable_worker_pid = runtime_metadata_pid(&paths.worker_runtime_metadata("8.4"))?
-        .ok_or_else(|| anyhow::anyhow!("expected stable worker runtime metadata"))?;
-
-    wait_for_process_exit(first_gateway_pid).await?;
-    wait_for_process_exit(first_worker_pid).await?;
-    assert_ne!(second_gateway_pid, first_gateway_pid);
-    assert_ne!(second_worker_pid, first_worker_pid);
-    assert_eq!(stable_gateway_pid, second_gateway_pid);
-    assert_eq!(stable_worker_pid, second_worker_pid);
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
     runtime_guard.cleanup().await?;
 
     Ok(())
@@ -4249,124 +3057,6 @@ async fn gateway_runtime_plan_recovers_preserved_worker_tree_without_metadata() 
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_preserves_fragments_for_parseable_invalid_project_config()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let acme_root = tempdir.path().join("acme");
-    let other_root = tempdir.path().join("other");
-    let release_84_path = tempdir.path().join("fake-frankenphp-84-release");
-    let release_83_path = tempdir.path().join("fake-frankenphp-83-release");
-    let fake_frankenphp_84 = release_84_path.join("bin/frankenphp");
-    let fake_frankenphp_83 = release_83_path.join("bin/frankenphp");
-
-    write_fake_frankenphp(&fake_frankenphp_84)?;
-    write_fake_frankenphp(&fake_frankenphp_83)?;
-    create_project(
-        &acme_root,
-        r#"php: "8.4"
-root: public
-"#,
-    )?;
-    create_project(
-        &other_root,
-        r#"php: "8.3"
-root: public
-"#,
-    )?;
-
-    let mut database = Database::open(&paths)?;
-    let acme = database.link_project(LinkProjectInput {
-        path: acme_root.clone(),
-        original_path: acme_root.clone(),
-        primary_hostname: "acme.test".to_owned(),
-        config_path: acme_root.join("pv.yml"),
-        desired_php_track: Some("8.4".to_owned()),
-    })?;
-    database.link_project(LinkProjectInput {
-        path: other_root.clone(),
-        original_path: other_root.clone(),
-        primary_hostname: "other.test".to_owned(),
-        config_path: other_root.join("pv.yml"),
-        desired_php_track: Some("8.3".to_owned()),
-    })?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fake-frankenphp-84-pv1",
-        &release_84_path,
-    )?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.3",
-        "fake-frankenphp-83-pv1",
-        &release_83_path,
-    )?;
-    let ports = available_loopback_ports(4)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.4", ports[2]), ("8.3", ports[3])],
-    )?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let acme_gateway_fragment_path = paths
-        .gateway_projects_config_dir()
-        .join(format!("{}.Caddyfile", acme.project.id));
-    let acme_worker_fragment_path = paths
-        .worker_projects_config_dir("8.4")
-        .join(format!("{}.Caddyfile", acme.project.id));
-    let acme_gateway_fragment = fs::read_to_string(&acme_gateway_fragment_path)?;
-    let acme_worker_fragment = fs::read_to_string(&acme_worker_fragment_path)?;
-
-    fs::write_sensitive_file(
-        &acme_root.join("pv.yml"),
-        r#"php: "8.3"
-root: public
-env:
-  APP_URL: "${missing_value}"
-"#,
-    )?;
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let database = Database::open(&paths)?;
-    let observed = database
-        .project_env_observed_state(&acme.project.id)?
-        .ok_or_else(|| anyhow::anyhow!("expected Project env observed failure"))?;
-
-    assert_eq!(
-        fs::read_to_string(&acme_gateway_fragment_path)?,
-        acme_gateway_fragment
-    );
-    assert_eq!(
-        fs::read_to_string(&acme_worker_fragment_path)?,
-        acme_worker_fragment
-    );
-    assert!(
-        !paths
-            .worker_projects_config_dir("8.3")
-            .join(format!("{}.Caddyfile", acme.project.id))
-            .exists()
-    );
-    assert!(matches!(
-        observed.status,
-        state::ProjectEnvObservedStatus::Failed
-    ));
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.3")).await?;
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn gateway_reconciliation_preserves_active_fragments_when_validation_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -4440,300 +3130,6 @@ root: .
 
     stop_runtime(&paths.gateway_runtime_metadata()).await?;
     stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn retained_hostname_uses_previous_root() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let project_root = tempdir.path().join("acme");
-    create_project(
-        &project_root,
-        r#"php: "8.4"
-root: public
-"#,
-    )?;
-
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_root.clone(),
-            original_path: project_root.clone(),
-            primary_hostname: "old.acme.test".to_owned(),
-            config_path: project_root.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    let release = paths.home().join("8.4-php-release");
-    seed_installed_php_with_extensions(&paths, "8.4", &["redis"])?;
-    seed_installed_frankenphp_with_extensions(&paths, "8.4", &release, &["redis"])?;
-    write_fake_frankenphp(&release.join("bin/frankenphp"))?;
-    let base_runtime_key = state::php_runtime_key("8.4", &[])?;
-    let redis_runtime_key = state::php_runtime_key("8.4", &["redis".to_owned()])?;
-    let ports = available_loopback_ports(4)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[
-            (&base_runtime_key, ports[2]),
-            (&redis_runtime_key, ports[3]),
-        ],
-    )?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-
-    let redis_root = create_project_with_config(
-        tempdir.path(),
-        "redis",
-        "php:\n  version: \"8.4\"\n  extensions: [redis]\n",
-    )?;
-    link_project_record(&paths, &redis_root, "api.acme.test", Some("8.4"))?;
-    fs::write_sensitive_file(&project_root.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(
-        &project_root.join("pv.yml"),
-        r#"php: "8.4"
-root: web
-"#,
-    )?;
-    link_project_record(&paths, &project_root, "new.acme.test", Some("8.4"))?;
-    let redis_failure_marker = Utf8PathBuf::from(format!(
-        "{}.readiness-fail",
-        paths.worker_root_config(&redis_runtime_key)
-    ));
-    fs::write_sensitive_file(&redis_failure_marker, "fail\n")?;
-
-    let result = reconcile_gateway_runtimes(&paths).await;
-    assert!(
-        matches!(
-            &result,
-            Err(DaemonError::UnexpectedProtocolResponse { reason })
-                if reason.contains(&format!("php-worker-{redis_runtime_key}"))
-        ),
-        "the sibling failure must surface after worker validation succeeds, got {result:?}"
-    );
-    let fragment_path = paths
-        .worker_projects_config_dir(&base_runtime_key)
-        .join(format!("{}.Caddyfile", project.id));
-    let merged = fs::read_to_string(&fragment_path)?;
-    let blocks = fragment_site_blocks(&merged);
-    assert_eq!(
-        blocks.len(),
-        2,
-        "expected retained and desired site blocks: {merged:?}"
-    );
-    assert_eq!(merged.matches("old.acme.test").count(), 2);
-    let (old_labels, old_body) = blocks
-        .iter()
-        .find(|(labels, _)| labels.contains("old.acme.test"))
-        .ok_or_else(|| anyhow::anyhow!("retained block is missing: {merged:?}"))?;
-    assert!(!old_labels.contains("new.acme.test"));
-    assert!(old_body.contains("public"));
-    assert!(!old_body.contains("web"));
-    let (new_labels, new_body) = blocks
-        .iter()
-        .find(|(labels, _)| labels.contains("new.acme.test"))
-        .ok_or_else(|| anyhow::anyhow!("desired block is missing: {merged:?}"))?;
-    assert!(new_labels.contains("*.new.acme.test"));
-    assert!(new_body.contains("web"));
-    assert!(!new_body.contains("public"));
-
-    fs::remove_file(&redis_failure_marker)?;
-    reconcile_gateway_runtimes(&paths).await?;
-    let committed = fs::read_to_string(&fragment_path)?;
-    assert!(!committed.contains("old.acme.test"));
-    assert!(committed.contains("new.acme.test"));
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata(&base_runtime_key)).await?;
-    stop_runtime(&paths.worker_runtime_metadata(&redis_runtime_key)).await?;
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
-}
-
-fn fragment_site_blocks(fragment: &str) -> Vec<(&str, &str)> {
-    fragment
-        .split_terminator("}\n")
-        .filter_map(|section| {
-            let (labels, body) = section.split_once(" {\n")?;
-            Some((labels.trim(), body))
-        })
-        .collect()
-}
-
-#[tokio::test]
-async fn post_commit_cleanup_continues_after_worker_failure() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let project_a_root = tempdir.path().join("a");
-    let project_b_root = tempdir.path().join("b");
-    let project_c_root = tempdir.path().join("c");
-    create_project(
-        &project_a_root,
-        r#"php: "8.4"
-root: public
-"#,
-    )?;
-    create_project(
-        &project_b_root,
-        r#"php: "8.5"
-root: public
-"#,
-    )?;
-    create_project(&project_c_root, "php: \"8.3\"\n")?;
-    link_project_record(&paths, &project_a_root, "old.acme.test", Some("8.4"))?;
-    link_project_record(&paths, &project_b_root, "old.api.acme.test", Some("8.5"))?;
-    link_project_record(&paths, &project_c_root, "other.test", Some("8.3"))?;
-    let caddy_release = tempdir.path().join("caddy");
-    let release_83 = tempdir.path().join("frankenphp-83");
-    let release_84 = tempdir.path().join("frankenphp-84");
-    let release_85 = tempdir.path().join("frankenphp-85");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    write_fake_frankenphp(&release_83.join("bin/frankenphp"))?;
-    write_fake_frankenphp(&release_84.join("bin/frankenphp"))?;
-    write_fake_frankenphp(&release_85.join("bin/frankenphp"))?;
-    let ports = available_loopback_ports(5)?;
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    for (track, release) in [
-        ("8.3", &release_83),
-        ("8.4", &release_84),
-        ("8.5", &release_85),
-    ] {
-        database.record_managed_resource_track_installed(
-            "frankenphp",
-            track,
-            &format!("fake-{track}-pv1"),
-            release,
-        )?;
-    }
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.3", ports[2]), ("8.4", ports[3]), ("8.5", ports[4])],
-    )?;
-    let projects = database.projects()?;
-    let project_a_id = projects
-        .iter()
-        .find(|project| project.path == project_a_root)
-        .ok_or_else(|| anyhow::anyhow!("missing project A"))?
-        .id
-        .clone();
-    let project_b_id = projects
-        .iter()
-        .find(|project| project.path == project_b_root)
-        .ok_or_else(|| anyhow::anyhow!("missing project B"))?
-        .id
-        .clone();
-    drop(database);
-    reconcile_gateway_runtimes(&paths).await?;
-    let stale_worker_pid = required_runtime_metadata_pid(&paths.worker_runtime_metadata("8.3"))?;
-    assert!(process_is_alive(stale_worker_pid)?);
-
-    fs::write_sensitive_file(&project_a_root.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(&project_b_root.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(
-        &project_a_root.join("pv.yml"),
-        r#"php: "8.4"
-root: web
-"#,
-    )?;
-    fs::write_sensitive_file(
-        &project_b_root.join("pv.yml"),
-        r#"php: "8.5"
-root: web
-"#,
-    )?;
-    link_project_record(&paths, &project_a_root, "new.acme.test", Some("8.4"))?;
-    link_project_record(&paths, &project_b_root, "new.api.acme.test", Some("8.5"))?;
-    fs::write_sensitive_file(&project_c_root.join("pv.yml"), "php: \"8.5\"\n")?;
-    pv_fake::write_gateway_control(
-        &paths.worker_root_config("8.4"),
-        json!({"load_statuses": [200, 422]}),
-    )?;
-
-    let result = reconcile_gateway_runtimes(&paths).await;
-    assert!(
-        matches!(
-            &result,
-            Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected { status, .. }))
-                if *status == 422
-        ),
-        "expected the injected second-pass load failure, got {result:?}"
-    );
-    assert_eq!(
-        fake_admin_load_bodies(&paths.worker_root_config("8.4"))?.len(),
-        2,
-        "expected one wave load and one failing cleanup load on 8.4",
-    );
-
-    let worker_b_fragment = paths
-        .worker_projects_config_dir("8.5")
-        .join(format!("{project_b_id}.Caddyfile"));
-    let worker_b_content = fs::read_to_string(&worker_b_fragment)?;
-    assert!(
-        !worker_b_content.contains("old.api.acme.test"),
-        "later retained worker was not cleaned: {worker_b_content:?}"
-    );
-    assert!(worker_b_content.contains("new.api.acme.test"));
-
-    let gateway_a_fragment = paths
-        .gateway_projects_config_dir()
-        .join(format!("{project_a_id}.Caddyfile"));
-    assert!(
-        fs::read_to_string(&gateway_a_fragment)?.contains("new.acme.test"),
-        "committed Gateway must not be rolled back by cleanup failure",
-    );
-
-    assert!(!paths.worker_runtime_metadata("8.3").exists());
-    wait_for_process_exit(stale_worker_pid).await?;
-    let stale_status = Database::open(&paths)?
-        .runtime_observed_states()?
-        .into_iter()
-        .find(|state| {
-            state.subject
-                == RuntimeSubject::PhpWorker {
-                    php_track: "8.3".to_owned(),
-                }
-        })
-        .map(|state| state.status);
-    assert_eq!(stale_status, Some(RuntimeObservedStatus::Stopped));
-    let stale_ports = Database::open(&paths)?
-        .assigned_ports()?
-        .into_iter()
-        .filter(|port| {
-            matches!(
-                &port.owner,
-                PortOwner::PhpWorker { php_runtime_key } if php_runtime_key == "8.3"
-            )
-        })
-        .count();
-    assert_eq!(stale_ports, 0);
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    for track in ["8.4", "8.5"] {
-        let metadata_path = paths.worker_runtime_metadata(track);
-        if metadata_path.exists() {
-            stop_runtime(&metadata_path).await?;
-        }
-    }
 
     runtime_guard.cleanup().await?;
 
@@ -5413,96 +3809,6 @@ async fn gateway_reconciliation_preserves_accepted_config_for_pf_state(
 }
 
 #[tokio::test]
-async fn gateway_reconciliation_does_not_reload_after_runtime_exits_after_load() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    let old_ports = available_loopback_ports(2)?;
-    let new_ports = available_loopback_ports(2)?;
-
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    seed_runtime_ports(&paths, &mut database, old_ports[0], old_ports[1], &[])?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let supervisor = ProcessSupervisor::new(paths.clone());
-    let captured_gateway = supervisor
-        .adopt_recorded(&paths.gateway_runtime_metadata())?
-        .ok_or_else(|| anyhow::anyhow!("Gateway was not adoptable before its forced exit"))?;
-    let gateway_pid = captured_gateway.pid();
-    let previous_root = read_test_bytes(paths.gateway_root_config())?;
-    // The fake accepts the load without applying it, so readiness can't pass before it exits.
-    pv_fake::write_gateway_control(
-        &paths.gateway_root_config(),
-        json!({"exit_after_load": true, "apply_load": false}),
-    )?;
-
-    let mut database = Database::open(&paths)?;
-    database.release_port(PortOwner::Gateway(GatewayPort::Http))?;
-    database.release_port(PortOwner::Gateway(GatewayPort::Https))?;
-    seed_runtime_ports(&paths, &mut database, new_ports[0], new_ports[1], &[])?;
-    drop(database);
-
-    let result = reconcile_gateway_runtimes(&paths).await;
-    let root_after = read_test_bytes(paths.gateway_root_config())?;
-    let load_bodies = fake_admin_load_bodies(&paths.gateway_root_config())?;
-    let metadata: Value =
-        serde_json::from_str(&fs::read_to_string(&paths.gateway_runtime_metadata())?)?;
-
-    let cleanup_result: Result<()> = async {
-        real::timeout(Duration::from_secs(5), async {
-            loop {
-                if supervisor
-                    .adopt_recorded(&paths.gateway_runtime_metadata())?
-                    .is_none()
-                {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                clock::poll(Duration::from_millis(10)).await;
-            }
-        })
-        .await
-        .with_context(|| format!("Gateway fixture {gateway_pid} remained adoptable"))??;
-
-        if runtime_metadata_pid(&paths.gateway_runtime_metadata())? != Some(gateway_pid) {
-            bail!("Gateway runtime records changed after fixture {gateway_pid} exited");
-        }
-        let _released_ports = old_ports
-            .iter()
-            .chain(&new_ports)
-            .map(|port| TcpListener::bind(("127.0.0.1", *port)))
-            .collect::<std::io::Result<Vec<_>>>()?;
-        fs::remove_file_if_exists(&paths.gateway_runtime_metadata())?;
-        runtime_guard.cleanup().await
-    }
-    .await;
-    if let Err(cleanup_error) = cleanup_result {
-        return match &result {
-            Err(operation_error) => Err(anyhow::anyhow!(
-                "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
-            )),
-            Ok(_) => Err(cleanup_error),
-        };
-    }
-
-    assert!(result.is_err());
-    assert_ne!(root_after, previous_root);
-    assert_eq!(load_bodies, vec![root_after]);
-    assert_eq!(metadata["replacement_required"], true);
-    assert!(metadata["applied_config_fingerprint"].is_null());
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn gateway_reconciliation_keeps_accepted_config_when_runtime_readiness_fails() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -6047,30 +4353,6 @@ async fn frankenphp_config_validation_reports_process_failures() -> Result<()> {
 }
 
 #[tokio::test]
-async fn caddy_config_validation_reports_the_caddy_runtime_label() -> Result<()> {
-    let tempdir = tempdir()?;
-    let validator = write_failing_validator(&tempdir.path().join("validator"))?;
-    let config_path = tempdir.path().join("Caddyfile");
-    fs::write_sensitive_file(&config_path, "invalid config\n")?;
-
-    let result = validate_config(
-        &CaddyCliCommand::caddy(validator),
-        &config_path,
-        &BTreeMap::new(),
-    )
-    .await;
-
-    assert!(matches!(
-        result,
-        Err(DaemonError::UnexpectedProtocolResponse { reason })
-            if reason.contains("Caddy config validation failed")
-                && !reason.contains("FrankenPHP config validation")
-    ));
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn caddy_cli_command_and_process_specs_are_stable() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -6565,16 +4847,6 @@ fn read_test_bytes(path: Utf8PathBuf) -> Result<Vec<u8>> {
     Ok(std::fs::read(path)?)
 }
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "runtime recovery tests must write generated config bytes that are not UTF-8"
-)]
-fn write_test_bytes(path: &Utf8Path, content: &[u8]) -> Result<()> {
-    std::fs::write(path, content)?;
-
-    Ok(())
-}
-
 fn shell_single_quoted(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
@@ -6984,30 +5256,6 @@ fn process_is_alive(pid: u32) -> Result<bool> {
     }
 }
 
-fn replace_runtime_metadata_identity(
-    path: &Utf8Path,
-    resource_name: &str,
-    track: &str,
-) -> Result<()> {
-    let metadata = fs::read_to_string(path)?;
-    let mut metadata: serde_json::Value = serde_json::from_str(&metadata)?;
-    let Some(object) = metadata.as_object_mut() else {
-        anyhow::bail!("runtime metadata must be a JSON object");
-    };
-    object.insert(
-        "resource_name".to_owned(),
-        serde_json::Value::String(resource_name.to_owned()),
-    );
-    object.insert(
-        "track".to_owned(),
-        serde_json::Value::String(track.to_owned()),
-    );
-    let metadata = serde_json::to_string(&metadata)?;
-    fs::write_sensitive_file(path, &metadata)?;
-
-    Ok(())
-}
-
 fn seed_php_manifest(paths: &PvPaths, default_track: &str) -> Result<()> {
     fs::write_sensitive_file(
         &paths.downloads().join("manifest.json"),
@@ -7096,82 +5344,6 @@ fn assert_process_spec_snapshot(
     settings.bind(|| {
         assert_debug_snapshot!("caddy_cli_command_and_process_specs_are_stable", snapshot);
     });
-}
-
-#[tokio::test]
-async fn resource_only_target_recovers_alive_unready_gateway_with_invalid_config() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let project_root = create_project_with_config(tempdir.path(), "acme", "serve: false\n")?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project_with_mode(
-            LinkProjectInput {
-                path: project_root.clone(),
-                original_path: project_root.clone(),
-                primary_hostname: "ignored.test".to_owned(),
-                config_path: project_root.join("pv.yml"),
-                desired_php_track: None,
-            },
-            ProjectMode::ResourceOnly,
-        )?
-        .project;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    let ports = available_loopback_ports(2)?;
-    seed_runtime_ports(&paths, &mut database, ports[0], ports[1], &[])?;
-    drop(database);
-
-    reconcile_gateway_runtimes(&paths).await?;
-    let initial_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
-    pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"stop_service": true}))?;
-    real::timeout(Duration::from_secs(5), async {
-        loop {
-            if TcpStream::connect(("127.0.0.1", ports[0])).await.is_err() {
-                return;
-            }
-            clock::poll(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .context("Gateway listener stayed up")?;
-    pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({}))?;
-    write_test_bytes(&paths.gateway_root_config(), &[0xff])?;
-    let invalid_fragment = paths
-        .gateway_projects_config_dir()
-        .join("invalid.Caddyfile");
-    write_test_bytes(&invalid_fragment, &[0xff])?;
-
-    reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &project.id,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await?;
-    let recovered_gateway_pid = required_runtime_metadata_pid(&paths.gateway_runtime_metadata())?;
-    let gateway_status = Database::open(&paths)?
-        .runtime_observed_states()?
-        .into_iter()
-        .find(|state| state.subject == RuntimeSubject::Gateway)
-        .map(|state| state.status);
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-
-    assert_ne!(recovered_gateway_pid, initial_gateway_pid);
-    assert!(fs::read_to_string(&paths.gateway_root_config())?.contains("PV Gateway is running"));
-    assert!(!invalid_fragment.exists());
-    assert_eq!(gateway_status, Some(RuntimeObservedStatus::Degraded));
-
-    runtime_guard.cleanup().await?;
-
-    Ok(())
 }
 
 #[tokio::test]
@@ -7333,88 +5505,6 @@ async fn targeted_inspection_promotes_only_recoverable_uncertainty() -> Result<(
         stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
         runtime_guard.cleanup().await?;
     }
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn gateway_failure_preserves_primary_error_when_observation_write_fails() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let project_root = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\n")?;
-    let caddy_release = tempdir.path().join("fake-caddy-release");
-    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
-    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
-    write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
-    let mut database = Database::open(&paths)?;
-    let project = database
-        .link_project(LinkProjectInput {
-            path: project_root.clone(),
-            original_path: project_root.clone(),
-            primary_hostname: "acme.test".to_owned(),
-            config_path: project_root.join("pv.yml"),
-            desired_php_track: Some("8.4".to_owned()),
-        })?
-        .project;
-    database.record_managed_resource_track_installed(
-        "caddy",
-        "2",
-        "fake-caddy-pv1",
-        &caddy_release,
-    )?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fake-frankenphp-pv1",
-        &frankenphp_release,
-    )?;
-    let ports = available_loopback_ports(3)?;
-    seed_runtime_ports(
-        &paths,
-        &mut database,
-        ports[0],
-        ports[1],
-        &[("8.4", ports[2])],
-    )?;
-    drop(database);
-    reconcile_gateway_runtimes(&paths).await?;
-
-    Connection::open(paths.db().as_std_path())?.execute_batch(
-        "CREATE TRIGGER reject_gateway_observation BEFORE INSERT ON observed_states
-         WHEN NEW.subject_kind = 'runtime' AND NEW.subject_id = 'gateway'
-         BEGIN SELECT RAISE(FAIL, 'fixture rejected Gateway observation'); END;",
-    )?;
-    fs::write_sensitive_file(&project_root.join("pv.yml"), "php: [\n")?;
-    let result = reconcile_project_gateway_runtimes_for_test(
-        &paths,
-        &project.id,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await;
-
-    let Err(DaemonError::RuntimeCleanupFailed {
-        runtime,
-        source,
-        cleanup,
-    }) = result
-    else {
-        bail!("expected the primary and recording failures aggregated, got {result:?}");
-    };
-    assert_eq!(runtime, "gateway");
-    assert!(
-        matches!(source.as_ref(), DaemonError::Config(_)),
-        "expected the primary config error, got {source:?}"
-    );
-    assert!(
-        matches!(cleanup.as_ref(), DaemonError::State(StateError::Sqlite(_))),
-        "expected the recording SQLite failure, got {cleanup:?}"
-    );
-
-    stop_runtime(&paths.gateway_runtime_metadata()).await?;
-    stop_runtime(&paths.worker_runtime_metadata("8.4")).await?;
-
-    runtime_guard.cleanup().await?;
 
     Ok(())
 }

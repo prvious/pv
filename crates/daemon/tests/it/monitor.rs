@@ -339,43 +339,21 @@ async fn monitor_keeps_its_records_when_group_cleanup_is_unproven() -> Result<()
 }
 
 #[tokio::test]
-async fn monitor_death_before_publication_starts_nothing() -> Result<()> {
-    let (harness, fake, started) = kill_monitor_at(MonitorPause::BeforePublication).await?;
+async fn monitor_death_during_startup_starts_nothing_and_is_recovered() -> Result<()> {
+    for point in [
+        MonitorPause::BeforePublication,
+        MonitorPause::BeforePermission,
+        MonitorPause::GateAfterPermission,
+    ] {
+        let (harness, fake, started) = kill_monitor_at(point).await?;
 
-    assert!(
-        matches!(started, Err(DaemonError::MonitorStartupFailed { .. })),
-        "{started:?}"
-    );
-    assert!(!state::fs::path_exists(&harness.monitor_dir()));
-    assert!(fake.events()?.is_empty());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn monitor_death_after_publication_is_recovered() -> Result<()> {
-    let (harness, fake, started) = kill_monitor_at(MonitorPause::BeforePermission).await?;
-
-    assert!(
-        matches!(started, Err(DaemonError::MonitorStartupFailed { .. })),
-        "{started:?}"
-    );
-    assert!(!state::fs::path_exists(&harness.monitor_dir()));
-    assert!(fake.events()?.is_empty());
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn monitor_death_after_permission_is_recovered() -> Result<()> {
-    let (harness, fake, started) = kill_monitor_at(MonitorPause::GateAfterPermission).await?;
-
-    assert!(
-        matches!(started, Err(DaemonError::MonitorStartupFailed { .. })),
-        "{started:?}"
-    );
-    assert!(!state::fs::path_exists(&harness.monitor_dir()));
-    assert!(fake.events()?.is_empty());
+        assert!(
+            matches!(started, Err(DaemonError::MonitorStartupFailed { .. })),
+            "{point:?}: {started:?}"
+        );
+        assert!(!state::fs::path_exists(&harness.monitor_dir()), "{point:?}");
+        assert!(fake.events()?.is_empty(), "{point:?}");
+    }
 
     Ok(())
 }

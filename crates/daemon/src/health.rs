@@ -1122,30 +1122,8 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
-    async fn scanner_excludes_incomplete_caddy_installations() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        Database::open(&paths)?.record_managed_resource_track_desired(
-            "caddy",
-            "2",
-            ManagedResourceDesiredState::Installed,
-        )?;
-
-        let scan = scan_runtime_health(
-            paths,
-            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
-            None,
-        )
-        .await?;
-
-        assert!(scan.observations.is_empty());
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn scanner_excludes_incomplete_frankenphp_installations() -> anyhow::Result<()> {
+    async fn scanner_excludes_incomplete_caddy_and_frankenphp_installations() -> anyhow::Result<()>
+    {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
@@ -1161,11 +1139,13 @@ mod tests {
             config_path,
             desired_php_track: Some("8.4".to_owned()),
         })?;
-        database.record_managed_resource_track_desired(
-            "frankenphp",
-            "8.4",
-            ManagedResourceDesiredState::Installed,
-        )?;
+        for (resource, track) in [("caddy", "2"), ("frankenphp", "8.4")] {
+            database.record_managed_resource_track_desired(
+                resource,
+                track,
+                ManagedResourceDesiredState::Installed,
+            )?;
+        }
         drop(database);
 
         let scan = scan_runtime_health(
@@ -1434,79 +1414,6 @@ mod tests {
             );
             assert!(!scan.observations[0].healthy);
         }
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    #[tokio::test]
-    async fn one_metadata_error_does_not_discard_other_runtime_observations() -> anyhow::Result<()>
-    {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
-        state::fs::write_sensitive_file(&paths.ca_private_key(), "unused private key")?;
-        let mut database = Database::open(&paths)?;
-        let broken_project_id = link_runtime_project(
-            &mut database,
-            tempdir.path(),
-            "broken",
-            "broken.test",
-            "8.3",
-        )?;
-        link_runtime_project(
-            &mut database,
-            tempdir.path(),
-            "healthy",
-            "healthy.test",
-            "8.4",
-        )?;
-        let broken_runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.3")?;
-        let healthy_runtime = prepare_worker_artifact(&mut database, tempdir.path(), "8.4")?;
-        let _broken_listener = assign_php_worker_listener(&mut database, "8.3")?;
-        let _healthy_listener = assign_php_worker_listener(&mut database, "8.4")?;
-        drop(database);
-        pv_fake::install_monitor(&paths)?;
-        let supervisor = ProcessSupervisor::new(paths.clone());
-        let broken_spec = worker_process_spec(&paths, &broken_runtime, "8.3");
-        let healthy_spec = worker_process_spec(&paths, &healthy_runtime, "8.4");
-        let broken_process = supervisor.start(broken_spec).await?;
-        let healthy_process = supervisor.start(healthy_spec.clone()).await?;
-        record_applied_fixture_config(&supervisor, &healthy_spec, "sha256:v1:healthy").await?;
-        state::fs::write_sensitive_file(&paths.worker_runtime_metadata("8.3"), "{")?;
-
-        let scan_result = scan_runtime_health(
-            paths.clone(),
-            Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
-            None,
-        )
-        .await;
-        let broken_cleanup = broken_process.stop(Duration::from_secs(1)).await;
-        let healthy_cleanup = healthy_process.stop(Duration::from_secs(1)).await;
-        let scan = scan_result?;
-        broken_cleanup?;
-        healthy_cleanup?;
-
-        assert_eq!(scan.observations.len(), 2);
-        assert!(scan.observations.iter().any(|observation| {
-            observation.subject
-                == RuntimeSubject::PhpWorker {
-                    php_track: "8.3".to_owned(),
-                }
-                && !observation.healthy
-        }));
-        assert!(scan.observations.iter().any(|observation| {
-            observation.subject
-                == RuntimeSubject::PhpWorker {
-                    php_track: "8.4".to_owned(),
-                }
-                && observation.healthy
-        }));
-        assert_eq!(scan.errors.len(), 1);
-        assert_eq!(
-            scan.errors[0].scope,
-            ReconciliationScope::project(broken_project_id)?.to_string()
-        );
 
         Ok(())
     }

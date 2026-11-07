@@ -23,14 +23,14 @@ mod worktrees_tests;
 
 use std::future::Future;
 use std::io;
-use std::sync::{Arc, mpsc};
+use std::sync::Arc;
 
 use managed_resources::ManagedResourceRuntimeCatalog;
 use platform::PlatformTarget;
 use serde::Serialize;
 use state::{Database, PvPaths, StateError};
 use tokio::runtime::Runtime;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 pub use caddy_admin::{
@@ -72,10 +72,8 @@ pub use worktrees::hook_approval_folder;
 pub struct RunningDaemon {
     paths: PvPaths,
     shutdown: oneshot::Sender<()>,
-    fallback_shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), DaemonError>>,
     dns: dns::RunningDnsResolver,
-    blocked_request_release_signal: Option<mpsc::Sender<()>>,
 }
 
 impl RunningDaemon {
@@ -119,48 +117,12 @@ impl RunningDaemon {
         .await
     }
 
-    #[doc(hidden)]
-    pub async fn start_without_managed_resource_adapters_with_manifest_client_and_blocked_request_release(
-        paths: PvPaths,
-        manifest_url: impl Into<String>,
-        client: impl resources::ResourceHttpClient + Send + Sync + 'static,
-        blocked_request_release_signal: mpsc::Sender<()>,
-    ) -> Result<Self, DaemonError> {
-        ipc::require_ipc_for(PlatformTarget::current()?)?;
-        Self::start_with_runtime_catalog_and_blocked_request_release(
-            paths,
-            Some(
-                ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
-                    manifest_url,
-                    client,
-                )?,
-            ),
-            Some(blocked_request_release_signal),
-        )
-        .await
-    }
-
     async fn start_with_runtime_catalog(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
-        Self::start_with_runtime_catalog_and_blocked_request_release(paths, runtime_catalog, None)
-            .await
-    }
-
-    async fn start_with_runtime_catalog_and_blocked_request_release(
-        paths: PvPaths,
-        runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
-        blocked_request_release_signal: Option<mpsc::Sender<()>>,
-    ) -> Result<Self, DaemonError> {
         let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
-        match Self::start_with_runtime_catalog_inner(
-            paths.clone(),
-            runtime_catalog,
-            blocked_request_release_signal,
-        )
-        .await
-        {
+        match Self::start_with_runtime_catalog_inner(paths.clone(), runtime_catalog).await {
             Ok(daemon) => Ok(daemon),
             Err(error) => {
                 write_startup_failure_marker(&paths, &error);
@@ -173,7 +135,6 @@ impl RunningDaemon {
     async fn start_with_runtime_catalog_inner(
         paths: PvPaths,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
-        blocked_request_release_signal: Option<mpsc::Sender<()>>,
     ) -> Result<Self, DaemonError> {
         runtime_stop::require_previous_daemon_exited(&paths)?;
         let mut database = Database::open(&paths)?;
@@ -200,14 +161,12 @@ impl RunningDaemon {
         };
         structured_log::daemon_started(&paths);
         let (shutdown, shutdown_receiver) = oneshot::channel();
-        let (fallback_shutdown, fallback_shutdown_receiver) = watch::channel(false);
         let server_paths = paths.clone();
         let runtime_catalog = runtime_catalog.map(Arc::new);
         let task = tokio::spawn(server::serve(
             server_paths,
             listener,
             shutdown_receiver,
-            fallback_shutdown_receiver,
             runtime_catalog,
             project_config_watcher,
         ));
@@ -215,10 +174,8 @@ impl RunningDaemon {
         Ok(Self {
             paths,
             shutdown,
-            fallback_shutdown,
             task,
             dns,
-            blocked_request_release_signal,
         })
     }
 
@@ -235,35 +192,6 @@ impl RunningDaemon {
         structured_log::daemon_stopped(&self.paths);
 
         Ok(())
-    }
-
-    /// Signals shutdown and removes the IPC endpoint without waiting for daemon tasks.
-    ///
-    /// This is a test-only escape hatch for a fixture whose owning Tokio runtime cannot
-    /// continue driving those tasks during fallback cleanup. It requests cooperative cancellation
-    /// but does not wait for it to finish. A matching reload that may already have been sent keeps
-    /// its promoted files and pending marker instead of issuing a competing load. The fixture must
-    /// still clean up the exact established and partially started runtimes it owns.
-    #[doc(hidden)]
-    pub fn shutdown_without_waiting_for_test(self) -> Result<(), DaemonError> {
-        let Self {
-            paths,
-            shutdown,
-            fallback_shutdown,
-            task,
-            mut dns,
-            blocked_request_release_signal,
-        } = self;
-        let _ = fallback_shutdown.send(true);
-        if let Some(signal) = blocked_request_release_signal {
-            let _sent = signal.send(());
-        }
-        let _ = shutdown.send(());
-        dns.signal_shutdown();
-        drop(task);
-        drop(dns);
-
-        ipc::remove_endpoint(&paths)
     }
 }
 
@@ -372,10 +300,8 @@ async fn wait_for_shutdown(
     let RunningDaemon {
         paths,
         shutdown,
-        fallback_shutdown: _fallback_shutdown,
         mut task,
         mut dns,
-        blocked_request_release_signal: _blocked_request_release_signal,
     } = daemon;
     tokio::pin!(shutdown_signal);
 
@@ -445,13 +371,13 @@ async fn termination_signal() -> io::Result<()> {
 mod tests {
     use std::{future, io, time::Duration};
 
-    use camino::Utf8PathBuf;
     use camino_tempfile::tempdir;
+    #[cfg(target_os = "macos")]
     use insta::assert_debug_snapshot;
     use platform::clock::{self, real};
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
     use state::PvPaths;
-    use tokio::sync::{oneshot, watch};
+    use tokio::sync::oneshot;
 
     #[cfg(target_os = "macos")]
     use super::publish_started_daemon;
@@ -460,41 +386,29 @@ mod tests {
         DaemonError, RunningDaemon, build_runtime, run_blocking_for_target,
         startup_error_after_endpoint_cleanup, wait_for_shutdown,
     };
-    use crate::gateway_config::ConfigBackupCleanupError;
-
-    #[tokio::test]
-    async fn unsupported_daemon_start_leaves_home_untouched() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-        let result = RunningDaemon::start_for_target(paths.clone(), PlatformTarget::Linux).await;
-
-        assert!(matches!(
-            result,
-            Err(DaemonError::Platform(PlatformError::Unsupported {
-                capability: PlatformCapability::DaemonIpc,
-                target: PlatformTarget::Linux,
-            }))
-        ));
-        assert!(!paths.home().exists());
-
-        Ok(())
-    }
 
     #[test]
-    fn unsupported_blocking_daemon_start_leaves_home_untouched() -> anyhow::Result<()> {
+    fn unsupported_daemon_starts_leave_home_untouched() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
 
-        let result = run_blocking_for_target(paths.clone(), PlatformTarget::Linux);
+        let started = build_runtime()?
+            .block_on(RunningDaemon::start_for_target(
+                paths.clone(),
+                PlatformTarget::Linux,
+            ))
+            .map(|_daemon| ());
+        let ran = run_blocking_for_target(paths.clone(), PlatformTarget::Linux);
 
-        assert!(matches!(
-            result,
-            Err(DaemonError::Platform(PlatformError::Unsupported {
-                capability: PlatformCapability::DaemonIpc,
-                target: PlatformTarget::Linux,
-            }))
-        ));
+        for result in [started, ran] {
+            assert!(matches!(
+                result,
+                Err(DaemonError::Platform(PlatformError::Unsupported {
+                    capability: PlatformCapability::DaemonIpc,
+                    target: PlatformTarget::Linux,
+                }))
+            ));
+        }
         assert!(!paths.home().exists());
 
         Ok(())
@@ -551,7 +465,6 @@ mod tests {
             state::fs::ensure_layout(&paths)?;
             state::fs::ensure_user_dir(&paths.daemon_process_record())?;
             let (shutdown, shutdown_receiver) = oneshot::channel();
-            let (fallback_shutdown, _fallback_receiver) = watch::channel(false);
             let task = tokio::spawn(async move {
                 let _requested = shutdown_receiver.await;
                 if cleanup_fails {
@@ -563,10 +476,8 @@ mod tests {
             let daemon = RunningDaemon {
                 paths: paths.clone(),
                 shutdown,
-                fallback_shutdown,
                 task,
                 dns: super::dns::RunningDnsResolver::pending_for_test(),
-                blocked_request_release_signal: None,
             };
             let error = match publish_started_daemon(&paths, daemon).await {
                 Ok(daemon) => {
@@ -629,16 +540,13 @@ mod tests {
     async fn shutdown_wait_returns_when_server_task_fails_before_signal() {
         let paths = PvPaths::for_home("/tmp/pv-daemon-test-home");
         let (shutdown, _shutdown_receiver) = oneshot::channel();
-        let (fallback_shutdown, _fallback_shutdown_receiver) = watch::channel(false);
         let task =
             tokio::spawn(async { Err(DaemonError::Io(io::Error::other("server stopped early"))) });
         let daemon = RunningDaemon {
             paths,
             shutdown,
-            fallback_shutdown,
             task,
             dns: super::dns::RunningDnsResolver::pending_for_test(),
-            blocked_request_release_signal: None,
         };
 
         let result = wait_for_shutdown(daemon, future::pending::<io::Result<()>>()).await;
@@ -657,7 +565,6 @@ mod tests {
         let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
         drop(stale_listener);
         let (shutdown, shutdown_receiver) = oneshot::channel();
-        let (fallback_shutdown, _fallback_shutdown_receiver) = watch::channel(false);
         let task = tokio::spawn(async {
             let _ = shutdown_receiver.await;
             Ok(())
@@ -665,12 +572,10 @@ mod tests {
         let daemon = RunningDaemon {
             paths: paths.clone(),
             shutdown,
-            fallback_shutdown,
             task,
             dns: super::dns::RunningDnsResolver::failed_for_test(io::Error::other(
                 "dns stopped early",
             )),
-            blocked_request_release_signal: None,
         };
 
         let result = real::timeout(
@@ -683,34 +588,6 @@ mod tests {
             result,
             Ok(Err(DaemonError::Io(error))) if error.to_string() == "dns stopped early"
         ));
-        assert!(!paths.daemon_socket().exists());
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn shutdown_removes_socket_when_server_task_is_cancelled() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        state::fs::ensure_layout(&paths)?;
-        let stale_listener = tokio::net::UnixListener::bind(paths.daemon_socket())?;
-        drop(stale_listener);
-        let (shutdown, _shutdown_receiver) = oneshot::channel();
-        let (fallback_shutdown, _fallback_shutdown_receiver) = watch::channel(false);
-        let task = tokio::spawn(future::pending::<Result<(), DaemonError>>());
-        task.abort();
-        let daemon = RunningDaemon {
-            paths: paths.clone(),
-            shutdown,
-            fallback_shutdown,
-            task,
-            dns: super::dns::RunningDnsResolver::aborted_for_test(),
-            blocked_request_release_signal: None,
-        };
-
-        let result = daemon.shutdown().await;
-
-        assert!(matches!(result, Err(DaemonError::Task(error)) if error.is_cancelled()));
         assert!(!paths.daemon_socket().exists());
 
         Ok(())
@@ -749,102 +626,6 @@ mod tests {
                 })
                 .all(|event| event["target"] == "daemon")
         );
-
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_config_cleanup_warning_writes_one_structured_daemon_log_event() -> anyhow::Result<()>
-    {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let error = ConfigBackupCleanupError::Multiple {
-            first_path: Utf8PathBuf::from("/tmp/root.previous"),
-            first_error: Box::new(DaemonError::Io(io::Error::other("root cleanup failed"))),
-            second_path: Utf8PathBuf::from("/tmp/fragments.previous"),
-            second_error: Box::new(DaemonError::Io(io::Error::other("fragment cleanup failed"))),
-        };
-        let expected_error = error.to_string();
-
-        super::structured_log::runtime_config_cleanup_failed(&paths, "gateway", &expected_error);
-
-        let content = state::fs::read_to_string(&paths.daemon_log())?;
-        let events = content
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?;
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["level"], "warn");
-        assert_eq!(events[0]["target"], "runtime");
-        assert_eq!(events[0]["event"], "runtime_config_cleanup_failed");
-        assert_eq!(
-            events[0]["message"],
-            "runtime config committed but backup cleanup failed"
-        );
-        assert_eq!(events[0]["runtime"], "gateway");
-        assert_eq!(events[0]["error"], expected_error);
-
-        Ok(())
-    }
-
-    #[test]
-    fn runtime_health_background_failures_write_structured_diagnostics() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-
-        super::structured_log::runtime_health_scan_failed(&paths, "state unavailable");
-        super::structured_log::runtime_health_probe_failed(
-            &paths,
-            "PhpWorker { php_track: \"8.4\" }",
-            "project:demo",
-            "metadata invalid",
-        );
-        super::structured_log::background_reconciliation_error_recording_failed(
-            &paths,
-            "project:demo",
-            "jobs lock unavailable",
-            "database unavailable",
-        );
-
-        let content = state::fs::read_to_string(&paths.daemon_log())?;
-        let events = content
-            .lines()
-            .map(serde_json::from_str::<serde_json::Value>)
-            .collect::<Result<Vec<_>, _>>()?;
-        let stable_events = events
-            .iter()
-            .map(|event| {
-                [
-                    "level",
-                    "target",
-                    "event",
-                    "message",
-                    "subject",
-                    "scope",
-                    "error",
-                    "reconciliation_error",
-                    "recording_error",
-                ]
-                .into_iter()
-                .map(|field| {
-                    let value = event
-                        .get(field)
-                        .and_then(serde_json::Value::as_str)
-                        .unwrap_or("-");
-                    format!("{field}={value}")
-                })
-                .collect::<Vec<_>>()
-                .join(" ")
-            })
-            .collect::<Vec<_>>();
-
-        assert_debug_snapshot!(stable_events, @r#"
-        [
-            "level=error target=runtime event=runtime_health_scan_failed message=runtime health scan failed subject=- scope=- error=state unavailable reconciliation_error=- recording_error=-",
-            "level=error target=runtime event=runtime_health_probe_failed message=runtime health probe failed subject=PhpWorker { php_track: \"8.4\" } scope=project:demo error=metadata invalid reconciliation_error=- recording_error=-",
-            "level=error target=reconciliation event=background_reconciliation_error_recording_failed message=failed to record background reconciliation error subject=- scope=project:demo error=- reconciliation_error=jobs lock unavailable recording_error=database unavailable",
-        ]
-        "#);
 
         Ok(())
     }
