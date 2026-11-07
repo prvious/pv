@@ -54,6 +54,7 @@ pub(crate) fn require_capability_for(
                     | PlatformCapability::ProcessContainment
                     | PlatformCapability::DaemonIpc
                     | PlatformCapability::DaemonRegistration
+                    | PlatformCapability::PrivilegedHelper
             ) =>
         {
             Ok(())

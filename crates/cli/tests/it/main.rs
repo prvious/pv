@@ -9,6 +9,7 @@ mod init;
 mod jobs;
 mod linux_daemon_registration;
 mod linux_daemon_registration_system;
+mod linux_helper_system;
 mod list;
 mod logs;
 mod mailpit;
