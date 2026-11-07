@@ -1,0 +1,33 @@
+---
+source: crates/resources/tests/it/managed_resource_commands.rs
+expression: "[(\"install\", install_progress.events()), (\"update\", update_progress.events()),\n(\"php_pair\", php_pair_progress.events()),]"
+---
+[
+    (
+        "install",
+        [
+            "started redis 7.2 7.2.5-pv1 total=126",
+            "advanced redis 7.2 7.2.5-pv1 downloaded=126/126",
+            "finished redis 7.2 7.2.5-pv1 downloaded=126/126",
+        ],
+    ),
+    (
+        "update",
+        [
+            "started redis 7.2 7.2.6-pv1 total=128",
+            "advanced redis 7.2 7.2.6-pv1 downloaded=128/128",
+            "finished redis 7.2 7.2.6-pv1 downloaded=128/128",
+        ],
+    ),
+    (
+        "php_pair",
+        [
+            "started php 8.4 8.4.8-pv1 total=109",
+            "advanced php 8.4 8.4.8-pv1 downloaded=109/109",
+            "finished php 8.4 8.4.8-pv1 downloaded=109/109",
+            "started frankenphp 8.4 8.4.8-pv1 total=116",
+            "advanced frankenphp 8.4 8.4.8-pv1 downloaded=116/116",
+            "finished frankenphp 8.4 8.4.8-pv1 downloaded=116/116",
+        ],
+    ),
+]

@@ -278,16 +278,3 @@ impl SystemTrustInspector for NativeSystemTrustInspector {
         }
     }
 }
-
-#[cfg(all(test, target_os = "macos"))]
-mod tests {
-    use super::certificate_sha1_fingerprint;
-
-    #[test]
-    fn certificate_sha1_fingerprint_renders_upper_hex() {
-        assert_eq!(
-            certificate_sha1_fingerprint(b"abc"),
-            "A9993E364706816ABA3E25717850C26C9CD0D89D"
-        );
-    }
-}

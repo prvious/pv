@@ -59,100 +59,66 @@ fn manifest_cache_refresh_latest_does_not_fall_back_to_cached_manifest() -> Resu
 }
 
 #[test]
-fn manifest_cache_rejects_invalid_manifest_url_even_when_cached_manifest_exists() -> Result<()> {
+fn manifest_cache_rejects_invalid_manifest_url_with_or_without_cached_manifest() -> Result<()> {
     let tempdir = tempdir()?;
     let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
-    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
+    let invalid_url = "http://artifacts.example.test/manifest.json";
 
-    cache.refresh(MANIFEST_URL, &client)?;
+    let without_cache = cache.refresh(invalid_url, &ScriptedClient::new());
+    cache.refresh(
+        MANIFEST_URL,
+        &ScriptedClient::new().with_text(VALID_MANIFEST),
+    )?;
+    let with_cache = cache.refresh(invalid_url, &ScriptedClient::new());
 
-    let result = cache.refresh(
-        "http://artifacts.example.test/manifest.json",
-        &ScriptedClient::new(),
-    );
-
-    assert_debug_snapshot!(result);
+    assert_debug_snapshot!([without_cache, with_cache]);
 
     Ok(())
 }
 
 #[test]
-fn manifest_cache_rejects_invalid_manifest_url_without_cached_manifest() -> Result<()> {
+fn manifest_cache_rejects_bad_latest_responses_even_when_cached_manifest_exists() -> Result<()> {
     let tempdir = tempdir()?;
     let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
-    let result = cache.refresh(
-        "http://artifacts.example.test/manifest.json",
-        &ScriptedClient::new(),
-    );
+    cache.refresh(
+        MANIFEST_URL,
+        &ScriptedClient::new().with_text(VALID_MANIFEST),
+    )?;
 
-    assert_debug_snapshot!(result);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_cache_rejects_http_status_errors_even_when_cached_manifest_exists() -> Result<()> {
-    let tempdir = tempdir()?;
-    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
-    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
-
-    cache.refresh(MANIFEST_URL, &client)?;
-
-    let results = [403, 404, 500]
-        .into_iter()
-        .map(|status_code| {
-            let status_client =
-                ScriptedClient::new().with_text_error(ResourcesError::HttpStatusFailed {
-                    url: MANIFEST_URL.to_string(),
-                    status_code,
-                });
-
-            (status_code, cache.refresh(MANIFEST_URL, &status_client))
+    let status_client = |status_code| {
+        ScriptedClient::new().with_text_error(ResourcesError::HttpStatusFailed {
+            url: MANIFEST_URL.to_string(),
+            status_code,
         })
+    };
+    let cases = [
+        ("status_403", status_client(403)),
+        ("status_404", status_client(404)),
+        ("status_500", status_client(500)),
+        ("invalid_payload", ScriptedClient::new().with_text("{")),
+        (
+            "newer_minimum_pv_version",
+            ScriptedClient::new().with_text(&VALID_MANIFEST.replacen(
+                "\"minimum_pv_version\": \"0.1.0\"",
+                "\"minimum_pv_version\": \"999.0.0\"",
+                1,
+            )),
+        ),
+        (
+            "unsupported_schema_version",
+            ScriptedClient::new().with_text(&VALID_MANIFEST.replacen(
+                "\"schema_version\": 1",
+                "\"schema_version\": 2",
+                1,
+            )),
+        ),
+    ];
+    let results = cases
+        .into_iter()
+        .map(|(name, client)| (name, cache.refresh(MANIFEST_URL, &client)))
         .collect::<Vec<_>>();
 
     assert_debug_snapshot!(results);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_cache_rejects_invalid_latest_payload_even_when_cached_manifest_exists() -> Result<()> {
-    let tempdir = tempdir()?;
-    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
-    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
-
-    cache.refresh(MANIFEST_URL, &client)?;
-
-    let invalid_client = ScriptedClient::new().with_text("{");
-    let result = cache.refresh(MANIFEST_URL, &invalid_client);
-
-    assert_debug_snapshot!(result);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_cache_rejects_incompatible_latest_manifest_even_when_cached_manifest_exists()
--> Result<()> {
-    let tempdir = tempdir()?;
-    let cache = ArtifactManifestCache::new(tempdir.path().join("downloads"));
-    let client = ScriptedClient::new().with_text(VALID_MANIFEST);
-
-    cache.refresh(MANIFEST_URL, &client)?;
-
-    let newer_manifest = VALID_MANIFEST.replacen(
-        "\"minimum_pv_version\": \"0.1.0\"",
-        "\"minimum_pv_version\": \"999.0.0\"",
-        1,
-    );
-    let newer_client = ScriptedClient::new().with_text(&newer_manifest);
-    assert_debug_snapshot!(cache.refresh(MANIFEST_URL, &newer_client));
-
-    let unsupported_manifest =
-        VALID_MANIFEST.replacen("\"schema_version\": 1", "\"schema_version\": 2", 1);
-    let unsupported_client = ScriptedClient::new().with_text(&unsupported_manifest);
-    assert_debug_snapshot!(cache.refresh(MANIFEST_URL, &unsupported_client));
 
     Ok(())
 }
@@ -235,8 +201,7 @@ fn ureq_client_reports_destination_write_failures_separately() -> Result<()> {
             reason,
         }) = result
         else {
-            assert_debug_snapshot!(result);
-            return Ok(());
+            bail!("expected DownloadWriteFailed, got {result:?}");
         };
 
         assert_eq!(error_url, url);
@@ -244,27 +209,6 @@ fn ureq_client_reports_destination_write_failures_separately() -> Result<()> {
 
         Ok(())
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn scripted_client_reports_destination_write_failures_separately() -> Result<()> {
-    let client = ScriptedClient::new().with_bytes(ARTIFACT_BYTES);
-    let mut writer = FailingWriter;
-    let url = "https://artifacts.example.test/redis.tar.gz";
-    let result = client.download(url, &mut writer);
-
-    let Err(ResourcesError::DownloadWriteFailed {
-        url: error_url,
-        reason,
-    }) = result
-    else {
-        bail!("expected DownloadWriteFailed, got {result:?}");
-    };
-
-    assert_eq!(error_url, url);
-    assert_eq!(reason, "disk full");
 
     Ok(())
 }
@@ -280,8 +224,7 @@ fn ureq_client_reports_http_status_responses_separately() -> Result<()> {
             status_code,
         }) = result
         else {
-            assert_debug_snapshot!(result);
-            return Ok(());
+            bail!("expected HttpStatusFailed, got {result:?}");
         };
 
         assert_eq!(error_url, url);
@@ -310,62 +253,59 @@ fn artifact_downloader_deletes_bad_downloads_and_reports_checksum_mismatch() -> 
 }
 
 #[test]
-fn artifact_downloader_retries_transient_download_failures() -> Result<()> {
-    platform::clock::install_fake_for_test()
-        .advance_when_waiting_in_background(&DOWNLOAD_RETRY_BACKOFF);
+fn artifact_downloader_retries_transient_failures_only() -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
-    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
     let artifact = redis_artifact()?;
-    let client = ScriptedClient::new()
-        .with_download_error(ResourcesError::HttpRequestFailed {
-            url: artifact.url().to_string(),
-            reason: "connection reset".to_string(),
+    let cases = [
+        (
+            "connection_reset",
+            true,
+            ResourcesError::HttpRequestFailed {
+                url: artifact.url().to_string(),
+                reason: "connection reset".to_string(),
+            },
+        ),
+        (
+            "status_500",
+            true,
+            ResourcesError::HttpStatusFailed {
+                url: artifact.url().to_string(),
+                status_code: 500,
+            },
+        ),
+        (
+            "status_404",
+            false,
+            ResourcesError::HttpStatusFailed {
+                url: artifact.url().to_string(),
+                status_code: 404,
+            },
+        ),
+    ];
+
+    let results = cases
+        .into_iter()
+        .map(|(name, retries, error)| {
+            if retries {
+                clock.advance_when_waiting_in_background(&DOWNLOAD_RETRY_BACKOFF);
+            }
+            let downloader = ArtifactDownloader::new(tempdir.path().join(name));
+            let client = ScriptedClient::new()
+                .with_download_error(error)
+                .with_bytes(ARTIFACT_BYTES);
+            let result = downloader.download(&artifact, &client).map(|downloaded| {
+                (
+                    downloaded.is_from_cache(),
+                    downloaded.path().file_name().map(str::to_owned),
+                )
+            });
+
+            (name, result)
         })
-        .with_bytes(ARTIFACT_BYTES);
+        .collect::<Vec<_>>();
 
-    let downloaded = downloader.download(&artifact, &client)?;
-
-    assert!(!downloaded.is_from_cache());
-    assert_debug_snapshot!(downloaded.path().file_name());
-
-    Ok(())
-}
-
-#[test]
-fn artifact_downloader_retries_transient_http_status_failures() -> Result<()> {
-    platform::clock::install_fake_for_test()
-        .advance_when_waiting_in_background(&DOWNLOAD_RETRY_BACKOFF);
-    let tempdir = tempdir()?;
-    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
-    let artifact = redis_artifact()?;
-    let client = ScriptedClient::new()
-        .with_download_error(ResourcesError::HttpStatusFailed {
-            url: artifact.url().to_string(),
-            status_code: 500,
-        })
-        .with_bytes(ARTIFACT_BYTES);
-
-    let downloaded = downloader.download(&artifact, &client)?;
-
-    assert!(!downloaded.is_from_cache());
-    assert_debug_snapshot!(downloaded.path().file_name());
-
-    Ok(())
-}
-
-#[test]
-fn artifact_downloader_does_not_retry_permanent_http_status_failures() -> Result<()> {
-    let tempdir = tempdir()?;
-    let downloader = ArtifactDownloader::new(tempdir.path().join("downloads"));
-    let artifact = redis_artifact()?;
-    let client = ScriptedClient::new()
-        .with_download_error(ResourcesError::HttpStatusFailed {
-            url: artifact.url().to_string(),
-            status_code: 404,
-        })
-        .with_bytes(ARTIFACT_BYTES);
-
-    assert_debug_snapshot!(downloader.download(&artifact, &client));
+    assert_debug_snapshot!(results);
 
     Ok(())
 }

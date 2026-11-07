@@ -1,0 +1,135 @@
+---
+source: crates/resources/tests/it/manifest_foundation.rs
+expression: errors
+---
+[
+    InvalidManifestSnapshot {
+        name: "mixed_any_and_exact_platforms",
+        error: InvalidManifest {
+            reason: "artifact version `7.2.5-pv1` in resource `redis` track `7` mixes `any` with exact platforms",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "unsupported_schema_version",
+        error: UnsupportedManifestSchema {
+            schema_version: 2,
+            supported_schema_version: 1,
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "default_track_latest",
+        error: ReservedTrackName {
+            name: "latest",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "track_named_latest",
+        error: ReservedTrackName {
+            name: "latest",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "missing_default_track",
+        error: InvalidManifest {
+            reason: "default track `8` does not exist for resource `redis`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "resource_alias",
+        error: ManifestUsesAlias {
+            alias: "pg",
+            canonical: "postgres",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "unknown_resource",
+        error: UnknownResource {
+            name: "unknown",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "revoked_without_reason",
+        error: InvalidRevocationState {
+            reason: "revoked artifacts require a non-empty revocation_reason",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "reason_without_revoked",
+        error: InvalidRevocationState {
+            reason: "revocation_reason requires revoked=true",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "duplicate_resource",
+        error: InvalidManifest {
+            reason: "duplicate resource `redis`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "duplicate_track",
+        error: InvalidManifest {
+            reason: "duplicate track `7` for resource `redis`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "duplicate_artifact",
+        error: InvalidManifest {
+            reason: "duplicate artifact identity in resource `redis` track `7`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "empty_artifacts",
+        error: InvalidManifest {
+            reason: "resource `redis` track `7` has no artifacts",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "ambiguous_published_at",
+        error: InvalidManifest {
+            reason: "duplicate published_at candidate in resource `redis` track `7`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_checksum",
+        error: InvalidIdentity {
+            kind: "sha256",
+            value: "bad",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "invalid_published_at",
+        error: InvalidPublishedAt {
+            value: "not-a-date",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "unsupported_platform",
+        error: UnsupportedPlatform {
+            platform: "linux-amd64",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "php_extension_empty_path",
+        error: InvalidManifest {
+            reason: "invalid PHP extension path ``",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "php_extension_current_dir",
+        error: InvalidManifest {
+            reason: "invalid PHP extension path `.`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "php_extension_duplicate_name",
+        error: InvalidManifest {
+            reason: "duplicate PHP extension `redis`",
+        },
+    },
+    InvalidManifestSnapshot {
+        name: "php_extensions_on_non_php_artifact",
+        error: InvalidManifest {
+            reason: "php_extensions are only supported on php or frankenphp artifacts",
+        },
+    },
+]

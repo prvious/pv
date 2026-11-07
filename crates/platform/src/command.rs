@@ -211,28 +211,21 @@ mod tests {
     use super::{StdCommand, run_system_command_output, run_system_command_output_with_timeout};
 
     #[test]
-    fn command_failure_includes_non_empty_stderr() -> anyhow::Result<()> {
-        let result = run_system_command_output(
-            "/bin/sh",
-            &["-c", "printf 'pf inspection failed\\n' >&2; exit 7"],
-        );
+    fn command_failure_includes_only_non_empty_stderr() -> anyhow::Result<()> {
+        for (script, expected) in [
+            (
+                "printf 'pf inspection failed\\n' >&2; exit 7",
+                "exit status: 7: pf inspection failed",
+            ),
+            ("exit 9", "exit status: 9"),
+        ] {
+            let result = run_system_command_output("/bin/sh", &["-c", script]);
 
-        let Err(PlatformError::SystemIntegrationCommandStatus { status, .. }) = result else {
-            anyhow::bail!("expected a system integration command status error");
-        };
-        assert_eq!(status, "exit status: 7: pf inspection failed");
-
-        Ok(())
-    }
-
-    #[test]
-    fn command_failure_omits_empty_stderr() -> anyhow::Result<()> {
-        let result = run_system_command_output("/bin/sh", &["-c", "exit 9"]);
-
-        let Err(PlatformError::SystemIntegrationCommandStatus { status, .. }) = result else {
-            anyhow::bail!("expected a system integration command status error");
-        };
-        assert_eq!(status, "exit status: 9");
+            let Err(PlatformError::SystemIntegrationCommandStatus { status, .. }) = result else {
+                anyhow::bail!("expected a system integration command status error for {script}");
+            };
+            assert_eq!(status, expected);
+        }
 
         Ok(())
     }

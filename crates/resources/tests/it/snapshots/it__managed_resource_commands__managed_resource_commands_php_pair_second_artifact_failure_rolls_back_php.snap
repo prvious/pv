@@ -1,8 +1,16 @@
 ---
 source: crates/resources/tests/it/managed_resource_commands.rs
-expression: "(result, state_after_failure, php_release_exists, php_current_target,\nclient.byte_request_count(),)"
+expression: "(prefetched_result, direct_result, direct_client.byte_request_count(),)"
 ---
 (
+    Err(
+        Resources(
+            InvalidArtifactLayout {
+                resource: "frankenphp",
+                reason: "missing executable `bin/frankenphp`",
+            },
+        ),
+    ),
     Err(
         Resources(
             HttpRequestFailed {
@@ -11,8 +19,5 @@ expression: "(result, state_after_failure, php_release_exists, php_current_targe
             },
         ),
     ),
-    [],
-    false,
-    None,
     3,
 )

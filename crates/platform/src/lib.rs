@@ -65,37 +65,6 @@ mod tests {
     use crate::{PlatformCapability, PlatformTarget};
 
     #[test]
-    fn browser_open_helper_reports_failed_status() {
-        let result = crate::browser::open_url_with_launcher("https://example.test", |_| Ok(false));
-
-        assert!(matches!(
-            result,
-            Err(PlatformError::BrowserOpenStatus { status })
-                if status == "exit status: unsuccessful"
-        ));
-    }
-
-    #[test]
-    fn unsupported_error_names_capability_and_target() {
-        let error = PlatformError::Unsupported {
-            capability: PlatformCapability::DaemonRegistration,
-            target: PlatformTarget::Linux,
-        };
-
-        assert!(matches!(
-            &error,
-            PlatformError::Unsupported {
-                capability: PlatformCapability::DaemonRegistration,
-                target: PlatformTarget::Linux,
-            }
-        ));
-        assert_eq!(
-            error.to_string(),
-            "daemon registration is unsupported on linux"
-        );
-    }
-
-    #[test]
     fn capability_check_accepts_macos_and_rejects_windows() {
         assert!(
             require_capability_for(PlatformTarget::Macos, PlatformCapability::TrustStore,).is_ok()

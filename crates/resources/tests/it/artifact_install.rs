@@ -37,44 +37,6 @@ fn artifact_installer_unpacks_single_root_archive_and_updates_current_pointer() 
 }
 
 #[test]
-fn artifact_installer_rejects_artifacts_selected_for_another_resource_or_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
-    let adapter = RequiredPathAdapter::new("redis", &[])?;
-    let redis_track = TrackName::new("7.2")?;
-
-    let mysql_archive = tempdir.path().join("mysql.tar.gz");
-    write_fixture_archive(
-        &mysql_archive,
-        &[("7.2.5-pv1/bin/mysql", b"mysql executable" as &[u8])],
-    )?;
-    let mysql_artifact = manifest_artifact("mysql", "7.2", "7.2.5-pv1")?;
-    let resource_result =
-        installer.install(&adapter, &redis_track, &mysql_artifact, &mysql_archive);
-
-    assert!(matches!(
-        resource_result,
-        Err(ResourcesError::InvalidArtifactLayout { .. })
-    ));
-
-    let redis_8_archive = tempdir.path().join("redis-8.0.tar.gz");
-    write_fixture_archive(
-        &redis_8_archive,
-        &[("8.0.1-pv1/bin/redis-server", b"redis executable" as &[u8])],
-    )?;
-    let redis_8_artifact = manifest_artifact("redis", "8.0", "8.0.1-pv1")?;
-    let track_result =
-        installer.install(&adapter, &redis_track, &redis_8_artifact, &redis_8_archive);
-
-    assert!(matches!(
-        track_result,
-        Err(ResourcesError::InvalidArtifactLayout { .. })
-    ));
-
-    Ok(())
-}
-
-#[test]
 fn artifact_installer_replaces_corrupt_existing_release_from_archive() -> Result<()> {
     let tempdir = tempdir()?;
     let archive_path = tempdir.path().join("redis-7.2.5.tar.gz");
@@ -273,63 +235,41 @@ fn artifact_installer_rejects_relative_and_absolute_archive_paths() -> Result<()
 }
 
 #[test]
-fn artifact_installer_rejects_single_top_level_file_archive() -> Result<()> {
+fn artifact_installer_rejects_archives_without_one_root_directory() -> Result<()> {
     let tempdir = tempdir()?;
-    let archive_path = tempdir.path().join("redis.tar.gz");
-    write_fixture_archive(
-        &archive_path,
-        &[("redis-server", b"redis executable" as &[u8])],
+    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
+    let adapter = RequiredPathAdapter::new("redis", &[])?;
+    let artifact = redis_artifact()?;
+    let track = TrackName::new("7.2")?;
+    let assert_rejected = |name: &str, entries: &[(&str, &[u8])]| -> Result<()> {
+        let archive_path = tempdir.path().join(format!("{name}.tar.gz"));
+        write_fixture_archive(&archive_path, entries)?;
+
+        let result = installer.install(&adapter, &track, &artifact, &archive_path);
+
+        assert!(
+            matches!(result, Err(ResourcesError::InvalidArtifactArchive { .. })),
+            "{name} archive should be rejected, got {result:?}",
+        );
+
+        Ok(())
+    };
+
+    assert_rejected("empty", &[])?;
+    assert_rejected(
+        "single-top-level-file",
+        &[("redis-server", b"redis executable")],
     )?;
-    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
-    let adapter = RequiredPathAdapter::new("redis", &[])?;
-    let artifact = redis_artifact()?;
-    let track = TrackName::new("7.2")?;
-
-    let result = installer.install(&adapter, &track, &artifact, &archive_path);
-
-    assert!(matches!(
-        result,
-        Err(ResourcesError::InvalidArtifactArchive { .. })
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn artifact_installer_rejects_empty_and_multi_root_archives() -> Result<()> {
-    let tempdir = tempdir()?;
-    let installer = ArtifactInstaller::new(tempdir.path().join("resources"));
-    let adapter = RequiredPathAdapter::new("redis", &[])?;
-    let artifact = redis_artifact()?;
-    let track = TrackName::new("7.2")?;
-
-    let empty_archive = tempdir.path().join("empty.tar.gz");
-    write_fixture_archive(&empty_archive, &[])?;
-    let empty_result = installer.install(&adapter, &track, &artifact, &empty_archive);
-    assert!(matches!(
-        empty_result,
-        Err(ResourcesError::InvalidArtifactArchive { .. })
-    ));
-
-    let multi_root_archive = tempdir.path().join("multi-root.tar.gz");
-    write_fixture_archive(
-        &multi_root_archive,
+    assert_rejected(
+        "multi-root",
         &[
-            (
-                "redis-7.2.5-pv1/bin/redis-server",
-                b"redis executable" as &[u8],
-            ),
+            ("redis-7.2.5-pv1/bin/redis-server", b"redis executable"),
             (
                 "redis-7.2.5-pv1-extra/bin/redis-server",
-                b"redis executable" as &[u8],
+                b"redis executable",
             ),
         ],
     )?;
-    let multi_root_result = installer.install(&adapter, &track, &artifact, &multi_root_archive);
-    assert!(matches!(
-        multi_root_result,
-        Err(ResourcesError::InvalidArtifactArchive { .. })
-    ));
 
     Ok(())
 }

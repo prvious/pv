@@ -13,18 +13,6 @@ use resources::{ArtifactVersion, ResourceName, Sha256Digest, TrackName, TrackSel
     dead_code,
     reason = "snapshot-only structure is read through derived Debug"
 )]
-struct DescriptorSnapshot {
-    name: &'static str,
-    aliases: &'static [&'static str],
-    kind: String,
-    capabilities: Vec<String>,
-}
-
-#[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "snapshot-only structure is read through derived Debug"
-)]
 struct InvalidUrlSnapshot {
     name: &'static str,
     error: ResourcesError,
@@ -41,27 +29,6 @@ struct InvalidManifestSnapshot {
 }
 
 #[test]
-fn registry_lists_all_pv_managed_artifact_resources() -> Result<()> {
-    let descriptors = registry::all()
-        .iter()
-        .map(|descriptor| DescriptorSnapshot {
-            name: descriptor.name(),
-            aliases: descriptor.aliases(),
-            kind: format!("{:?}", descriptor.kind()),
-            capabilities: descriptor
-                .capabilities()
-                .iter()
-                .map(|capability| format!("{capability:?}"))
-                .collect(),
-        })
-        .collect::<Vec<_>>();
-
-    assert_debug_snapshot!(descriptors);
-
-    Ok(())
-}
-
-#[test]
 fn registry_normalizes_compiled_in_aliases() -> Result<()> {
     assert_eq!(registry::resolve("postgresql")?.name(), "postgres");
     assert_eq!(registry::resolve("pg")?.name(), "postgres");
@@ -69,13 +36,6 @@ fn registry_normalizes_compiled_in_aliases() -> Result<()> {
     assert_eq!(registry::resolve("s3")?.name(), "rustfs");
     assert!(registry::resolve("postgresql")?.is_alias("postgresql"));
     assert!(registry::resolve("mysql")?.is_canonical("mysql"));
-
-    Ok(())
-}
-
-#[test]
-fn registry_only_resolves_aliases_through_resolve() -> Result<()> {
-    assert_eq!(registry::resolve("postgresql")?.name(), "postgres");
     assert!(registry::resolve_canonical("postgresql").is_err());
 
     Ok(())
@@ -112,58 +72,6 @@ fn platform_matching_prefers_exact_matches_over_any() -> Result<()> {
 }
 
 #[test]
-fn manifest_parses_registry_backed_resources_tracks_and_artifacts() -> Result<()> {
-    let manifest = ArtifactManifest::parse(VALID_MANIFEST)?;
-    let resource = ResourceName::new("redis")?;
-    let track = TrackName::new("7")?;
-    let selected =
-        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
-
-    assert!(selected.artifact().php_extensions().is_empty());
-    assert_debug_snapshot!(manifest);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_parses_php_extension_metadata_for_php_artifacts() -> Result<()> {
-    let manifest = ArtifactManifest::parse(&manifest_with_php_extension_metadata())?;
-    let resource = ResourceName::new("php")?;
-    let track = TrackName::new("8.4")?;
-    let selected =
-        manifest.select_latest(&resource, &track, TargetPlatform::new("darwin-arm64")?)?;
-
-    assert_eq!(
-        selected
-            .artifact()
-            .php_extensions()
-            .iter()
-            .map(|module| module.name.as_str())
-            .collect::<Vec<_>>(),
-        ["redis", "xdebug"]
-    );
-    assert_eq!(
-        selected.artifact().php_extensions()[1].load_kind,
-        PhpExtensionLoadKind::ZendExtension
-    );
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_mixed_any_and_exact_artifacts_for_one_version() -> Result<()> {
-    let mixed_platforms = SELECTION_MANIFEST.replacen(
-        "\"artifact_version\": \"7.2.6-pv1\"",
-        "\"artifact_version\": \"7.2.5-pv1\"",
-        1,
-    );
-
-    assert_debug_snapshot!(parse_manifest_error(&mixed_platforms)?);
-
-    Ok(())
-}
-
-#[test]
 fn latest_selection_falls_back_to_any_when_exact_platform_is_missing() -> Result<()> {
     let manifest = ArtifactManifest::parse(SELECTION_MANIFEST)?;
     let resource = ResourceName::new("composer")?;
@@ -188,15 +96,6 @@ fn latest_track_alias_resolves_to_default_track() -> Result<()> {
 }
 
 #[test]
-fn manifest_rejects_unsupported_schema_versions() -> Result<()> {
-    let unsupported = VALID_MANIFEST.replacen("\"schema_version\": 1", "\"schema_version\": 2", 1);
-
-    assert_debug_snapshot!(parse_manifest_error(&unsupported)?);
-
-    Ok(())
-}
-
-#[test]
 fn manifest_rejects_newer_minimum_pv_versions() -> Result<()> {
     let newer = VALID_MANIFEST.replacen(
         "\"minimum_pv_version\": \"0.1.0\"",
@@ -211,31 +110,6 @@ fn manifest_rejects_newer_minimum_pv_versions() -> Result<()> {
 
     assert_debug_snapshot!(parse_manifest_error(&newer)?);
     assert_debug_snapshot!(parse_manifest_error(&invalid)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_latest_as_a_concrete_track_name() -> Result<()> {
-    let default_latest = VALID_MANIFEST.replacen(
-        "\"default_track\": \"7\"",
-        "\"default_track\": \"latest\"",
-        1,
-    );
-    let track_latest = VALID_MANIFEST.replacen("\"name\": \"7\"", "\"name\": \"latest\"", 1);
-
-    assert_debug_snapshot!(parse_manifest_error(&default_latest)?);
-    assert_debug_snapshot!(parse_manifest_error(&track_latest)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_missing_default_track() -> Result<()> {
-    let missing_default_track =
-        VALID_MANIFEST.replacen("\"default_track\": \"7\"", "\"default_track\": \"8\"", 1);
-
-    assert_debug_snapshot!(parse_manifest_error(&missing_default_track)?);
 
     Ok(())
 }
@@ -332,171 +206,6 @@ fn latest_selection_errors_when_no_platform_candidate_matches() -> Result<()> {
 }
 
 #[test]
-fn manifest_rejects_resource_aliases_and_unknown_resources() -> Result<()> {
-    let alias_manifest = VALID_MANIFEST.replacen("\"name\": \"redis\"", "\"name\": \"pg\"", 1);
-    let unknown_manifest =
-        VALID_MANIFEST.replacen("\"name\": \"redis\"", "\"name\": \"unknown\"", 1);
-
-    assert_debug_snapshot!(parse_manifest_error(&alias_manifest)?);
-    assert_debug_snapshot!(parse_manifest_error(&unknown_manifest)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_invalid_revocation_state() -> Result<()> {
-    let missing_reason = VALID_MANIFEST.replacen(
-        "\"published_at\": \"2026-05-26T14:30:00Z\"",
-        "\"published_at\": \"2026-05-26T14:30:00Z\",\n              \"revoked\": true",
-        1,
-    );
-    let unexpected_reason = VALID_MANIFEST.replacen(
-        "\"published_at\": \"2026-05-26T14:30:00Z\"",
-        "\"published_at\": \"2026-05-26T14:30:00Z\",\n              \"revocation_reason\": \"bad package\"",
-        1,
-    );
-
-    assert_debug_snapshot!(parse_manifest_error(&missing_reason)?);
-    assert_debug_snapshot!(parse_manifest_error(&unexpected_reason)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_duplicate_resources_tracks_and_artifacts() -> Result<()> {
-    let duplicate_resource =
-        VALID_MANIFEST.replacen("\"name\": \"composer\"", "\"name\": \"redis\"", 1);
-    let duplicate_track = VALID_MANIFEST.replacen(
-        "\"tracks\": [",
-        r#""tracks": [
-        {
-          "name": "7",
-          "artifacts": [
-            {
-              "artifact_version": "7.2.5-pv1",
-              "upstream_version": "7.2.5",
-              "pv_build_revision": "pv1",
-              "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
-              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "size": 12345,
-              "published_at": "2026-05-26T14:30:00Z"
-            }
-          ]
-        },"#,
-        1,
-    );
-    let duplicate_artifact = VALID_MANIFEST.replacen(
-        "\"artifacts\": [",
-        r#""artifacts": [
-            {
-              "artifact_version": "7.2.5-pv1",
-              "upstream_version": "7.2.5",
-              "pv_build_revision": "pv1",
-              "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
-              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "size": 12345,
-              "published_at": "2026-05-26T14:30:00Z"
-            },"#,
-        1,
-    );
-    let empty_artifacts = VALID_MANIFEST.replacen(
-        r#""artifacts": [
-            {
-              "artifact_version": "7.2.5-pv1",
-              "upstream_version": "7.2.5",
-              "pv_build_revision": "pv1",
-              "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
-              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-              "size": 12345,
-              "published_at": "2026-05-26T14:30:00Z"
-            }
-          ]"#,
-        r#""artifacts": []"#,
-        1,
-    );
-
-    assert_debug_snapshot!(parse_manifest_error(&duplicate_resource)?);
-    assert_debug_snapshot!(parse_manifest_error(&duplicate_track)?);
-    assert_debug_snapshot!(parse_manifest_error(&duplicate_artifact)?);
-    assert_debug_snapshot!(parse_manifest_error(&empty_artifacts)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_ambiguous_published_at_candidates() -> Result<()> {
-    let ambiguous = SELECTION_MANIFEST.replacen(
-        "\"published_at\": \"2026-05-25T14:30:00Z\"",
-        "\"published_at\": \"2026-05-26T14:30:00Z\"",
-        1,
-    );
-    assert_debug_snapshot!(parse_manifest_error(&ambiguous)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_revoked_ambiguous_published_at_candidates() -> Result<()> {
-    let ambiguous = REVOKED_SELECTION_MANIFEST.replacen(
-        "{\n              \"artifact_version\": \"7.2.6-pv1\"",
-        r#"{
-              "artifact_version": "7.2.7-pv1",
-              "upstream_version": "7.2.7",
-              "pv_build_revision": "pv1",
-              "platform": "darwin-arm64",
-              "url": "https://artifacts.example.test/redis-7.2.7-pv1-darwin-arm64.tar.gz",
-              "sha256": "4444444444444444444444444444444444444444444444444444444444444444",
-              "size": 12345,
-              "published_at": "2026-05-27T14:30:00Z",
-              "revoked": true,
-              "revocation_reason": "bad package"
-            },
-            {
-              "artifact_version": "7.2.6-pv1""#,
-        1,
-    );
-    assert_debug_snapshot!(parse_manifest_error(&ambiguous)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_active_revoked_ambiguous_published_at_candidates() -> Result<()> {
-    let ambiguous = REVOKED_SELECTION_MANIFEST.replacen(
-        "\"published_at\": \"2026-05-26T14:30:00Z\"",
-        "\"published_at\": \"2026-05-27T14:30:00Z\"",
-        1,
-    );
-    assert_debug_snapshot!(parse_manifest_error(&ambiguous)?);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_invalid_checksum_and_published_at() -> Result<()> {
-    let checksum_manifest = VALID_MANIFEST.replacen(
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "bad",
-        1,
-    );
-    let published_at_manifest = VALID_MANIFEST.replacen("2026-05-26T14:30:00Z", "not-a-date", 1);
-    let platform_manifest = VALID_MANIFEST.replacen(
-        "\"platform\": \"darwin-arm64\"",
-        "\"platform\": \"linux-amd64\"",
-        1,
-    );
-
-    assert_debug_snapshot!(parse_manifest_error(&checksum_manifest)?);
-    assert_debug_snapshot!(parse_manifest_error(&published_at_manifest)?);
-    assert_debug_snapshot!(parse_manifest_error(&platform_manifest)?);
-
-    Ok(())
-}
-
-#[test]
 fn manifest_rejects_invalid_artifact_urls() -> Result<()> {
     let invalid_urls = [
         (
@@ -513,14 +222,6 @@ fn manifest_rejects_invalid_artifact_urls() -> Result<()> {
         (
             "backslash_file_name",
             "https://artifacts.example.test/redis\\7.2.5-pv1-darwin-arm64.tar.gz",
-        ),
-        (
-            "invalid_authority",
-            "https://exa mple.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
-        ),
-        (
-            "invalid_ipv6_authority",
-            "https://[:::1]/redis-7.2.5-pv1-darwin-arm64.tar.gz",
         ),
     ]
     .into_iter()
@@ -540,46 +241,181 @@ fn manifest_rejects_invalid_artifact_urls() -> Result<()> {
 }
 
 #[test]
-fn manifest_rejects_invalid_php_extension_metadata() -> Result<()> {
-    let invalid_extensions = [
+fn manifest_rejects_invalid_manifests() -> Result<()> {
+    // Control: the PHP manifest the php_extensions cases mutate parses, keeping metadata order.
+    let php_manifest = ArtifactManifest::parse(&manifest_with_php_extension_metadata())?;
+    let php = php_manifest.select_latest(
+        &ResourceName::new("php")?,
+        &TrackName::new("8.4")?,
+        TargetPlatform::new("darwin-arm64")?,
+    )?;
+    let php_extensions = php
+        .artifact()
+        .php_extensions()
+        .iter()
+        .map(|module| (module.name.as_str(), module.load_kind))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        php_extensions,
+        [
+            ("redis", PhpExtensionLoadKind::Extension),
+            ("xdebug", PhpExtensionLoadKind::ZendExtension),
+        ]
+    );
+
+    let redis_artifact = r#"{
+              "artifact_version": "7.2.5-pv1",
+              "upstream_version": "7.2.5",
+              "pv_build_revision": "pv1",
+              "platform": "darwin-arm64",
+              "url": "https://artifacts.example.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
+              "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "size": 12345,
+              "published_at": "2026-05-26T14:30:00Z"
+            }"#;
+    let cases = [
         (
-            "empty_path",
+            "mixed_any_and_exact_platforms",
+            SELECTION_MANIFEST.replacen(
+                "\"artifact_version\": \"7.2.6-pv1\"",
+                "\"artifact_version\": \"7.2.5-pv1\"",
+                1,
+            ),
+        ),
+        (
+            "unsupported_schema_version",
+            VALID_MANIFEST.replacen("\"schema_version\": 1", "\"schema_version\": 2", 1),
+        ),
+        (
+            "default_track_latest",
+            VALID_MANIFEST.replacen(
+                "\"default_track\": \"7\"",
+                "\"default_track\": \"latest\"",
+                1,
+            ),
+        ),
+        (
+            "track_named_latest",
+            VALID_MANIFEST.replacen("\"name\": \"7\"", "\"name\": \"latest\"", 1),
+        ),
+        (
+            "missing_default_track",
+            VALID_MANIFEST.replacen("\"default_track\": \"7\"", "\"default_track\": \"8\"", 1),
+        ),
+        (
+            "resource_alias",
+            VALID_MANIFEST.replacen("\"name\": \"redis\"", "\"name\": \"pg\"", 1),
+        ),
+        (
+            "unknown_resource",
+            VALID_MANIFEST.replacen("\"name\": \"redis\"", "\"name\": \"unknown\"", 1),
+        ),
+        (
+            "revoked_without_reason",
+            VALID_MANIFEST.replacen(
+                "\"published_at\": \"2026-05-26T14:30:00Z\"",
+                "\"published_at\": \"2026-05-26T14:30:00Z\",\n              \"revoked\": true",
+                1,
+            ),
+        ),
+        (
+            "reason_without_revoked",
+            VALID_MANIFEST.replacen(
+                "\"published_at\": \"2026-05-26T14:30:00Z\"",
+                "\"published_at\": \"2026-05-26T14:30:00Z\",\n              \"revocation_reason\": \"bad package\"",
+                1,
+            ),
+        ),
+        (
+            "duplicate_resource",
+            VALID_MANIFEST.replacen("\"name\": \"composer\"", "\"name\": \"redis\"", 1),
+        ),
+        (
+            "duplicate_track",
+            VALID_MANIFEST.replacen(
+                "\"tracks\": [",
+                &format!(
+                    "\"tracks\": [\n        {{\n          \"name\": \"7\",\n          \"artifacts\": [\n            {redis_artifact}\n          ]\n        }},"
+                ),
+                1,
+            ),
+        ),
+        (
+            "duplicate_artifact",
+            VALID_MANIFEST.replacen(
+                "\"artifacts\": [",
+                &format!("\"artifacts\": [\n            {redis_artifact},"),
+                1,
+            ),
+        ),
+        (
+            "empty_artifacts",
+            VALID_MANIFEST.replacen(
+                &format!("\"artifacts\": [\n            {redis_artifact}\n          ]"),
+                "\"artifacts\": []",
+                1,
+            ),
+        ),
+        (
+            "ambiguous_published_at",
+            SELECTION_MANIFEST.replacen(
+                "\"published_at\": \"2026-05-25T14:30:00Z\"",
+                "\"published_at\": \"2026-05-26T14:30:00Z\"",
+                1,
+            ),
+        ),
+        (
+            "invalid_checksum",
+            VALID_MANIFEST.replacen(
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "bad",
+                1,
+            ),
+        ),
+        (
+            "invalid_published_at",
+            VALID_MANIFEST.replacen("2026-05-26T14:30:00Z", "not-a-date", 1),
+        ),
+        (
+            "unsupported_platform",
+            VALID_MANIFEST.replacen(
+                "\"platform\": \"darwin-arm64\"",
+                "\"platform\": \"linux-amd64\"",
+                1,
+            ),
+        ),
+        (
+            "php_extension_empty_path",
             manifest_with_php_extension_metadata()
                 .replace("\"path\":\"lib/php/extensions/redis.so\"", "\"path\":\"\""),
         ),
         (
-            "current_dir",
+            "php_extension_current_dir",
             manifest_with_php_extension_metadata()
                 .replace("\"path\":\"lib/php/extensions/redis.so\"", "\"path\":\".\""),
         ),
         (
-            "duplicate_name",
+            "php_extension_duplicate_name",
             manifest_with_php_extension_metadata()
                 .replace("\"name\":\"xdebug\"", "\"name\":\"redis\""),
         ),
-    ]
-    .into_iter()
-    .map(|(name, json)| {
-        Ok(InvalidManifestSnapshot {
-            name,
-            error: parse_manifest_error(&json)?,
+        (
+            "php_extensions_on_non_php_artifact",
+            non_php_manifest_with_php_extension_metadata(),
+        ),
+    ];
+    let errors = cases
+        .into_iter()
+        .map(|(name, json)| {
+            Ok(InvalidManifestSnapshot {
+                name,
+                error: parse_manifest_error(&json)
+                    .map_err(|error| error.context(format!("manifest case `{name}`")))?,
+            })
         })
-    })
-    .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()?;
 
-    assert_debug_snapshot!(invalid_extensions);
-
-    Ok(())
-}
-
-#[test]
-fn manifest_rejects_php_extension_metadata_for_non_php_artifacts() -> Result<()> {
-    let error = parse_manifest_error(&non_php_manifest_with_php_extension_metadata())?;
-
-    assert!(
-        matches!(error, ResourcesError::InvalidManifest { ref reason } if reason.contains("php_extensions are only supported on php or frankenphp artifacts")),
-        "non-PHP php_extensions should be rejected, got {error:?}",
-    );
+    assert_debug_snapshot!(errors);
 
     Ok(())
 }

@@ -3,31 +3,31 @@ source: crates/self-update/tests/app_update_manifest.rs
 expression: errors
 ---
 [
-    InvalidManifestSnapshot {
-        name: "unsupported_schema",
-        error: UnsupportedManifestSchema {
+    (
+        "unsupported_schema",
+        UnsupportedManifestSchema {
             schema_version: 3,
             supported_schema_version: 2,
         },
-    },
-    InvalidManifestSnapshot {
-        name: "preview_channel",
-        error: UnsupportedChannel {
+    ),
+    (
+        "preview_channel",
+        UnsupportedChannel {
             channel: "preview",
         },
-    },
-    InvalidManifestSnapshot {
-        name: "invalid_version",
-        error: InvalidIdentity {
+    ),
+    (
+        "invalid_version",
+        InvalidIdentity {
             kind: "version",
             value: "0.02.0",
         },
-    },
-    InvalidManifestSnapshot {
-        name: "newer_minimum",
-        error: RequiresNewerPv {
+    ),
+    (
+        "newer_minimum",
+        RequiresNewerPv {
             minimum_pv_version: "999.0.0",
             current_pv_version: "<current-pv-version>",
         },
-    },
+    ),
 ]

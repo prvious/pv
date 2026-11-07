@@ -1,0 +1,50 @@
+---
+source: crates/platform/src/hooks/unix.rs
+expression: outcomes
+---
+[
+    (
+        "cleanup fails after success",
+        Err(
+            CleanupFailed(
+                Custom {
+                    kind: Other,
+                    error: "could not stop group",
+                },
+            ),
+        ),
+    ),
+    (
+        "cleanup fails after command failure",
+        Err(
+            Cleanup {
+                original: CommandFailed {
+                    command: "exit 7",
+                    status: "exit status: 7",
+                },
+                cleanup: Custom {
+                    kind: Other,
+                    error: "could not stop group",
+                },
+            },
+        ),
+    ),
+    (
+        "interrupted, cleanup succeeds",
+        Err(
+            Interrupted,
+        ),
+    ),
+    (
+        "interrupted, cleanup fails",
+        Err(
+            Cleanup {
+                original: Interrupted,
+                cleanup: Custom {
+                    kind: Other,
+                    error: "could not stop group",
+                },
+            },
+        ),
+    ),
+]
