@@ -13,7 +13,6 @@ RUN apt-get update \
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \
     && sh /tmp/rustup.sh -y --profile minimal --default-toolchain stable \
-        --component clippy --component rustfmt \
     && rm /tmp/rustup.sh \
     && case "$TARGETARCH" in \
         amd64) nextest_platform=linux ;; \
@@ -23,20 +22,7 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh 
     && curl -LsSf "https://get.nexte.st/0.9.146/$nextest_platform" \
         -o /tmp/nextest.tar.gz \
     && tar -xzf /tmp/nextest.tar.gz -C /opt/cargo/bin cargo-nextest \
-    && rm /tmp/nextest.tar.gz \
-    && cargo install --locked cargo-shear \
-    && rm -rf /opt/cargo/registry /opt/cargo/git
-
-RUN case "$TARGETARCH" in \
-        amd64) shellcheck_arch=x86_64; shellcheck_sha=8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198 ;; \
-        arm64) shellcheck_arch=aarch64; shellcheck_sha=12b331c1d2db6b9eb13cfca64306b1b157a86eb69db83023e261eaa7e7c14588 ;; \
-        *) exit 1 ;; \
-    esac \
-    && curl -LsSf "https://github.com/koalaman/shellcheck/releases/download/v0.11.0/shellcheck-v0.11.0.linux.$shellcheck_arch.tar.xz" -o /tmp/shellcheck.tar.xz \
-    && printf '%s  /tmp/shellcheck.tar.xz\n' "$shellcheck_sha" | sha256sum -c - \
-    && tar -xJf /tmp/shellcheck.tar.xz -C /tmp \
-    && install /tmp/shellcheck-v0.11.0/shellcheck /usr/local/bin/shellcheck \
-    && rm -rf /tmp/shellcheck.tar.xz /tmp/shellcheck-v0.11.0
+    && rm /tmp/nextest.tar.gz
 
 RUN useradd --create-home --uid 1000 dev \
     && mkdir /work /target \

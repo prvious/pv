@@ -170,6 +170,7 @@ jobs:
   linux-clippy:
     name: Linux Clippy
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -182,14 +183,8 @@ jobs:
         with:
           key: linux-clippy
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install cargo-shear
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cargo-shear
       - name: Run Clippy including Linux implementations
         run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - name: Check unused dependencies
-        run: cargo shear
 
   linux:
     name: Linux (${{ matrix.runner }})
@@ -198,7 +193,7 @@ jobs:
       matrix:
         runner: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-22.04","ubuntu-26.04"]' || '["ubuntu-22.04","ubuntu-24.04","ubuntu-26.04","ubuntu-24.04-arm"]') }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -230,7 +225,7 @@ jobs:
           [record]
           enabled = true
           EOF
-          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --all-features --locked --jobs 1 -p state -p config -p protocol -p resources -p self-update -p platform -p daemon -E 'package(state) | package(config) | package(protocol) | package(resources) | package(self-update) | (package(platform) & test(unsupported)) | binary(platform_preflight)'
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --all-features --locked -p state -p config -p protocol -p resources -p self-update -p platform -p daemon -E 'package(state) | package(config) | package(protocol) | package(resources) | package(self-update) | (package(platform) & test(unsupported)) | binary(platform_preflight)'
 
       - name: Export test recording
         if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}

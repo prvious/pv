@@ -17,11 +17,10 @@ case "$action" in
   up)
     [[ $# -le 1 ]] || usage
     image=${1:-pv-linux-test:$name}
-    mount_source=${worktree//\"/\"\"}
     docker run --detach --name "$container" \
       --privileged --cgroupns=private --env container=docker \
       --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec \
-      --mount "type=bind,\"src=$mount_source\",dst=/src,readonly" "$image" /sbin/init
+      --volume "$worktree:/src:ro" "$image" /sbin/init
     for attempt in {1..30}; do
       if docker exec "$container" test -S /run/dbus/system_bus_socket; then
         break

@@ -229,23 +229,20 @@ Do not add broad Clippy ignores for convenience.
 Build the pinned Ubuntu 22.04 builder on the host's native architecture:
 
 ```shell
-df -h /
 docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
-pv_mount_source=${PWD//\"/\"\"}
-docker run --rm --init --mount "type=bind,\"src=$pv_mount_source\",dst=/src,readonly" \
+docker run --rm --init --volume "$PWD:/src:ro" \
   --mount type=volume,src=pv-linux-target,dst=/target \
   --env CARGO_TARGET_DIR=/target --workdir /src pv-linux-builder \
   cargo nextest run --profile ci --workspace --all-features --locked
 ```
 
-The builder includes Rust, Clippy, rustfmt, nextest 0.9.146, cargo-shear,
-shellcheck and native build tools. It runs as an ordinary user and provides the
-glibc 2.35 baseline. Apple Silicon runs ARM64 locally; amd64 uses native CI.
+The builder includes Rust, nextest 0.9.146 and native build tools. It runs as
+an ordinary user and provides the glibc 2.35 baseline. Apple Silicon runs ARM64
+locally; amd64 uses native CI.
 
 Use a disposable systemd container for system integration:
 
 ```shell
-df -h /
 docker build -f scripts/linux/test.Dockerfile --build-arg BASE=ubuntu:22.04 \
   -t pv-linux-test:ubuntu-22.04 .
 bash scripts/linux/container.sh up ubuntu-22.04
