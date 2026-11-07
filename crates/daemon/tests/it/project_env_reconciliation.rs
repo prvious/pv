@@ -1503,21 +1503,29 @@ async fn run_project_reconciliation(
     let finished_system_jobs = finished_system_job_count(paths)?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
-    wait_for_new_finished_system_job(paths, finished_system_jobs).await?;
-    let lines = request_lines(
-        paths,
-        json!({
-            "protocol_version": daemon::PROTOCOL_VERSION,
-            "command": "run_job",
-            "kind": "reconcile",
-            "scope": format!("project:{}", project.id),
-        }),
-    )
-    .await?;
-
-    daemon.shutdown().await?;
-
-    Ok(lines)
+    let result = async {
+        wait_for_new_finished_system_job(paths, finished_system_jobs).await?;
+        request_lines(
+            paths,
+            json!({
+                "protocol_version": daemon::PROTOCOL_VERSION,
+                "command": "run_job",
+                "kind": "reconcile",
+                "scope": format!("project:{}", project.id),
+            }),
+        )
+        .await
+    }
+    .await;
+    let cleanup = daemon.shutdown().await;
+    match (result, cleanup) {
+        (Err(error), Err(cleanup)) => {
+            Err(error.context(format!("daemon shutdown also failed: {cleanup:#}")))
+        }
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error.into()),
+        (Ok(lines), Ok(())) => Ok(lines),
+    }
 }
 
 async fn wait_for_succeeded_project_job(paths: &PvPaths, project_id: &str) -> Result<JobRecord> {

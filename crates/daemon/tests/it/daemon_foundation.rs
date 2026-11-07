@@ -9,7 +9,7 @@ use insta::{Settings, assert_debug_snapshot};
 use platform::clock::{self, real};
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rusqlite::{Connection, params};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use rustix::process::getpgid;
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::{Value, json};
@@ -27,6 +27,8 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpStream, UdpSocket, UnixListener, UnixStream};
+#[cfg(target_os = "linux")]
+use tokio::task::spawn_blocking;
 
 const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
 const JOB_STATUS_WAIT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -405,7 +407,9 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
                     false
                 }
                 Err(_) => {
-                    real::timeout(Duration::from_secs(5), shutdown).await??;
+                    real::timeout(Duration::from_secs(5), shutdown)
+                        .await
+                        .context("waiting for startup reconciliation during daemon shutdown")??;
                     true
                 }
             }
@@ -538,7 +542,7 @@ fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
     Ok(getpgid(Some(leader))?)
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
     Ok(leader)
 }
@@ -1637,10 +1641,10 @@ fn combine_cleanup_results(
 ) -> Result<()> {
     match (shutdown_result, runtime_cleanup_result) {
         (Ok(()), Ok(())) => Ok(()),
-        (Err(shutdown_error), Ok(())) => Err(anyhow!("daemon shutdown failed: {shutdown_error}")),
+        (Err(shutdown_error), Ok(())) => Err(anyhow!("daemon shutdown failed: {shutdown_error:#}")),
         (Ok(()), Err(cleanup_error)) => Err(cleanup_error),
         (Err(shutdown_error), Err(cleanup_error)) => Err(anyhow!(
-            "daemon shutdown failed: {shutdown_error}; runtime cleanup failed: {cleanup_error}"
+            "daemon shutdown failed: {shutdown_error:#}; runtime cleanup failed: {cleanup_error:#}"
         )),
     }
 }
@@ -1654,7 +1658,7 @@ fn propagate_after_cleanup<T>(
         (Err(operation_error), Ok(())) => Err(operation_error),
         (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
         (Err(operation_error), Err(cleanup_error)) => Err(anyhow!(
-            "operation failed: {operation_error}; fixture cleanup failed: {cleanup_error}"
+            "operation failed: {operation_error:#}; fixture cleanup failed: {cleanup_error:#}"
         )),
     }
 }
@@ -1952,7 +1956,8 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
             .await?;
         let job =
             wait_for_job_scope_status(&paths, &format!("project:{project_id}"), JobStatus::Failed)
-                .await?;
+                .await
+                .context("waiting for the failed health recovery job after advancing time")?;
 
         let recovered_worker_pid = wait_for_seeded_worker(&paths, "8.4", worker_port).await?;
 
@@ -2188,6 +2193,97 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
 
     assert_debug_snapshot!(lines);
 
+    Ok(())
+}
+
+#[tokio::test]
+#[cfg(target_os = "linux")]
+async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
+    let clock = platform::clock::install_fake_for_test();
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    state::fs::ensure_layout(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
+    let pid = std::process::id();
+    let start_identity = platform::inspect_process_start_identity(pid)?
+        .ok_or_else(|| anyhow!("test process has no start identity"))?;
+    let current_boot = platform::current_boot_session_id()?;
+    let previous_boot =
+        platform::BootSessionId::try_from("00000000-0000-0000-0000-000000000001".to_owned())?;
+    assert_ne!(current_boot, previous_boot);
+
+    for (boot_session_id, previous_boot) in [(current_boot, false), (previous_boot, true)] {
+        let value = json!({
+            "pid": pid,
+            "start_identity": start_identity,
+            "boot_session_id": boot_session_id,
+        });
+        let record = serde_json::to_string(&value)?;
+        state::fs::write_sensitive_file(&paths.daemon_process_record(), &record)?;
+        let process: daemon::DaemonProcess = serde_json::from_value(value)?;
+
+        let capture_paths = paths.clone();
+        let captured =
+            spawn_blocking(move || daemon::daemon_process_for_stop(&capture_paths)).await?;
+        let capture_absent = match captured {
+            Ok(None) => true,
+            Err(daemon::DaemonError::RuntimeProcessIdentityChanged { pid: recorded_pid })
+                if recorded_pid == pid =>
+            {
+                false
+            }
+            Err(error) => return Err(error.into()),
+            Ok(Some(_)) => bail!("captured the foreign test process as the daemon"),
+        };
+        let wait = spawn_blocking(move || process.wait_for_exit());
+        if !previous_boot {
+            clock
+                .advance_when_waiting(&daemon::DAEMON_EXIT_GRACE)
+                .await?;
+        }
+        let wait_complete = match wait.await? {
+            Ok(()) => true,
+            Err(daemon::DaemonError::RuntimeCleanupUnproven {
+                pid: recorded_pid, ..
+            }) if recorded_pid == pid => false,
+            Err(error) => return Err(error.into()),
+        };
+        let admitted =
+            match daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone())
+                .await
+            {
+                Ok(daemon) => {
+                    daemon.shutdown().await?;
+                    true
+                }
+                Err(daemon::DaemonError::RuntimeCleanupUnproven {
+                    pid: recorded_pid, ..
+                }) if recorded_pid == pid => false,
+                Err(error) => return Err(error.into()),
+            };
+
+        assert_eq!(
+            state::fs::read_to_string(&paths.daemon_process_record())?,
+            record
+        );
+        assert_eq!(
+            platform::inspect_process_start_identity(pid)?,
+            Some(start_identity)
+        );
+        assert!(!platform::process_is_zombie(pid)?);
+        assert_eq!(
+            admitted, previous_boot,
+            "startup with previous boot={previous_boot}"
+        );
+        assert_eq!(
+            wait_complete, previous_boot,
+            "wait with previous boot={previous_boot}"
+        );
+        assert_eq!(
+            capture_absent, previous_boot,
+            "capture with previous boot={previous_boot}"
+        );
+    }
     Ok(())
 }
 

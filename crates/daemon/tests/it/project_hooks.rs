@@ -1,11 +1,11 @@
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::fs::symlink_metadata;
 use std::future::Future;
 use std::os::unix::fs::PermissionsExt;
 use std::time::Duration;
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::{Utf8TempDir, tempdir};
 use insta::assert_debug_snapshot;
@@ -605,7 +605,9 @@ async fn unlinking_a_source_stops_running_and_queued_hooks_for_its_children() ->
         .collect::<Result<Vec<_>>>()?;
     let daemon = fixture.start().await?;
     shutdown_after(daemon, &fixture.paths, async {
-        eventually(|| Ok((fixture.hook_jobs()?.len() == 6).then_some(()))).await?;
+        eventually(|| Ok((fixture.hook_jobs()?.len() == 6).then_some(())))
+            .await
+            .context("queue all six setup hooks")?;
         eventually(|| {
             Ok((paths
                 .iter()
@@ -614,8 +616,10 @@ async fn unlinking_a_source_stops_running_and_queued_hooks_for_its_children() ->
                 == 4)
                 .then_some(()))
         })
-        .await?;
+        .await
+        .context("start four setup hooks")?;
         Database::open(&fixture.paths)?.unlink_project(&fixture.source.id)?;
+        reconcile(&fixture.paths, "system").await?;
         eventually(|| {
             Ok(fixture
                 .hook_jobs()?
@@ -623,7 +627,8 @@ async fn unlinking_a_source_stops_running_and_queued_hooks_for_its_children() ->
                 .all(|job| job.status == JobStatus::Failed)
                 .then_some(()))
         })
-        .await?;
+        .await
+        .context("cancel the active and queued setup hooks")?;
         assert!(Database::open(&fixture.paths)?.projects()?.is_empty());
         assert!(
             Database::open(&fixture.paths)?

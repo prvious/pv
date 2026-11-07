@@ -110,13 +110,16 @@ async fn readiness_timeout_reports_the_last_probe_failure() -> Result<()> {
         },
     )?;
 
-    assert!(matches!(
-        result,
-        Err(daemon::DaemonError::ReadinessTimedOut {
-            last_error: Some(reason),
-            ..
-        }) if reason.contains("HTTP readiness returned non-success status")
-    ));
+    assert!(
+        matches!(
+            &result,
+            Err(daemon::DaemonError::ReadinessTimedOut {
+                last_error: Some(reason),
+                ..
+            }) if reason.contains("HTTP readiness returned non-success status")
+        ),
+        "unexpected readiness result: {result:?}"
+    );
     server.abort();
 
     Ok(())
@@ -817,7 +820,7 @@ async fn supervisor_stop_waits_for_process_group_descendants() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn adopted_stop_accepts_runtime_already_stopped_by_its_owner() -> Result<()> {
     let tempdir = tempdir()?;

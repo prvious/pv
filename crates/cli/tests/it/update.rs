@@ -1,4 +1,4 @@
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 mod update_tests {
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;

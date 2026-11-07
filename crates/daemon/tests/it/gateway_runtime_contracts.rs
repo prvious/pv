@@ -2,7 +2,7 @@
 //! supervisor, admin client, and readiness checks. Each contract runs against the `pv-fake` Caddy
 //! and FrankenPHP personas, and against the real artifacts when `PV_E2E_REAL_ARTIFACTS=1`, so the
 //! fakes can't drift from what PV actually depends on.
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::Output;

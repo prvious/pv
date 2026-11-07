@@ -556,7 +556,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use std::sync::Arc;
     use std::time::Duration;
 
@@ -577,24 +577,24 @@ mod tests {
     use tokio::io::duplex;
     use tokio::sync::watch;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use super::enqueue_runtime_recovery_job;
     use super::{
         REQUEST_LINE_TIMEOUT, handle_startup_task_result, read_request_line,
         run_debounced_reconciliation_job,
     };
     use crate::health::collect_project_tls_health_scopes;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use crate::health::{RuntimeRecoveryBackoff, scan_runtime_health};
     use crate::jobs::BackgroundReconciliationError;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use crate::managed_resources::ManagedResourceRuntimeCatalog;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use crate::reconciliation::EnqueueResult;
     use crate::reconciliation::{ReconciliationQueue, ReconciliationScope};
     use protocol::transport;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn runtime_recovery_backoff_counts_only_new_queue_jobs() -> Result<()> {
         let tempdir = tempdir()?;

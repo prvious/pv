@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, Write as _};

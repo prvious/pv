@@ -47,7 +47,16 @@ pub(crate) fn require_capability_for(
 ) -> Result<(), PlatformError> {
     match target {
         PlatformTarget::Macos => Ok(()),
-        PlatformTarget::Linux if capability == PlatformCapability::ProcessInspection => Ok(()),
+        PlatformTarget::Linux
+            if matches!(
+                capability,
+                PlatformCapability::ProcessInspection
+                    | PlatformCapability::ProcessContainment
+                    | PlatformCapability::DaemonIpc
+            ) =>
+        {
+            Ok(())
+        }
         PlatformTarget::Linux | PlatformTarget::Windows => {
             Err(PlatformError::Unsupported { capability, target })
         }

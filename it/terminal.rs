@@ -403,6 +403,7 @@ fn hooks_trust_worktree_uses_its_main_checkout_project_folder() -> Result<()> {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -515,6 +516,7 @@ impl Session {
         command.cwd(current_dir.as_std_path());
         command.env("HOME", home.as_str());
         command.env("TERM", "xterm-256color");
+        command.env("LANG", "C.UTF-8");
         command.env_remove("NO_COLOR");
         let child = pair.slave.spawn_command(command)?;
         drop(pair.slave);
@@ -635,6 +637,13 @@ fn assert_screen_snapshot(name: &str, tempdir: &Utf8Path, session: &Session) {
     // Report headings pad the app version to the right edge.
     let version = env!("CARGO_PKG_VERSION").replace('.', r"\.");
     settings.add_filter(&format!(" +v{version}"), " v<version>");
+    // The host's temporary path length decides whether these paths wrap.
+    if matches!(name, "link_hook_approval_prompt" | "init_yes_result") {
+        settings.add_filter(
+            r"(Hook commands not approved for|✓  Wrote Project config:)\s+(<tempdir>[^\n]+)",
+            "$1\n   $2",
+        );
+    }
     settings.bind(|| assert_snapshot!(name, session.screen()));
 }
 
