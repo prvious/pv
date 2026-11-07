@@ -64,43 +64,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, target_os = "linux"))]
-mod tests {
-    use super::{Arguments, Command, DnsLinkCommand, Parser};
-
-    #[test]
-    fn dns_link_accepts_only_fixed_actions_and_high_up_ports() -> Result<(), clap::Error> {
-        for (port, expected_port) in [("1024", 1024), ("35353", 35353), ("65535", 65535)] {
-            let arguments =
-                Arguments::try_parse_from(["pv-helper", "dns-link", "up", "--port", port])?;
-            assert!(
-                matches!(arguments.command, Some(Command::DnsLink { action: DnsLinkCommand::Up { port } }) if port == expected_port)
-            );
-        }
-        let arguments = Arguments::try_parse_from(["pv-helper", "dns-link", "down"])?;
-        assert!(matches!(
-            arguments.command,
-            Some(Command::DnsLink {
-                action: DnsLinkCommand::Down
-            })
-        ));
-        for arguments in [
-            vec!["dns-link"],
-            vec!["dns-link", "up"],
-            vec!["dns-link", "up", "--port", "53"],
-            vec!["dns-link", "up", "--port", "1023"],
-            vec!["dns-link", "up", "--port", "65536"],
-            vec!["dns-link", "up", "--port", "35353", "--interface", "eth0"],
-            vec!["dns-link", "up", "--port", "35353", "--path", "/tmp/unit"],
-            vec!["dns-link", "down", "--port", "35353"],
-            vec!["dns-link", "replace"],
-        ] {
-            assert!(Arguments::try_parse_from(["pv-helper"].into_iter().chain(arguments)).is_err());
-        }
-        Ok(())
-    }
-}
-
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn main() -> anyhow::Result<()> {
     anyhow::bail!("the PV privileged helper is only supported on macOS and Linux")

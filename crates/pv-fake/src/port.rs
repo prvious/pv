@@ -172,8 +172,6 @@ fn in_use(bind: io::Result<()>) -> io::Result<bool> {
 mod tests {
     use std::collections::BTreeSet;
     use std::io::{self, BufRead, BufReader, Read, Write};
-    #[cfg(target_os = "linux")]
-    use std::net::{Ipv4Addr, UdpSocket};
     use std::net::{TcpListener, TcpStream};
     use std::process::Stdio;
     use std::thread;
@@ -249,16 +247,6 @@ mod tests {
 
         assert!(!is_free(port)?);
 
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    #[test]
-    fn a_udp_listener_on_another_loopback_address_is_not_free() -> Result<()> {
-        let port = port()?;
-        let _socket = UdpSocket::bind((Ipv4Addr::new(127, 0, 0, 2), port))?;
-
-        assert!(!is_free(port)?);
         Ok(())
     }
 

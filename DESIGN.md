@@ -142,7 +142,7 @@ If `/etc/resolver/test` already exists and is not PV-owned, `pv dns:install` and
 
 PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed by PV`. PV only repairs or removes the resolver file when the ownership marker is present.
 
-On Linux, PV owns `pv-dns.service` and the dummy link `pv0`, marked `Managed by PV`, and routes `~test` through systemd-resolved to PV's high DNS port. PV checks the unit marker, loaded fragment and link ownership before mutations, and refuses competing `.test` domains. Removal preserves foreign configuration and keeps the DNS port reserved until full uninstall. Linux listens on `127.0.0.2` because systemd-resolved gives an address-less `pv0` no DNS scope and `127.0.0.1` belongs to `lo`; prepared files carry only the port through the existing localhost format.
+On Linux, PV owns `pv-dns.service` and the dummy link `pv0`, marked `Managed by PV`, and routes `~test` through systemd-resolved to PV's high DNS port. PV checks the unit marker, loaded fragment and link ownership before mutations, as macOS checks its resolver file's marker, and refuses another link that claims the `test` domain itself, as macOS refuses a foreign `/etc/resolver/test`. Subdomains such as `corp.test` on other links don't conflict. Removal preserves foreign configuration and keeps the DNS port reserved until full uninstall. Linux listens on `127.0.0.2` because systemd-resolved gives an address-less `pv0` no DNS scope and `127.0.0.1` belongs to `lo`; prepared files carry only the port through the existing localhost format.
 
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 

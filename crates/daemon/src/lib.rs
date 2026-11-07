@@ -449,11 +449,7 @@ mod tests {
                     }
                 )
         ));
-        let address = if cfg!(target_os = "linux") {
-            "127.0.0.2"
-        } else {
-            "127.0.0.1"
-        };
+        let address = platform::DNS_LISTEN_ADDRESS;
         assert!(
             message.starts_with(&format!(
                 "DNS resolver failed to bind UDP on {address}:5353"

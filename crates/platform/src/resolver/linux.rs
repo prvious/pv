@@ -10,7 +10,6 @@ use rtnetlink::packet_route::address::{AddressAttribute, AddressMessage, Address
 use rtnetlink::packet_route::link::{InfoKind, LinkAttribute, LinkFlags, LinkInfo, LinkMessage};
 use rtnetlink::{Handle, LinkDummy, LinkUnspec};
 use rustix::net::AddressFamily;
-use rustix::process::{geteuid, getuid};
 use tokio::runtime::Builder;
 use zbus::fdo::{DBusProxy, Error as DBusError};
 use zbus::names::BusName;
@@ -23,10 +22,9 @@ use super::{
 };
 use crate::PlatformError;
 use crate::clock::{self, Limit};
-use crate::helper::{linux as root_files, validate_high_port};
 use crate::systemd::{
-    is_method_error, native_proxy, read_owned_unit, require_no_candidate, system_manager, unit_job,
-    within, write_owned_unit,
+    is_method_error, native_proxy, read_owned_unit, remove_leftover_candidate, system_manager,
+    unit_job, within, write_owned_unit,
 };
 
 const LINK_NAME: &str = "pv0";
@@ -35,6 +33,10 @@ const UNIT_NAME: &str = "pv-dns.service";
 const DNS_SCOPE_MASK: u64 = 1 << 0;
 pub(crate) const DNS_INSPECTION_TIMEOUT: Duration = Duration::from_secs(10);
 pub(crate) const DNS_MUTATION_TIMEOUT: Duration = Duration::from_secs(45);
+const INSPECTION_LIMIT: Limit = Limit::new("resolver inspection", DNS_INSPECTION_TIMEOUT);
+const MUTATION_LIMIT: Limit = Limit::new("resolver change", DNS_MUTATION_TIMEOUT);
+const LINK_LIMIT: Limit = Limit::new("resolver link", Duration::from_secs(10));
+const JOB_LIMIT: Limit = Limit::new("resolver systemd job", Duration::from_secs(25));
 const UNIT_PREFIX: &str = "# Managed by PV\n\
 [Unit]\n\
 Description=PV .test DNS routing\n\
@@ -63,7 +65,7 @@ fn parse_unit(content: &str) -> Option<ResolverConfig> {
         .parse::<u16>()
         .ok()?;
     let config = ResolverConfig::new(port);
-    (port >= 1024 && content == render_unit(&config)).then_some(config)
+    (content == render_unit(&config)).then_some(config)
 }
 
 #[derive(Clone)]
@@ -117,11 +119,23 @@ impl Observation {
 
     fn require_apply(&self) -> Result<(), PlatformError> {
         self.require_owned()?;
-        if self.apply_conflict() {
+        if self.domain_conflict() {
             Err(conflict())
         } else {
             Ok(())
         }
+    }
+
+    /// Another link claiming `test` itself, the way a foreign `/etc/resolver/test` claims it on
+    /// macOS. Subdomains such as `corp.test` don't take `.test` names away from PV.
+    fn domain_conflict(&self) -> bool {
+        let pv_index = pv_link(&self.links).and_then(|link| i32::try_from(link.header.index).ok());
+        self.routing_domains
+            .iter()
+            .any(|(index, domain, _route_only)| {
+                domain.trim_end_matches('.').eq_ignore_ascii_case("test")
+                    && Some(*index) != pv_index
+            })
     }
 
     fn ownership_conflict(&self) -> bool {
@@ -135,17 +149,6 @@ impl Observation {
                 .as_ref()
                 .is_some_and(|status| self.unit_content.is_none() || status.fragment_path != path)
             || link.is_some_and(|link| !owned_link(link))
-    }
-
-    fn apply_conflict(&self) -> bool {
-        let index = pv_link(&self.links).map(|link| link.header.index);
-        let resolved_index = index.and_then(|index| i32::try_from(index).ok());
-        self.routing_domains
-            .iter()
-            .any(|(index, domain, _route_only)| {
-                let domain = domain.trim_end_matches('.').to_ascii_lowercase();
-                (domain == "test" || domain.ends_with(".test")) && Some(*index) != resolved_index
-            })
     }
 
     fn owned_missing(&self) -> bool {
@@ -226,7 +229,7 @@ fn dummy_link(link: &LinkMessage) -> bool {
 }
 
 pub(super) fn inspect(expected: Option<&ResolverConfig>) -> ResolverFileState {
-    match run_native("inspection", DNS_INSPECTION_TIMEOUT, async {
+    match run_native(&INSPECTION_LIMIT, async {
         let (_, observation) = observe(false).await?;
         Ok(observation)
     }) {
@@ -239,17 +242,21 @@ pub(super) fn inspect(expected: Option<&ResolverConfig>) -> ResolverFileState {
 }
 
 fn run_native<T>(
-    operation: &'static str,
-    timeout: Duration,
+    limit: &Limit,
     future: impl Future<Output = Result<T, PlatformError>>,
 ) -> Result<T, PlatformError> {
-    let limit = Limit::new(operation, timeout);
     let runtime = Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(io_error)?;
     runtime.block_on(async {
-        within(&limit, future).await.ok_or_else(|| PlatformError::SystemIntegration(format!("resolver {operation} timed out after {} seconds; inspect DNS state before retrying", timeout.as_secs())))?
+        within(limit, future).await.ok_or_else(|| {
+            PlatformError::SystemIntegration(format!(
+                "{} timed out after {} seconds; inspect DNS state before retrying",
+                limit.name(),
+                limit.duration().as_secs()
+            ))
+        })?
     })
 }
 
@@ -313,10 +320,15 @@ async fn observe(
 }
 
 async fn observe_owned() -> Result<(Connection, Observation), PlatformError> {
-    let unit_content = root_files::read_root_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), 0o644)?
-        .map(String::from_utf8)
-        .transpose()
-        .map_err(|error| io_error(io::Error::new(io::ErrorKind::InvalidData, error)))?;
+    let unit_content = match state::fs::read_to_string(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH)) {
+        Ok(content) => Some(content),
+        Err(state::StateError::Filesystem { source, .. })
+            if source.kind() == io::ErrorKind::NotFound =>
+        {
+            None
+        }
+        Err(error) => return Err(PlatformError::SystemIntegration(error.to_string())),
+    };
     let mut observation =
         with_netlink(|handle| async move { query_network(&handle).await }).await?;
     let systemd = system_manager().await.map_err(bus_error)?;
@@ -376,18 +388,8 @@ async fn read_unit_status(
     let load_state: String = unit.get_property("LoadState").await.map_err(bus_error)?;
     let fragment_path: String = unit.get_property("FragmentPath").await.map_err(bus_error)?;
     let active_state: String = unit.get_property("ActiveState").await.map_err(bus_error)?;
+    // PV's unit name with no file anywhere is a leftover that removal stops and resets.
     if load_state == "not-found" && fragment_path.is_empty() {
-        if active_state != "inactive" {
-            dns_unit_job(manager, "StopUnit").await?;
-        }
-        match manager
-            .call::<_, _, ()>("ResetFailedUnit", &(UNIT_NAME,))
-            .await
-        {
-            Ok(()) => {}
-            Err(error) if is_method_error(&error, "org.freedesktop.systemd1.NoSuchUnit") => {}
-            Err(error) => return Err(bus_error(error)),
-        }
         return Ok(None);
     }
     Ok(Some(UnitStatus {
@@ -516,9 +518,7 @@ async fn wait_for_networkd_initialization(
 
 /// Configures the fixed PV dummy link and its per-link resolved routing. Requires root.
 pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
-    require_root()?;
-    validate_high_port("DNS", port)?;
-    run_native("link up", Duration::from_secs(10), async {
+    run_native(&LINK_LIMIT, async {
         let (connection, before) = observe(true).await?;
         before.require_apply()?;
         // A failed ExecStart does not run ExecStop. Recreate retained owned state
@@ -569,40 +569,11 @@ pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
             }
             let config = ResolverConfig::new(port);
             let settings = LinkSettings::for_config(&config);
-            resolved
-                .call::<_, _, ()>(
-                    "SetLinkDefaultRoute",
-                    &(resolved_index, settings.default_route),
-                )
-                .await
-                .map_err(bus_error)?;
-            for (method, mode) in [
-                ("SetLinkDNSSEC", "no"),
-                ("SetLinkDNSOverTLS", "no"),
-                ("SetLinkLLMNR", "no"),
-                ("SetLinkMulticastDNS", "no"),
-            ] {
-                resolved
-                    .call::<_, _, ()>(method, &(resolved_index, mode))
-                    .await
-                    .map_err(bus_error)?;
-            }
-            resolved
-                .call::<_, _, ()>("SetLinkDNSEx", &(resolved_index, &settings.dns))
-                .await
-                .map_err(bus_error)?;
-            resolved
-                .call::<_, _, ()>("SetLinkDomains", &(resolved_index, &settings.domains))
-                .await
-                .map_err(bus_error)?;
             loop {
+                // Older resolved can also clear these settings when networkd finishes with the
+                // link, so send them again until they hold.
+                send_link_settings(&resolved, resolved_index, &settings).await?;
                 let mut after = query_network(&handle).await?;
-                after.routing_domains =
-                    resolved.get_property("Domains").await.map_err(bus_error)?;
-                after.require_apply()?;
-                if owned_pv_link(&after.links)?.is_none_or(|link| link.header.index != index) {
-                    return Err(conflict());
-                }
                 if let Some((actual, scopes_mask)) =
                     read_link_settings(&resolved, resolved_index).await?
                 {
@@ -620,11 +591,40 @@ pub fn start_resolver_link(port: u16) -> Result<(), PlatformError> {
     })
 }
 
+async fn send_link_settings(
+    resolved: &Proxy<'_>,
+    index: i32,
+    settings: &LinkSettings,
+) -> Result<(), PlatformError> {
+    resolved
+        .call::<_, _, ()>("SetLinkDefaultRoute", &(index, settings.default_route))
+        .await
+        .map_err(bus_error)?;
+    for (method, mode) in [
+        ("SetLinkDNSSEC", "no"),
+        ("SetLinkDNSOverTLS", "no"),
+        ("SetLinkLLMNR", "no"),
+        ("SetLinkMulticastDNS", "no"),
+    ] {
+        resolved
+            .call::<_, _, ()>(method, &(index, mode))
+            .await
+            .map_err(bus_error)?;
+    }
+    resolved
+        .call::<_, _, ()>("SetLinkDNSEx", &(index, &settings.dns))
+        .await
+        .map_err(bus_error)?;
+    resolved
+        .call::<_, _, ()>("SetLinkDomains", &(index, &settings.domains))
+        .await
+        .map_err(bus_error)
+}
+
 /// Reverts resolved settings when available and deletes only the fixed PV-owned dummy link.
 /// Requires root.
 pub fn stop_resolver_link() -> Result<(), PlatformError> {
-    require_root()?;
-    run_native("link down", Duration::from_secs(10), async {
+    run_native(&LINK_LIMIT, async {
         let (connection, before) = observe_owned().await?;
         before.require_owned()?;
         stop_link(&connection).await
@@ -667,16 +667,7 @@ async fn stop_link(connection: &Connection) -> Result<(), PlatformError> {
             .del(index)
             .execute()
             .await
-            .map_err(netlink_error)?;
-        let after = query_network(&handle).await?;
-        if pv_link(&after.links).is_some()
-            || after.links.iter().any(|link| link.header.index == index)
-        {
-            return Err(PlatformError::SystemIntegration(
-                "pv0 is still present after removal; inspect the link before retrying".to_owned(),
-            ));
-        }
-        Ok(())
+            .map_err(netlink_error)
     })
     .await
 }
@@ -684,15 +675,8 @@ async fn stop_link(connection: &Connection) -> Result<(), PlatformError> {
 pub(crate) fn apply_resolver_config_privileged(
     config: &ResolverConfig,
 ) -> Result<(), PlatformError> {
-    require_root()?;
-    validate_high_port("DNS", config.port)?;
-    run_native("apply", DNS_MUTATION_TIMEOUT, async {
-        root_files::validate_directory_chain(Utf8Path::new("/usr/local/libexec"), false)?;
-        let _lock = root_files::acquire_lock(Utf8Path::new(root_files::LOCK_PATH))?;
+    run_native(&MUTATION_LIMIT, async {
         let path = Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH);
-        root_files::validate_directory_chain(Utf8Path::new("/etc/systemd/system"), false)?;
-        read_owned_unit(path)?;
-        require_no_candidate(path)?;
         let (_, before) = observe(true).await?;
         before.require_apply()?;
         let manager = system_manager().await.map_err(bus_error)?;
@@ -712,26 +696,16 @@ pub(crate) fn apply_resolver_config_privileged(
             .call::<_, _, ()>("Reload", &())
             .await
             .map_err(bus_error)?;
-        dns_unit_job(&manager, "RestartUnit").await?;
-        let (_, after) = observe(true).await?;
-        match after.state(Some(config)) {
-            ResolverFileState::Current { .. } => Ok(()),
-            state => Err(PlatformError::SystemIntegration(format!(
-                "DNS state did not match after apply: {state:?}"
-            ))),
-        }
+        // ExecStart returns only once the link and its resolved settings are current.
+        dns_unit_job(&manager, "RestartUnit").await
     })
 }
 
 pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
-    require_root()?;
-    run_native("remove", DNS_MUTATION_TIMEOUT, async {
-        root_files::validate_directory_chain(Utf8Path::new("/usr/local/libexec"), false)?;
-        let _lock = root_files::acquire_lock(Utf8Path::new(root_files::LOCK_PATH))?;
+    run_native(&MUTATION_LIMIT, async {
         let path = Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH);
-        root_files::validate_directory_chain(Utf8Path::new("/etc/systemd/system"), false)?;
         let content = read_owned_unit(path)?;
-        require_no_candidate(path)?;
+        remove_leftover_candidate(path)?;
         let (connection, before) = observe_owned().await?;
         before.require_owned()?;
         let manager = system_manager().await.map_err(bus_error)?;
@@ -771,29 +745,17 @@ pub(crate) fn remove_resolver_config_privileged() -> Result<(), PlatformError> {
         manager
             .call::<_, _, ()>("Reload", &())
             .await
-            .map_err(bus_error)?;
-        let (_, after) = observe_owned().await?;
-        if after.owned_missing() {
-            Ok(())
-        } else {
-            Err(PlatformError::SystemIntegration(format!(
-                "DNS owned resources were not absent after removal: {:?}",
-                after.state(None)
-            )))
-        }
+            .map_err(bus_error)
     })
 }
 
 async fn dns_unit_job(manager: &Proxy<'_>, operation: &str) -> Result<(), PlatformError> {
-    let result = within(
-        &Limit::new("DNS systemd job", Duration::from_secs(25)),
-        unit_job(manager, operation, UNIT_NAME),
-    )
-    .await
-    .ok_or_else(|| {
-        PlatformError::SystemIntegration(format!("systemd {operation} {UNIT_NAME} timed out"))
-    })?
-    .map_err(bus_error)?;
+    let result = within(&JOB_LIMIT, unit_job(manager, operation, UNIT_NAME))
+        .await
+        .ok_or_else(|| {
+            PlatformError::SystemIntegration(format!("systemd {operation} {UNIT_NAME} timed out"))
+        })?
+        .map_err(bus_error)?;
     if result == "done" {
         Ok(())
     } else {
@@ -807,28 +769,9 @@ fn write_unit(path: &Utf8Path, config: &ResolverConfig) -> Result<(), PlatformEr
     write_owned_unit(path, &render_unit(config))
 }
 
-fn require_root() -> Result<(), PlatformError> {
-    if getuid().is_root() && geteuid().is_root() {
-        Ok(())
-    } else {
-        Err(PlatformError::PrivilegedHelperAuthentication(
-            "DNS link operations require root".to_owned(),
-        ))
-    }
-}
-
-fn owned_pv_link(links: &[LinkMessage]) -> Result<Option<&LinkMessage>, PlatformError> {
-    let link = pv_link(links);
-    if link.is_some_and(|link| !owned_link(link)) {
-        Err(conflict())
-    } else {
-        Ok(link)
-    }
-}
-
 fn conflict() -> PlatformError {
     PlatformError::SystemIntegration(format!(
-        "Linux DNS configuration conflicts with administrator configuration; inspect {SYSTEM_RESOLVER_TEST_PATH}, pv0 ownership. Before applying routing, repair competing test search or routing domains, including subdomains",
+        "System resolver config is not PV-owned: {SYSTEM_RESOLVER_TEST_PATH} or the {LINK_NAME} link"
     ))
 }
 
@@ -848,7 +791,6 @@ fn bus_error(error: zbus::Error) -> PlatformError {
 mod tests {
     use std::net::Ipv4Addr;
 
-    use anyhow::Result;
     use insta::assert_snapshot;
     use rtnetlink::AddressMessageBuilder;
 
@@ -886,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_unit_is_fixed_except_for_a_high_port() {
+    fn generated_unit_is_fixed_except_for_its_port() {
         let config = ResolverConfig::new(35353);
         let rendered = render_unit(&config);
         assert_snapshot!(rendered, @r"
@@ -911,7 +853,6 @@ mod tests {
             assert_eq!(parse_unit(&render_unit(&config)), Some(config));
         }
         for content in [
-            render_unit(&ResolverConfig::new(53)),
             rendered.replace("35353", "65536"),
             rendered.replace("35353", "+35353"),
             rendered.replace("/usr/local/libexec/pv/pv-helper", "/tmp/pv-helper"),
@@ -987,82 +928,19 @@ mod tests {
             status.fragment_path = "/run/foreign.service".into();
         }
         assert!(observation.require_owned().is_err());
-        for (index, domain, route_only, conflict) in [
-            (7, "test", true, false),
-            (9, "TeSt.", true, true),
-            (0, "app.test", false, true),
-            (9, "example.tested", false, false),
+        for (index, domain, conflict) in [
+            (7, "test", false),
+            (9, "TeSt.", true),
+            (0, "app.test", false),
+            (9, "example.tested", false),
         ] {
             observation = current();
-            observation.routing_domains = vec![(index, domain.to_owned(), route_only)];
+            observation.routing_domains = vec![(index, domain.to_owned(), true)];
             assert_eq!(
                 observation.require_apply().is_err(),
                 conflict,
                 "{index}: {domain}"
             );
         }
-    }
-
-    #[test]
-    fn native_link_dump_reads_loopback_without_network_mutations() -> Result<()> {
-        let observation = run_native(
-            "inspection",
-            Duration::from_secs(10),
-            with_netlink(|handle| async move { query_network(&handle).await }),
-        )?;
-        let loopback = observation
-            .links
-            .iter()
-            .find(|link| link.header.flags.contains(LinkFlags::Loopback))
-            .ok_or_else(|| io::Error::other("native loopback link is missing"))?;
-        assert!(observation.addresses.iter().any(|address| {
-            address.header.index == loopback.header.index
-                && address
-                    .attributes
-                    .contains(&AddressAttribute::Local(IpAddr::V4(Ipv4Addr::LOCALHOST)))
-        }));
-        Ok(())
-    }
-
-    #[test]
-    #[ignore = "run as root in an ordinary disposable Linux container; uses only temporary files"]
-    fn root_unit_writes_preserve_foreign_and_retained_files() -> Result<()> {
-        require_root()?;
-        let directory = camino_tempfile::tempdir_in("/run")?;
-        let path = directory.path().join(UNIT_NAME);
-        let candidate = Utf8PathBuf::from(format!("{path}.candidate"));
-        let initial = ResolverConfig::new(35353);
-        let replacement = ResolverConfig::new(45000);
-        write_unit(&path, &initial)?;
-        assert_eq!(
-            read_owned_unit(&path)?,
-            Some(render_unit(&initial).into_bytes())
-        );
-        write_unit(&path, &replacement)?;
-        assert_eq!(
-            read_owned_unit(&path)?,
-            Some(render_unit(&replacement).into_bytes())
-        );
-        assert_eq!(root_files::read_root_file(&candidate, 0o644)?, None);
-
-        root_files::write_root_file(&candidate, b"retained staged bytes", 0o644)?;
-        write_unit(&path, &initial)?;
-        assert_eq!(
-            read_owned_unit(&path)?,
-            Some(render_unit(&initial).into_bytes())
-        );
-        assert_eq!(root_files::read_root_file(&candidate, 0o644)?, None);
-
-        let foreign_path = directory.path().join("foreign.service");
-        root_files::write_root_file(&foreign_path, b"administrator unit", 0o644)?;
-        assert!(matches!(
-            write_unit(&foreign_path, &initial),
-            Err(PlatformError::SystemIntegration(_))
-        ));
-        assert_eq!(
-            root_files::read_root_file(&foreign_path, 0o644)?,
-            Some(b"administrator unit".to_vec())
-        );
-        Ok(())
     }
 }

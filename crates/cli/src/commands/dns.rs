@@ -9,9 +9,6 @@ use crate::environment::Environment;
 use crate::error::{CliError, ExecuteError};
 use crate::output::{Line, Mark, Output, Streams};
 
-#[cfg(target_os = "linux")]
-pub(super) const RESOLVER_CONFLICT_GUIDANCE: &str = "Ask an administrator to inspect pv-dns.service, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration.";
-
 pub(crate) fn status(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
@@ -240,15 +237,12 @@ pub(crate) fn uninstall(
 }
 
 fn write_resolver_conflict(output: &mut Output<'_>, path: &Utf8Path) -> io::Result<()> {
-    let summary = if cfg!(target_os = "linux") {
-        "System DNS routing conflicts with existing configuration: "
-    } else {
-        "System resolver config is not PV-owned: "
-    };
-    super::write_left_in_place(output, summary, path, None)?;
-    #[cfg(target_os = "linux")]
-    output.detail(RESOLVER_CONFLICT_GUIDANCE)?;
-    Ok(())
+    super::write_left_in_place(
+        output,
+        "System resolver config is not PV-owned: ",
+        path,
+        None,
+    )
 }
 
 fn write_resolver_state(

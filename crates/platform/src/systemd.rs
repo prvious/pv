@@ -27,7 +27,8 @@ pub(crate) fn read_owned_unit(path: &Utf8Path) -> Result<Option<Vec<u8>>, Platfo
     Ok(content)
 }
 
-pub(crate) fn require_no_candidate(path: &Utf8Path) -> Result<(), PlatformError> {
+/// Deletes a candidate file an interrupted write left beside `path`.
+pub(crate) fn remove_leftover_candidate(path: &Utf8Path) -> Result<(), PlatformError> {
     let candidate = Utf8PathBuf::from(format!("{path}.candidate"));
     state::fs::remove_file_if_exists(&candidate)
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
@@ -35,12 +36,8 @@ pub(crate) fn require_no_candidate(path: &Utf8Path) -> Result<(), PlatformError>
 }
 
 pub(crate) fn write_owned_unit(path: &Utf8Path, content: &str) -> Result<(), PlatformError> {
-    let parent = path.parent().ok_or_else(|| {
-        PlatformError::SystemIntegration(format!("systemd unit has no parent directory: {path}"))
-    })?;
-    root_files::validate_directory_chain(parent, false)?;
     read_owned_unit(path)?;
-    require_no_candidate(path)?;
+    remove_leftover_candidate(path)?;
     let candidate = Utf8PathBuf::from(format!("{path}.candidate"));
     root_files::write_root_file(&candidate, content.as_bytes(), 0o644)?;
     root_files::rename(&candidate, path)?;
