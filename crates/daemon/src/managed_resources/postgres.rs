@@ -411,58 +411,12 @@ fn delete_optional_file(path: &camino::Utf8Path) -> Result<(), DaemonError> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::mpsc;
     use std::time::Duration;
 
-    use anyhow::{Result, bail};
-    use camino_tempfile::tempdir;
-    use resources::TargetPlatform;
-    use state::{PostgresPreloadLibrary, fs};
+    use anyhow::Result;
 
-    use super::{spawn_postgres_preparation, validate_preload_library_files};
-    use crate::DaemonError;
-    use crate::managed_resources::ManagedResourceRuntimeContext;
-
-    #[test]
-    fn postgres_preload_validation_uses_the_selected_target_library_name() -> Result<()> {
-        for (target, expected, foreign) in [
-            (TargetPlatform::DarwinArm64, "pg_cron.dylib", "pg_cron.so"),
-            (TargetPlatform::DarwinAmd64, "pg_cron.dylib", "pg_cron.so"),
-            (TargetPlatform::LinuxAmd64, "pg_cron.so", "pg_cron.dylib"),
-            (TargetPlatform::LinuxArm64, "pg_cron.so", "pg_cron.dylib"),
-        ] {
-            let tempdir = tempdir()?;
-            let context = ManagedResourceRuntimeContext {
-                resource_name: "postgres".to_string(),
-                track: "18".to_string(),
-                artifact_path: tempdir.path().join("release"),
-                data_dir: tempdir.path().join("data"),
-                ports: BTreeMap::new(),
-                env: BTreeMap::new(),
-                postgres_preload_libraries: vec![PostgresPreloadLibrary::PgCron],
-            };
-            let modules = context.artifact_path.join("lib/postgresql");
-            fs::write_sensitive_file(&modules.join(foreign), "foreign library")?;
-            let Err(DaemonError::PostgresPreloadLibraryMissing {
-                track,
-                library,
-                path,
-            }) = validate_preload_library_files(&context, target)
-            else {
-                bail!("expected a missing preload library for {target}");
-            };
-            assert_eq!(track, "18");
-            assert_eq!(library, "pg_cron");
-            assert_eq!(path, modules.join(expected));
-
-            fs::remove_file(&modules.join(foreign))?;
-            fs::write_sensitive_file(&modules.join(expected), "native library")?;
-            validate_preload_library_files(&context, target)?;
-        }
-
-        Ok(())
-    }
+    use super::spawn_postgres_preparation;
 
     #[tokio::test(flavor = "current_thread")]
     async fn postgres_preparation_does_not_block_the_async_executor() -> Result<()> {

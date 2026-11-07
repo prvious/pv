@@ -504,32 +504,12 @@ fn invalid_identity<T>(kind: &'static str, value: String) -> Result<T> {
     Err(AppUpdateManifestError::InvalidIdentity { kind, value })
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn current_platform() -> Result<AppUpdatePlatform> {
-    Ok(AppUpdatePlatform::DarwinArm64)
-}
-
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn current_platform() -> Result<AppUpdatePlatform> {
-    Ok(AppUpdatePlatform::DarwinAmd64)
-}
-
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-fn current_platform() -> Result<AppUpdatePlatform> {
-    Ok(AppUpdatePlatform::LinuxAmd64)
-}
-
-#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
-fn current_platform() -> Result<AppUpdatePlatform> {
-    Ok(AppUpdatePlatform::LinuxArm64)
-}
-
-#[cfg(not(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "macos", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "x86_64"),
-    all(target_os = "linux", target_arch = "aarch64")
-)))]
-fn current_platform() -> Result<AppUpdatePlatform> {
-    Err(AppUpdateManifestError::UnsupportedCurrentPlatform)
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok(AppUpdatePlatform::DarwinArm64),
+        ("macos", "x86_64") => Ok(AppUpdatePlatform::DarwinAmd64),
+        ("linux", "x86_64") => Ok(AppUpdatePlatform::LinuxAmd64),
+        ("linux", "aarch64") => Ok(AppUpdatePlatform::LinuxArm64),
+        _ => Err(AppUpdateManifestError::UnsupportedCurrentPlatform),
+    }
 }
