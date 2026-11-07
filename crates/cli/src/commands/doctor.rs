@@ -16,6 +16,7 @@ use crate::error::ExecuteError;
 use crate::helper_release::HelperReleaseMetadata;
 use crate::output::{Line, Mark, Output, Streams, Tone};
 
+use super::linux_distribution::LinuxDistribution;
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
@@ -39,9 +40,11 @@ pub(crate) fn run(
     Ok(exit_code)
 }
 
-/// The checks grouped for every output surface.
+/// Read-only diagnostics shared by every output surface.
 #[derive(Serialize)]
 struct DoctorReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linux_distribution: Option<LinuxDistribution>,
     sections: [DoctorSection; 3],
 }
 
@@ -116,7 +119,11 @@ impl DoctorReport {
             )),
         }
 
-        Ok(Self { sections })
+        Ok(Self {
+            linux_distribution: cfg!(target_os = "linux")
+                .then(|| LinuxDistribution::read(environment)),
+            sections,
+        })
     }
 
     fn checks(&self) -> impl Iterator<Item = &DoctorCheck> {
@@ -141,6 +148,9 @@ impl DoctorReport {
             .max()
             .unwrap_or(0);
         output.report_heading("doctor", Some("PV doctor"))?;
+        if let Some(distribution) = &self.linux_distribution {
+            distribution.write(output)?;
+        }
         for section in &self.sections {
             if decorated {
                 output.section(section.title)?;
@@ -250,7 +260,11 @@ fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> D
         Err(platform::PlatformError::PrivilegedHelperAuthentication(message)) => {
             DoctorCheck::fail(
                 "Privileged helper",
-                "helper belongs to a different macOS account",
+                if cfg!(target_os = "linux") {
+                    "helper belongs to a different Linux account"
+                } else {
+                    "helper belongs to a different macOS account"
+                },
                 "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
             )
             .with_detail(message)
@@ -462,6 +476,15 @@ fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileSta
 }
 
 fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCheck, ExecuteError> {
+    if cfg!(target_os = "linux")
+        && let Err(error) = environment.check_linux_resolved_stub()
+    {
+        return Ok(DoctorCheck::fail(
+            "DNS config",
+            error.to_string(),
+            "repair systemd-resolved and /etc/resolv.conf, then run `pv dns:install`",
+        ));
+    }
     let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
     let expected = resolver_config_from_state(&prepared);
     let system_path = resolver_test_path(environment)?;

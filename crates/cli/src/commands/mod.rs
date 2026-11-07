@@ -21,6 +21,7 @@ mod doctor;
 mod env;
 mod init;
 mod jobs;
+mod linux_distribution;
 mod logs;
 mod mailpit;
 mod mysql;
@@ -54,6 +55,10 @@ where
     CapabilityCheck: FnOnce(&Command) -> Result<(), ExecuteError>,
 {
     capability_check(&cli.command)?;
+    #[cfg(target_os = "linux")]
+    if matches!(cli.command, Command::Setup(_)) {
+        environment.check_linux_setup_host()?;
+    }
     let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
     #[cfg(target_os = "linux")]

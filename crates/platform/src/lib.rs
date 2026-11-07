@@ -8,6 +8,8 @@ mod daemon_registration;
 mod error;
 mod helper;
 pub mod hooks;
+#[cfg(target_os = "linux")]
+mod linux_host;
 mod low_port;
 mod pf;
 mod port;
@@ -29,8 +31,8 @@ pub use ca::{
 };
 pub use capability::{PlatformCapability, require_capability};
 pub use daemon_registration::{
-    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DAEMON_REGISTRATION_NAME,
-    DaemonRegistrationConfig, DaemonRegistrationFileState, daemon_registration_enabled,
+    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig,
+    DaemonRegistrationFileState, daemon_registration_enabled, daemon_registration_name,
     daemon_registration_path, enable_daemon_registration, inspect_daemon_registration_file,
     remove_daemon_registration, restart_daemon_registration, stop_daemon_registration,
     write_daemon_registration_file,
@@ -45,6 +47,8 @@ pub use helper::{
     PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, install_privileged_helper,
     remove_privileged_helper, serve_privileged_helper,
 };
+#[cfg(target_os = "linux")]
+pub use linux_host::{check_linux_resolved_stub, check_linux_setup_host};
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
 pub use pf::{
     ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
@@ -56,6 +60,7 @@ pub use pf::{
 pub use pf::{
     SYSTEM_SOCKET_PROXY_DIRECTORY, inspect_socket_proxy_unit, render_socket_proxy_units,
     repairable_socket_proxy_ports, socket_proxy_files_current, socket_proxy_unit_names,
+    socket_proxy_units_absent,
 };
 pub use port::loopback_tcp_port_available;
 pub use process::{

@@ -103,6 +103,10 @@ pub trait Environment {
         PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
     }
 
+    fn os_release_path(&self) -> PathBuf {
+        PathBuf::from("/etc/os-release")
+    }
+
     fn inspect_resolver_file(
         &self,
         path: &Utf8Path,
@@ -147,6 +151,15 @@ pub trait Environment {
     }
 
     #[cfg(target_os = "linux")]
+    fn check_linux_setup_host(&self) -> Result<(), platform::PlatformError> {
+        platform::check_linux_setup_host()
+    }
+
+    fn check_linux_resolved_stub(&self) -> Result<(), platform::PlatformError> {
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
     fn socket_proxy_directory(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_SOCKET_PROXY_DIRECTORY)
     }
@@ -177,6 +190,11 @@ pub trait Environment {
     #[cfg(target_os = "linux")]
     fn remove_socket_proxy_units(&self) -> Result<(), platform::PlatformError> {
         platform::PrivilegedHelperClient.remove_pf()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn socket_proxy_units_absent(&self) -> Result<bool, platform::PlatformError> {
+        platform::socket_proxy_units_absent()
     }
 
     fn loopback_tcp_port_available(&self, port: u16) -> bool {
@@ -345,6 +363,11 @@ pub(crate) fn app_update_manifest_url(environment: &impl Environment) -> String 
 pub struct ProcessEnvironment;
 
 impl Environment for ProcessEnvironment {
+    #[cfg(target_os = "linux")]
+    fn check_linux_resolved_stub(&self) -> Result<(), platform::PlatformError> {
+        platform::check_linux_resolved_stub()
+    }
+
     fn browser_ca_databases(
         &self,
         home: &Utf8Path,

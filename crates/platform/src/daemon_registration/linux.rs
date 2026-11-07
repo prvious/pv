@@ -85,6 +85,11 @@ async fn manager() -> Result<Proxy<'static>, PlatformError> {
         .map_err(unavailable)
 }
 
+/// Connects to the user's systemd manager, so setup can stop before it changes anything.
+pub(crate) fn check_user_manager() -> Result<(), PlatformError> {
+    run_operation("connection", &OPERATION_TIMEOUT, async |_manager| Ok(()))
+}
+
 async fn load(manager: &Proxy<'_>) -> Result<Option<LoadedUnit>, PlatformError> {
     let path: OwnedObjectPath = match manager
         .call("LoadUnit", &(DAEMON_REGISTRATION_LABEL,))

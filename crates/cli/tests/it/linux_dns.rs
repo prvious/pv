@@ -12,8 +12,9 @@ use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
-    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection, PlatformError,
-    PrivilegedHelperStatus, ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH,
+    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection,
+    PlatformError, PlatformTarget, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
+    SYSTEM_RESOLVER_TEST_PATH,
 };
 use serde_json::{Value, json};
 use state::{Database, PortOwner, PvPaths, fs};
@@ -28,6 +29,7 @@ enum Operation {
 
 struct TestEnvironment {
     home: Utf8PathBuf,
+    target: PlatformTarget,
     resolver: RefCell<ResolverFileState>,
     operations: RefCell<Vec<Operation>>,
 }
@@ -36,6 +38,7 @@ impl TestEnvironment {
     fn new(home: &Utf8Path) -> Self {
         Self {
             home: home.to_owned(),
+            target: PlatformTarget::Linux,
             resolver: RefCell::new(ResolverFileState::Missing {
                 path: SYSTEM_RESOLVER_TEST_PATH.into(),
             }),
@@ -49,6 +52,10 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+        Ok(self.target)
+    }
+
     fn var_os(&self, _key: &str) -> Option<OsString> {
         None
     }

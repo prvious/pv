@@ -87,12 +87,20 @@ pub(crate) fn setup(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
+    let authentication = if linux { "sudo" } else { "macOS" };
 
-    streams
-        .out
-        .flow_start("setup", "PV setup", Some("macOS integration"))?;
+    streams.out.flow_start(
+        "setup",
+        "PV setup",
+        Some(if linux {
+            "Linux integration"
+        } else {
+            "macOS integration"
+        }),
+    )?;
     streams.out.flow_step(
         Mark::Done,
         Line::field("Ensured PV state layout: ", paths.root()),
@@ -104,7 +112,7 @@ pub(crate) fn setup(
     let helper_installation_required =
         privileged_helper_installation_required(environment, &helper_candidate)?;
     if args.non_interactive && helper_installation_required {
-        return Err(CliError::SetupHelperRequiresAuthentication.into());
+        return Err(CliError::SetupHelperRequiresAuthentication { authentication }.into());
     }
     if helper_installation_required
         && !args.yes
@@ -112,7 +120,9 @@ pub(crate) fn setup(
             environment,
             streams,
             CliError::HelperConfirmationRequired,
-            "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. macOS will ask for your password.",
+            &format!(
+                "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. {authentication} will ask for your password."
+            ),
             true,
         )?
     {
@@ -139,7 +149,11 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step(
-        "port redirect setup",
+        if linux {
+            "socket proxy setup"
+        } else {
+            "port redirect setup"
+        },
         streams,
         &mut replay_error,
         |streams| ports::install(environment, streams),
@@ -164,6 +178,8 @@ pub(crate) fn setup(
     let completed =
         ::daemon::run_job_with_events_blocking(paths, "reconcile", "system", &mut progress)?;
     drop(progress);
+    let summary = &completed.summary;
+    let resource_failures = &default_resource_plan.failures;
     let output = &mut streams.out;
 
     if output.surface().decorated() {
@@ -171,18 +187,22 @@ pub(crate) fn setup(
             Mark::Success,
             "Local HTTPS, .test domains and startup configured",
         )?;
-        output.detail("DNS resolver · port redirect · CA trust · daemon registration")?;
+        output.detail(if linux {
+            "DNS resolver · socket proxy · CA trust · daemon registration"
+        } else {
+            "DNS resolver · port redirect · CA trust · daemon registration"
+        })?;
     }
 
     let summary = Line::from("System reconciliation completed: ")
-        .prose_with_quoted_values(&completed.summary, Tone::Value);
+        .prose_with_quoted_values(summary, Tone::Value);
     output.flow_step(Mark::Done, summary)?;
-    if !default_resource_plan.failures.is_empty() {
+    if !resource_failures.is_empty() {
         output.flow_step(
             Mark::Failure,
             "Default Managed Resource planning failed for some defaults:",
         )?;
-        for failure in &default_resource_plan.failures {
+        for failure in resource_failures {
             output.detail(format!("- {failure}"))?;
         }
         output.follow_up("PV setup completed core integrations; rerun `pv setup` after fixing the default Managed Resource manifest.")?;
@@ -374,8 +394,11 @@ pub(crate) fn uninstall(
 
     let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_exclusive(&paths)
         .map_err(super::coordination_lock_error)?;
+    let linux = environment.platform_target()? == PlatformTarget::Linux;
     let subtitle = if args.prune {
         "--prune"
+    } else if linux {
+        "Linux integration"
     } else {
         "macOS integration"
     };
@@ -402,7 +425,11 @@ pub(crate) fn uninstall(
     // listens on it. The daemon is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
     if !run_required_step(
-        "port redirect removal",
+        if linux {
+            "socket proxy removal"
+        } else {
+            "port redirect removal"
+        },
         streams,
         &mut replay_error,
         |streams| ports::uninstall(environment, streams),
@@ -462,7 +489,7 @@ fn run_required_step(
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
     let active_label = match label {
-        "port redirect setup" => "Configuring local HTTP and HTTPS",
+        "port redirect setup" | "socket proxy setup" => "Configuring local HTTP and HTTPS",
         "CA trust setup" => "Trust local HTTPS certificates",
         "daemon registration" => "Start PV at login",
         _ => label,
@@ -494,7 +521,7 @@ fn run_required_step(
     let displayed_label = if succeeded {
         match label {
             "DNS resolver setup" => ".test domains configured",
-            "port redirect setup" => "Local HTTP and HTTPS configured",
+            "port redirect setup" | "socket proxy setup" => "Local HTTP and HTTPS configured",
             "CA trust setup" => "Local HTTPS certificates trusted",
             "daemon registration" => "PV starts at login",
             _ => label,
@@ -710,7 +737,7 @@ fn configure_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell);
+    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
     let block = shell_profile_block(shell);
     let existing = read_user_file(&profile_path)?;
     let (next_content, action) = match existing.as_deref() {
@@ -828,7 +855,7 @@ fn remove_shell_integration(
         return Ok(ExitCode::SUCCESS);
     };
 
-    let profile_path = shell_profile_path(paths.home(), shell);
+    let profile_path = shell_profile_path(paths.home(), shell, environment.platform_target()?);
     let Some(content) = read_user_file(&profile_path)? else {
         output.flow_step(
             Mark::Idle,
@@ -969,8 +996,10 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<bool, ExecuteError> {
     }
 }
 
-fn shell_profile_path(home: &Utf8Path, shell: Shell) -> Utf8PathBuf {
+fn shell_profile_path(home: &Utf8Path, shell: Shell, target: PlatformTarget) -> Utf8PathBuf {
     match shell {
+        Shell::Bash if target == PlatformTarget::Linux => home.join(".bashrc"),
+        Shell::Zsh if target == PlatformTarget::Linux => home.join(".zshrc"),
         Shell::Bash => home.join(".bash_profile"),
         Shell::Fish => home.join(".config/fish/config.fish"),
         Shell::Zsh => home.join(".zprofile"),

@@ -4,6 +4,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
+use std::process::ExitCode;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
@@ -106,6 +107,10 @@ impl Environment for TestEnvironment {
         self.home.join("etc/resolver/test").into_std_path_buf()
     }
 
+    fn os_release_path(&self) -> PathBuf {
+        self.home.join("etc/os-release").into_std_path_buf()
+    }
+
     fn pf_anchor_path(&self) -> PathBuf {
         self.home
             .join("etc/pf.anchors/com.prvious.pv")
@@ -187,6 +192,50 @@ fn linux_doctor_reports_a_unit_that_is_not_enabled() -> anyhow::Result<()> {
     snapshot_settings(tempdir.path()).bind(|| {
         assert_debug_snapshot!(observed);
     });
+    Ok(())
+}
+
+#[test]
+fn linux_setup_checks_the_host_before_touching_pv_state() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let environment = TestEnvironment::new(&tempdir.path().join("home"));
+
+    let output = run_pv(&["setup", "--yes", "--no-path"], &environment)?;
+
+    assert_eq!(output.exit_code, ExitCode::FAILURE);
+    assert!(!fs::path_entry_exists(
+        PvPaths::for_home(&environment.home).root()
+    )?);
+    assert_debug_snapshot!(output);
+    Ok(())
+}
+
+#[test]
+fn linux_doctor_reports_the_distribution_name_without_judging_it() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let mut observed = Vec::new();
+    for (case, os_release) in [
+        (
+            "double quoted",
+            Some("PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\n"),
+        ),
+        ("single quoted", Some("PRETTY_NAME='Debian GNU/Linux 13'\n")),
+        ("missing", None),
+    ] {
+        let environment = TestEnvironment::new(&tempdir.path().join(case));
+        if let Some(os_release) = os_release {
+            fs::write_sensitive_file(&environment.home.join("etc/os-release"), os_release)?;
+        }
+        let doctor = run_pv(&["doctor", "--json"], &environment)?;
+        let report: Value = serde_json::from_str(&doctor.stdout)?;
+        let plain = run_pv(&["doctor"], &environment)?;
+        observed.push((
+            case,
+            report["linux_distribution"].clone(),
+            plain.stdout.lines().take(2).collect::<Vec<_>>().join("\n"),
+        ));
+    }
+    assert_debug_snapshot!(observed);
     Ok(())
 }
 

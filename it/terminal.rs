@@ -403,7 +403,7 @@ fn hooks_trust_worktree_uses_its_main_checkout_project_folder() -> Result<()> {
 }
 
 #[test]
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
@@ -420,6 +420,7 @@ fn open_picker_lists_served_projects_and_escape_cancels() -> Result<()> {
     session.wait_for(SELECT_HINT)?;
     session.press("j")?;
     session.wait_for("● zeta.test")?;
+    session.wait_for(SELECT_HINT)?;
     assert_screen_snapshot("open_picker_active", tempdir.path(), &session);
 
     session.press(ESCAPE)?;

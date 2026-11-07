@@ -106,7 +106,7 @@ Setup detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsuppor
 
 Shell profile backups created by setup append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
 
-Setup edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
+Setup edits only the detected shell's profile file for PATH setup. macOS uses `~/.zprofile` for zsh and `~/.bash_profile` for bash; Linux uses the interactive `~/.zshrc` and `~/.bashrc` files. Both use `~/.config/fish/config.fish` for fish. Setup and uninstall select the file from the platform reported through the CLI environment. They do not edit multiple shell profile files at once.
 
 If the detected shell profile file does not exist, setup may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
 
@@ -176,7 +176,7 @@ Systemd's loaded `Listen` describes configuration and can report the expected ad
 
 Linux prepared socket-proxy copies use `~/.pv/config/ports/`. Current installed copies additionally require root:root ownership, mode 0644 and exactly one link; prepared copies remain ordinary user files. The helper renders the same four fixed unit definitions under `/etc/systemd/system/`, using distinct high loopback backend ports. Mutations hold the helper lifecycle lock and verify PV ownership, selected fragments and overrides before stopping units. Apply stops owned units, repeats the root low-port bind probe, backs up existing files, replaces them atomically, reloads systemd, and enables and restarts the units. Failure attempts to restore the verified previous files, enablement and activity. Rollback cannot stop or reactivate units whose ownership is uncertain, and any restoration error blocks reactivation. Retained candidates or rollback files require administrator inspection before retrying. A lost helper response reports that queued or ongoing work may still complete.
 
-Linux `pv ports:uninstall` waits for the helper to verify removal even when initial inspection finds no installed unit files. It deletes prepared copies only after that acknowledgment. Removing the proxies preserves the Gateway's stored backend ports because the Gateway remains desired and may still be running.
+Linux `pv ports:uninstall` skips the helper when all four installed files and native systemd units are absent. Otherwise it waits for the helper to verify removal. It deletes prepared copies after verified absence or removal. Removing the proxies preserves the Gateway's stored backend ports because the Gateway remains desired and may still be running.
 
 Linux `pv ports:install` checks all four installed unit files before preparation. A busy public port permits a repair attempt only when the fixed PV socket and service files and their loaded fragments and overrides establish ownership, and the socket is active. This does not prove which kernel listener holds the port; the helper revalidates ownership and bind availability. Foreground repair reapplies the units rather than skipping based on files or cached loaded properties. PV retains newly selected backend assignments after an uncertain or partial helper apply, so queued work cannot later route to a released port. Known pre-mutation failures release only new assignments. Existing Gateway ports remain unchanged. If reservation cleanup also fails, the CLI reports both causes. Successful Gateway identity probes record healthy readiness; otherwise only low-port-derived degradation becomes pending and reconciliation is requested.
 
@@ -199,6 +199,8 @@ macOS updates or restarts may unload active rules while leaving PV-owned prepare
 A friendly browser page for unknown Project hostnames is useful, but is post-v1 polish rather than required v1 scope.
 
 ## Setup
+
+Linux host prerequisites run before helper inspection; DNS diagnostics require active systemd-resolved and only `nameserver 127.0.0.53` in `/etc/resolv.conf`.
 
 `pv setup` performs PV's required macOS bootstrap steps:
 
@@ -1681,6 +1683,8 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 
 `pv open [hostname]` opens a served Project hostname in the user's browser from desired state. It does not require observed state to confirm that the Project is currently reachable.
 
+Foreground CLI commands use the `webbrowser` crate for browser handoff on macOS and Linux. Errors returned by the handoff propagate to the command's error output.
+
 With a hostname argument, `pv open <hostname>` opens that Project directly. With no argument, it opens the current Project or falls back to the picker.
 
 PV opens the Project's primary hostname.
@@ -1788,6 +1792,8 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 `pv logs --resource` accepts the same aliases as resource command namespaces, such as `pg`, `mail`, and `s3`, and normalizes them internally to canonical names: `postgres`, `mailpit`, and `rustfs`.
 
 `pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, `pf` rules, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, `pv dns:install`, `pv ports:install`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
+
+On Linux, `pv doctor` and `pv status` report `Linux distribution: <PRETTY_NAME> (untested)` from `/etc/os-release` as information outside health checks. Their JSON reports include the same name and support label. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status. Distribution and architecture support remains gated by artifact and system acceptance.
 
 `pv jobs` is a read-only diagnostic command that lists recent daemon jobs, including setup, install, update, restart, and reconciliation jobs. It shows status, scope, start/end time, and failure summary. Live progress remains attached to the command that started the job.
 

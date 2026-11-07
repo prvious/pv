@@ -262,6 +262,35 @@ pub(super) fn inspect() -> Result<ActivePfRedirectInspection, PlatformError> {
         })?
 }
 
+pub(in crate::pf) fn units_absent() -> Result<bool, PlatformError> {
+    Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(PlatformError::PortProxyIo)?
+        .block_on(within(
+            &Limit::new("socket proxy absence inspection", INSPECTION_TIMEOUT),
+            async {
+                let manager = inspection_manager().await?;
+                for name in unit_names() {
+                    if query_unit(&manager, &name, "GetUnit")
+                        .await?
+                        .0
+                        .status
+                        .is_some()
+                    {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            },
+        ))
+        .ok_or_else(|| {
+            PlatformError::SystemIntegration(
+                "systemd socket proxy absence inspection timed out".to_owned(),
+            )
+        })?
+}
+
 pub(in crate::pf) fn repairable_ports() -> Result<BTreeSet<u16>, PlatformError> {
     Builder::new_current_thread()
         .enable_all()
