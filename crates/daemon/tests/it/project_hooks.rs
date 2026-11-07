@@ -615,7 +615,9 @@ async fn unlinking_a_source_stops_running_and_queued_hooks_for_its_children() ->
                 .then_some(()))
         })
         .await?;
+        // `pv unlink` asks for system reconciliation once the unlink is committed.
         Database::open(&fixture.paths)?.unlink_project(&fixture.source.id)?;
+        reconcile(&fixture.paths, "system").await?;
         eventually(|| {
             Ok(fixture
                 .hook_jobs()?
