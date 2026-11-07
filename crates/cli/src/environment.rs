@@ -71,43 +71,19 @@ pub trait Environment {
     }
 
     fn daemon_registration_path(&self) -> PathBuf {
-        let home = self.home_dir().unwrap_or_default();
-        let config_home = if cfg!(target_os = "linux") {
-            self.var_os("XDG_CONFIG_HOME").map(PathBuf::from)
-        } else {
-            None
-        };
-        platform::daemon_registration_path(&home, config_home.as_deref())
+        platform::daemon_registration_path(&self.home_dir().unwrap_or_default())
     }
 
     fn enable_daemon_registration(&self, path: &Utf8Path) -> Result<(), platform::PlatformError> {
-        platform::enable_daemon_registration(
-            path,
-            #[cfg(target_os = "linux")]
-            &daemon_registration_session_address(self)?,
-        )
+        platform::enable_daemon_registration(path)
     }
 
     fn stop_daemon_registration(&self) -> Result<(), platform::PlatformError> {
-        platform::stop_daemon_registration(
-            #[cfg(target_os = "linux")]
-            &daemon_registration_session_address(self)?,
-        )
+        platform::stop_daemon_registration()
     }
 
     fn remove_daemon_registration(&self, path: &Utf8Path) -> Result<(), platform::PlatformError> {
-        platform::remove_daemon_registration(
-            path,
-            #[cfg(target_os = "linux")]
-            &daemon_registration_session_address(self)?,
-        )
-    }
-
-    #[cfg(target_os = "linux")]
-    fn inspect_daemon_registration(
-        &self,
-    ) -> Result<Option<platform::DaemonRegistrationStatus>, platform::PlatformError> {
-        platform::inspect_daemon_registration(&daemon_registration_session_address(self)?)
+        platform::remove_daemon_registration(path)
     }
 
     fn daemon_process_for_stop(
@@ -118,10 +94,7 @@ pub trait Environment {
     }
 
     fn restart_daemon_registration(&self) -> Result<(), platform::PlatformError> {
-        platform::restart_daemon_registration(
-            #[cfg(target_os = "linux")]
-            &daemon_registration_session_address(self)?,
-        )
+        platform::restart_daemon_registration()
     }
 
     fn resolver_test_path(&self) -> PathBuf {
@@ -288,15 +261,6 @@ pub trait Environment {
         self.target_platform()
             .map_or_else(resources::TargetPlatform::current, Ok)
     }
-}
-
-#[cfg(target_os = "linux")]
-fn daemon_registration_session_address(
-    environment: &(impl Environment + ?Sized),
-) -> Result<String, platform::PlatformError> {
-    let address = environment.var_os("DBUS_SESSION_BUS_ADDRESS");
-    let runtime_directory = environment.var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-    platform::daemon_registration_session_address(address.as_deref(), runtime_directory.as_deref())
 }
 
 pub(crate) fn artifact_manifest_url(environment: &impl Environment) -> String {

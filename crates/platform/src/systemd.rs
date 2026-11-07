@@ -24,7 +24,6 @@ pub(crate) async fn system_manager_proxy(connection: &Connection) -> zbus::Resul
         "org.freedesktop.systemd1.Manager",
     )
     .await?;
-    manager.get_property::<String>("Version").await?;
     manager.call::<_, _, ()>("Subscribe", &()).await?;
     Ok(manager)
 }

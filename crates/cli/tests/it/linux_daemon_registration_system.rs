@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, anyhow, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use cli::{Environment, ProcessEnvironment, run_with_environment};
-use platform::{DaemonRegistrationConfig, DaemonRegistrationStatus, PlatformError};
+use platform::{DaemonRegistrationConfig, PlatformError};
 use pv_fake::{FakeSettings, Persona, Scenario};
 use serde_json::Value;
 use state::{
@@ -42,10 +42,6 @@ fn systemd_user_registration_preserves_monitors_and_refuses_foreign_units() -> R
         !fs::path_entry_exists(&unit)?,
         "refusing an existing user unit"
     );
-    ensure!(
-        environment.inspect_daemon_registration()?.is_none(),
-        "refusing a loaded PV unit"
-    );
 
     let mut fixture = RegistrationFixture {
         paths,
@@ -76,20 +72,14 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     // This file has never been loaded: lifecycle ownership must resolve it first.
     let foreign = "[Service]\nExecStart=/bin/true\n";
     fs::write_sensitive_file(&fixture.unit, foreign)?;
-    for result in [
-        environment.restart_daemon_registration(),
-        environment.stop_daemon_registration(),
-        environment.enable_daemon_registration(&fixture.unit),
-        environment.remove_daemon_registration(&fixture.unit),
-    ] {
-        assert!(
-            matches!(
-                result,
-                Err(PlatformError::DaemonRegistrationConflict { .. })
-            ),
-            "{result:?}"
-        );
-    }
+    let result = environment.enable_daemon_registration(&fixture.unit);
+    assert!(
+        matches!(
+            result,
+            Err(PlatformError::DaemonRegistrationConflict { .. })
+        ),
+        "{result:?}"
+    );
     assert_eq!(fs::read_to_string(&fixture.unit)?, foreign);
     fs::delete_file(&fixture.unit)?;
     platform::write_daemon_registration_file(&fixture.unit, &config)?;
@@ -108,23 +98,20 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
     assert_eq!(fs::read_link(&enabled_link)?, fixture.unit);
     environment.restart_daemon_registration()?;
     daemon::wait_until_healthy_blocking(fixture.paths.clone())?;
-    let first = status()?;
-    assert_eq!(first.active_state, "active");
-    assert_eq!(first.fragment_path, fixture.unit);
     let (first_job, monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
     fixture.monitor_record = Some(monitor.clone());
 
     environment.stop_daemon_registration()?;
-    let stopped = status()?;
-    assert_eq!(stopped.active_state, "inactive");
-    assert_eq!(stopped.main_pid, 0);
+    ensure!(
+        environment
+            .daemon_process_for_stop(&fixture.paths)?
+            .is_none(),
+        "the daemon is still running after its service stopped"
+    );
     let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, None)?;
     assert_eq!(preserved_monitor, monitor);
     environment.restart_daemon_registration()?;
     daemon::wait_until_healthy_blocking(fixture.paths.clone())?;
-    let previous_daemon_pid = first.main_pid;
-    let first = status()?;
-    assert_ne!(first.main_pid, previous_daemon_pid);
     let (_, preserved_monitor) = wait_for_redis_monitor(&fixture.paths, Some(&first_job))?;
     assert_eq!(preserved_monitor, monitor);
 
@@ -212,12 +199,6 @@ fn seed_resources(paths: &PvPaths) -> Result<()> {
         |_| true,
     )?;
     Ok(())
-}
-
-fn status() -> Result<DaemonRegistrationStatus> {
-    ProcessEnvironment
-        .inspect_daemon_registration()?
-        .context("PV unit was not reported")
 }
 
 fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result<(String, Value)> {

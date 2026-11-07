@@ -237,7 +237,7 @@ PV installs the LaunchAgent plist at `~/Library/LaunchAgents/com.prvious.pv.daem
 
 The LaunchAgent plist sets `StandardOutPath` and `StandardErrorPath` to PV-owned files under `~/.pv/logs/`, such as `launchd.out.log` and `launchd.err.log`, so daemon startup failures are diagnosable before structured daemon logging starts.
 
-On Linux, `pv-daemon.service` lives at `$XDG_CONFIG_HOME/systemd/user/pv-daemon.service`, defaulting to `~/.config/systemd/user/pv-daemon.service`. It starts with `default.target`, restarts after crashes, and uses `KillMode=process` so monitors survive daemon restarts; PV does not enable linger. PV manages it through the user's session bus, checks the selected fragment's PV marker, and waits for the exact systemd job result within 10 seconds for stop or 15 seconds for restart.
+On Linux, `pv-daemon.service` lives at `~/.config/systemd/user/pv-daemon.service`. PV ignores a shell profile's `XDG_CONFIG_HOME`, because systemd's user manager never sees it. The unit starts with `default.target`, restarts after crashes, and uses `KillMode=process` so monitors survive daemon restarts; PV does not enable linger. PV manages it through the user's session bus, checks the selected fragment's PV marker, and waits for the exact systemd job result within 10 seconds for stop or 15 seconds for restart.
 
 If a LaunchAgent with PV's expected label already exists but is not PV-owned, `pv daemon:enable` and `pv setup` fail safely and report the conflict instead of overwriting it.
 

@@ -79,8 +79,6 @@ impl DoctorReport {
                 title: "Daemon & jobs",
                 checks: vec![
                     daemon_registration_check(&registration),
-                    #[cfg(target_os = "linux")]
-                    daemon_registration_manager_check(environment, &registration),
                     daemon_socket_check(&paths, &registration),
                     recent_jobs_check(database.as_ref())?,
                     runtime_states_check(database.as_ref())?,
@@ -369,6 +367,16 @@ fn daemon_registration_check(state: &DaemonRegistrationFileState) -> DoctorCheck
         "Daemon LaunchAgent"
     };
     match state {
+        DaemonRegistrationFileState::Current { path, .. }
+            if !platform::daemon_registration_enabled(path) =>
+        {
+            DoctorCheck::fail(
+                name,
+                format!("{DAEMON_REGISTRATION_NAME} is installed but not enabled"),
+                "pv daemon:enable",
+            )
+            .with_detail(format!("path: {path}"))
+        }
         DaemonRegistrationFileState::Current { path, .. } => DoctorCheck::pass(
             name,
             format!("PV-owned {DAEMON_REGISTRATION_NAME} is installed"),
@@ -398,83 +406,6 @@ fn daemon_registration_check(state: &DaemonRegistrationFileState) -> DoctorCheck
             "pv daemon:enable",
         )
         .with_detail(format!("{path}: {message}")),
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn daemon_registration_manager_check(
-    environment: &impl Environment,
-    registration: &DaemonRegistrationFileState,
-) -> DoctorCheck {
-    let name = "Systemd user manager";
-    match environment.inspect_daemon_registration() {
-        Ok(Some(status)) => {
-            let detail = format!(
-                "load={} enablement={} state={}/{} pid={} fragment={}",
-                status.load_state,
-                status.unit_file_state.as_deref().unwrap_or("unavailable"),
-                status.active_state,
-                status.sub_state,
-                status.main_pid,
-                status.fragment_path,
-            );
-            match platform::inspect_daemon_registration_file(&status.fragment_path, None) {
-                DaemonRegistrationFileState::Current { .. }
-                | DaemonRegistrationFileState::Stale { .. }
-                    if status.unit_file_state.as_deref() != Some("enabled") =>
-                {
-                    DoctorCheck::fail(
-                        name,
-                        "daemon service is not persistently enabled",
-                        "pv daemon:enable",
-                    )
-                    .with_detail(detail)
-                }
-                DaemonRegistrationFileState::Current { .. }
-                | DaemonRegistrationFileState::Stale { .. }
-                    if status.load_state == "loaded"
-                        && status.active_state == "active"
-                        && status.main_pid != 0 =>
-                {
-                    DoctorCheck::pass(name, "reachable").with_detail(detail)
-                }
-                DaemonRegistrationFileState::Current { .. }
-                | DaemonRegistrationFileState::Stale { .. } => {
-                    DoctorCheck::fail(name, "daemon service is not healthy", "pv daemon:restart")
-                        .with_detail(detail)
-                }
-                DaemonRegistrationFileState::Unreadable { message, .. } => DoctorCheck::fail(
-                    name,
-                    "loaded service file is unreadable",
-                    "pv daemon:enable",
-                )
-                .with_detail(format!("{detail}; {message}")),
-                _ => DoctorCheck::fail(name, "loaded service is not PV-owned", "pv daemon:enable")
-                    .with_detail(detail),
-            }
-        }
-        Ok(None)
-            if matches!(
-                registration,
-                DaemonRegistrationFileState::Current { .. }
-                    | DaemonRegistrationFileState::Stale { .. }
-            ) =>
-        {
-            DoctorCheck::fail(name, "daemon service is not loaded", "pv daemon:enable")
-        }
-        Ok(None) => DoctorCheck::pass(name, "reachable; daemon unit is not loaded"),
-        Err(error @ platform::PlatformError::DaemonRegistrationConflict { .. }) => {
-            DoctorCheck::fail(
-                name,
-                error.to_string(),
-                "review the conflicting systemd unit or drop-in before retrying",
-            )
-        }
-        Err(error) => DoctorCheck::fail(
-            name,
-            error.to_string(),
-            "run PV from a logged-in user session",
-        ),
     }
 }
 

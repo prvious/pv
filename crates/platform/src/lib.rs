@@ -29,13 +29,10 @@ pub use ca::{
 pub use capability::{PlatformCapability, require_capability};
 pub use daemon_registration::{
     DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DAEMON_REGISTRATION_NAME,
-    DaemonRegistrationConfig, DaemonRegistrationFileState, daemon_registration_path,
-    enable_daemon_registration, inspect_daemon_registration_file, remove_daemon_registration,
-    restart_daemon_registration, stop_daemon_registration, write_daemon_registration_file,
-};
-#[cfg(target_os = "linux")]
-pub use daemon_registration::{
-    DaemonRegistrationStatus, daemon_registration_session_address, inspect_daemon_registration,
+    DaemonRegistrationConfig, DaemonRegistrationFileState, daemon_registration_enabled,
+    daemon_registration_path, enable_daemon_registration, inspect_daemon_registration_file,
+    remove_daemon_registration, restart_daemon_registration, stop_daemon_registration,
+    write_daemon_registration_file,
 };
 pub use error::PlatformError;
 pub use helper::{

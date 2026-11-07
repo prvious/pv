@@ -29,11 +29,6 @@ pub use native::{
     DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig,
 };
 
-#[cfg(target_os = "linux")]
-pub use native::{
-    DaemonRegistrationStatus, daemon_registration_session_address, inspect_daemon_registration,
-};
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DaemonRegistrationFileState {
     Missing {
@@ -110,16 +105,31 @@ pub fn inspect_daemon_registration_file(
     }
 }
 
-pub fn daemon_registration_path(home: &Path, config_home: Option<&Path>) -> PathBuf {
+/// The registration file under `home`. On Linux this is the per-user unit directory systemd
+/// searches unless its own login environment moves `XDG_CONFIG_HOME`, which a shell profile
+/// can't do, so PV doesn't follow the shell's value.
+pub fn daemon_registration_path(home: &Path) -> PathBuf {
     let directory = if cfg!(target_os = "linux") {
-        config_home
-            .filter(|path| path.is_absolute())
-            .map_or_else(|| home.join(".config"), Path::to_path_buf)
-            .join("systemd/user")
+        ".config/systemd/user"
     } else {
-        home.join("Library/LaunchAgents")
+        "Library/LaunchAgents"
     };
-    directory.join(DAEMON_REGISTRATION_FILE_NAME)
+    home.join(directory).join(DAEMON_REGISTRATION_FILE_NAME)
+}
+
+/// Whether the user's service manager starts the registration at login. launchd loads every
+/// LaunchAgent file; systemd also needs the unit's `default.target.wants` link. An inspection
+/// error counts as enabled, so doctor never reports a problem it couldn't see.
+pub fn daemon_registration_enabled(path: &Utf8Path) -> bool {
+    !cfg!(target_os = "linux")
+        || path.parent().is_none_or(|directory| {
+            state::fs::path_entry_exists(
+                &directory
+                    .join("default.target.wants")
+                    .join(DAEMON_REGISTRATION_FILE_NAME),
+            )
+            .unwrap_or(true)
+        })
 }
 
 pub fn write_daemon_registration_file(
@@ -138,24 +148,21 @@ fn write_daemon_registration_file_for(
     state::fs::write_sensitive_file(path, &config.render()?).map_err(registration_file_error)
 }
 
-pub fn remove_daemon_registration(
-    path: &Utf8Path,
-    #[cfg(target_os = "linux")] session_address: &str,
-) -> Result<(), PlatformError> {
+pub fn remove_daemon_registration(path: &Utf8Path) -> Result<(), PlatformError> {
     #[cfg(target_os = "linux")]
     {
         require_capability_for(
             PlatformTarget::current()?,
             PlatformCapability::DaemonRegistration,
         )?;
-        native::remove(path, session_address)
+        native::remove(path)
     }
 
     #[cfg(not(target_os = "linux"))]
     remove_daemon_registration_for(PlatformTarget::current()?, path)
 }
 
-#[cfg(any(not(target_os = "linux"), test))]
+#[cfg(not(target_os = "linux"))]
 fn remove_daemon_registration_for(
     target: PlatformTarget,
     path: &Utf8Path,
@@ -184,18 +191,10 @@ fn registration_file_error(error: state::StateError) -> PlatformError {
     PlatformError::LaunchAgent(error.to_string())
 }
 
-pub fn enable_daemon_registration(
-    path: &Utf8Path,
-    #[cfg(target_os = "linux")] session_address: &str,
-) -> Result<(), PlatformError> {
-    #[cfg(target_os = "macos")]
+pub fn enable_daemon_registration(path: &Utf8Path) -> Result<(), PlatformError> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         native::enable(path)
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        native::enable(path, session_address)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -205,41 +204,26 @@ pub fn enable_daemon_registration(
     }
 }
 
-pub fn stop_daemon_registration(
-    #[cfg(target_os = "linux")] session_address: &str,
-) -> Result<(), PlatformError> {
-    #[cfg(target_os = "macos")]
+pub fn stop_daemon_registration() -> Result<(), PlatformError> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         native::stop()
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        native::stop(session_address)
-    }
-
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(unsupported(PlatformCapability::DaemonRegistration)?)
     }
 }
 
-pub fn restart_daemon_registration(
-    #[cfg(target_os = "linux")] session_address: &str,
-) -> Result<(), PlatformError> {
-    #[cfg(target_os = "macos")]
+pub fn restart_daemon_registration() -> Result<(), PlatformError> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     {
         native::restart()
     }
 
-    #[cfg(target_os = "linux")]
-    {
-        native::restart(session_address)
-    }
-
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         Err(unsupported(PlatformCapability::DaemonRegistration)?)
     }
 }
-

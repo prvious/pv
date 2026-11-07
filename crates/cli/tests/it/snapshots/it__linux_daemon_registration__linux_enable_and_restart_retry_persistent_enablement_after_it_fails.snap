@@ -1,0 +1,42 @@
+---
+source: crates/cli/tests/it/linux_daemon_registration.rs
+expression: observed
+---
+[
+    (
+        "daemon:enable",
+        ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        [
+            "enable",
+            "enable",
+            "restart",
+        ],
+    ),
+    (
+        "daemon:restart",
+        ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        ExitCode(
+            unix_exit_status(
+                1,
+            ),
+        ),
+        [
+            "enable",
+            "enable",
+            "restart",
+        ],
+    ),
+]

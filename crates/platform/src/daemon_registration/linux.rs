@@ -1,14 +1,9 @@
-use std::ffi::OsStr;
-use std::future::Future;
-use std::io;
-use std::path::Path;
+use std::fmt::Display;
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
-use serde::Serialize;
-use zbus::address::transport::{Unix, UnixSocket};
 use zbus::zvariant::OwnedObjectPath;
-use zbus::{Proxy, connection};
+use zbus::{Connection, Proxy};
 
 use super::{
     DaemonRegistrationFileState, delete_registration_file, inspect_daemon_registration_file,
@@ -57,19 +52,14 @@ impl DaemonRegistrationConfig {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-pub struct DaemonRegistrationStatus {
-    pub load_state: String,
-    /// Native enablement state, absent for a missing unit file or unqueried lifecycle inspection.
-    pub unit_file_state: Option<String>,
-    pub active_state: String,
-    pub sub_state: String,
-    pub main_pid: u32,
-    pub fragment_path: Utf8PathBuf,
+struct LoadedUnit {
+    load_state: String,
+    active_state: String,
+    sub_state: String,
+    main_pid: u32,
+    fragment_path: Utf8PathBuf,
 }
 
-const CONNECTION_TIMEOUT: Limit =
-    Limit::new("daemon registration connection", Duration::from_secs(10));
 const OPERATION_TIMEOUT: Limit =
     Limit::new("daemon registration operation", Duration::from_secs(10));
 const ACTIVATION_TIMEOUT: Limit =
@@ -78,76 +68,28 @@ const ACTIVATION_TIMEOUT: Limit =
 const UNIT_INTERFACE: &str = "org.freedesktop.systemd1.Unit";
 const SERVICE_INTERFACE: &str = "org.freedesktop.systemd1.Service";
 
-pub fn daemon_registration_session_address(
-    address: Option<&OsStr>,
-    runtime_directory: Option<&Path>,
-) -> Result<String, PlatformError> {
-    if let Some(address) = address.filter(|address| !address.is_empty()) {
-        return address
-            .to_str()
-            .map(str::to_owned)
-            .ok_or(PlatformError::UserManagerSessionEnvironment);
-    }
-    let directory = runtime_directory
-        .filter(|path| path.is_absolute())
-        .ok_or(PlatformError::UserManagerSessionEnvironment)?;
-    Ok(Unix::new(UnixSocket::File(directory.join("bus"))).to_string())
+fn registration_error(operation: &str, message: impl Display) -> PlatformError {
+    PlatformError::SystemIntegration(format!("daemon registration {operation} failed: {message}"))
 }
 
-fn manager(session_address: &str) -> Result<Proxy<'static>, PlatformError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|source| PlatformError::UserManagerUnavailable(Box::new(source.into())))?;
-    runtime
-        .block_on(clock::timeout(&CONNECTION_TIMEOUT, async {
-            let connection = connection::Builder::address(session_address)?
-                .build()
-                .await?;
-            systemd::system_manager_proxy(&connection).await
-        }))
-        .map_err(|_elapsed| {
-            PlatformError::UserManagerUnavailable(Box::new(
-                io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "session bus connection timed out after 10 seconds",
-                )
-                .into(),
-            ))
-        })?
-        .map_err(|source| PlatformError::UserManagerUnavailable(Box::new(source)))
+async fn manager() -> Result<Proxy<'static>, PlatformError> {
+    let unavailable = |error| {
+        registration_error(
+            "connection",
+            format!("systemd user manager unavailable: {error}"),
+        )
+    };
+    let connection = Connection::session().await.map_err(unavailable)?;
+    systemd::system_manager_proxy(&connection)
+        .await
+        .map_err(unavailable)
 }
 
-/// Reads runtime and enablement evidence, retaining live units whose files are missing.
-pub fn inspect_daemon_registration(
-    session_address: &str,
-) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
-    let manager = manager(session_address)?;
-    run_operation("inspect", &OPERATION_TIMEOUT, async {
-        let mut status = inspect(&manager, "GetUnit").await?;
-        if let Some(status) = &mut status {
-            status.unit_file_state = match manager
-                .call("GetUnitFileState", &(DAEMON_REGISTRATION_LABEL,))
-                .await
-            {
-                Ok(state) => Some(state),
-                Err(error)
-                    if is_method_error(&error, "org.freedesktop.DBus.Error.FileNotFound") =>
-                {
-                    None
-                }
-                Err(error) => return Err(error.into()),
-            };
-        }
-        Ok(status)
-    })
-}
-
-async fn inspect(
-    manager: &Proxy<'_>,
-    method: &str,
-) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
-    let path: OwnedObjectPath = match manager.call(method, &(DAEMON_REGISTRATION_LABEL,)).await {
+async fn load(manager: &Proxy<'_>) -> Result<Option<LoadedUnit>, PlatformError> {
+    let path: OwnedObjectPath = match manager
+        .call("LoadUnit", &(DAEMON_REGISTRATION_LABEL,))
+        .await
+    {
         Ok(path) => path,
         Err(error) if is_method_error(&error, "org.freedesktop.systemd1.NoSuchUnit") => {
             return Ok(None);
@@ -158,9 +100,8 @@ async fn inspect(
     let service = native_proxy(manager.connection(), path, SERVICE_INTERFACE).await?;
     let load_state: String = unit.get_property("LoadState").await?;
     let fragment_path = unit.get_property::<String>("FragmentPath").await?;
-    let status = DaemonRegistrationStatus {
+    let status = LoadedUnit {
         load_state,
-        unit_file_state: None,
         active_state: unit.get_property("ActiveState").await?,
         sub_state: unit.get_property("SubState").await?,
         main_pid: service.get_property("MainPID").await?,
@@ -178,20 +119,18 @@ async fn inspect(
     }
 }
 
-async fn require_owned_unit(
-    manager: &Proxy<'_>,
-) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
-    let status = inspect(manager, "LoadUnit").await?;
+async fn require_owned_unit(manager: &Proxy<'_>) -> Result<Option<LoadedUnit>, PlatformError> {
+    let status = load(manager).await?;
     if let Some(status) = &status {
         if status.load_state == "not-found" && status.fragment_path.as_str().is_empty() {
             if status.active_state == "active" {
                 let result =
                     systemd::unit_job(manager, "StopUnit", DAEMON_REGISTRATION_LABEL).await?;
                 if result != "done" {
-                    return Err(PlatformError::DaemonRegistrationState {
-                        operation: "StopUnit",
-                        message: format!("systemd job finished with result {result}"),
-                    });
+                    return Err(registration_error(
+                        "StopUnit",
+                        format!("systemd job finished with result {result}"),
+                    ));
                 }
             }
             match manager
@@ -220,17 +159,14 @@ async fn require_owned_unit(
     Ok(status)
 }
 
-async fn reload_owned_unit(
-    manager: &Proxy<'_>,
-) -> Result<Option<DaemonRegistrationStatus>, PlatformError> {
+async fn reload_owned_unit(manager: &Proxy<'_>) -> Result<Option<LoadedUnit>, PlatformError> {
     manager.call::<_, _, ()>("Reload", &()).await?;
     require_owned_unit(manager).await
 }
 
-pub(super) fn enable(_path: &Utf8Path, session_address: &str) -> Result<(), PlatformError> {
-    let manager = manager(session_address)?;
-    run_operation("enable", &ACTIVATION_TIMEOUT, async {
-        reload_owned_unit(&manager).await?;
+pub(super) fn enable(_path: &Utf8Path) -> Result<(), PlatformError> {
+    run_operation("enable", &ACTIVATION_TIMEOUT, async |manager| {
+        reload_owned_unit(manager).await?;
         manager
             .call::<_, _, (bool, Vec<(String, String, String)>)>(
                 "EnableUnitFiles",
@@ -241,10 +177,9 @@ pub(super) fn enable(_path: &Utf8Path, session_address: &str) -> Result<(), Plat
     })
 }
 
-pub(super) fn remove(path: &Utf8Path, session_address: &str) -> Result<(), PlatformError> {
-    let manager = manager(session_address)?;
-    run_operation("remove", &OPERATION_TIMEOUT, async {
-        if reload_owned_unit(&manager).await?.is_some() {
+pub(super) fn remove(path: &Utf8Path) -> Result<(), PlatformError> {
+    run_operation("remove", &OPERATION_TIMEOUT, async |manager| {
+        if reload_owned_unit(manager).await?.is_some() {
             manager
                 .call::<_, _, Vec<(String, String, String)>>(
                     "DisableUnitFiles",
@@ -258,53 +193,53 @@ pub(super) fn remove(path: &Utf8Path, session_address: &str) -> Result<(), Platf
     })
 }
 
-pub(super) fn restart(session_address: &str) -> Result<(), PlatformError> {
-    run_job(session_address, "RestartUnit", &ACTIVATION_TIMEOUT)
+pub(super) fn restart() -> Result<(), PlatformError> {
+    run_job("RestartUnit", &ACTIVATION_TIMEOUT)
 }
 
-pub(super) fn stop(session_address: &str) -> Result<(), PlatformError> {
-    run_job(session_address, "StopUnit", &OPERATION_TIMEOUT)
+pub(super) fn stop() -> Result<(), PlatformError> {
+    run_job("StopUnit", &OPERATION_TIMEOUT)
 }
 
-fn run_job(
-    session_address: &str,
-    operation: &'static str,
-    limit: &Limit,
-) -> Result<(), PlatformError> {
-    let manager = manager(session_address)?;
-    run_operation(operation, limit, async {
-        let previous = reload_owned_unit(&manager).await?;
+fn run_job(operation: &'static str, limit: &Limit) -> Result<(), PlatformError> {
+    run_operation(operation, limit, async |manager| {
+        let previous = reload_owned_unit(manager).await?;
         if operation == "StopUnit" && previous.is_none() {
             return Ok(());
         }
-        let result = systemd::unit_job(&manager, operation, DAEMON_REGISTRATION_LABEL).await?;
+        let result = systemd::unit_job(manager, operation, DAEMON_REGISTRATION_LABEL).await?;
         if result == "done" {
             Ok(())
         } else {
-            Err(PlatformError::DaemonRegistrationState {
+            Err(registration_error(
                 operation,
-                message: format!("systemd job finished with result {result}"),
-            })
+                format!("systemd job finished with result {result}"),
+            ))
         }
     })
 }
 
+/// Connects to the user manager and runs `work` on one runtime, all within `limit`.
 fn run_operation<T>(
     operation: &'static str,
     limit: &Limit,
-    future: impl Future<Output = Result<T, PlatformError>>,
+    work: impl AsyncFnOnce(&Proxy<'static>) -> Result<T, PlatformError>,
 ) -> Result<T, PlatformError> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
     runtime
-        .block_on(clock::timeout(limit, future))
-        .map_err(|_elapsed| PlatformError::DaemonRegistrationState {
-            operation,
-            message: format!(
-                "operation did not complete within {} seconds",
-                limit.duration().as_secs()
-            ),
+        .block_on(clock::timeout(limit, async {
+            work(&manager().await?).await
+        }))
+        .map_err(|_elapsed| {
+            registration_error(
+                operation,
+                format!(
+                    "operation did not complete within {} seconds",
+                    limit.duration().as_secs()
+                ),
+            )
         })?
 }
