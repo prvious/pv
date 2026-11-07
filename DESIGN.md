@@ -38,7 +38,7 @@ Resource and application manifests recognize `linux-amd64` and `linux-arm64` alo
 
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
-PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only; unfinished Linux and Windows implementations return explicit unsupported results, and app-facing code should call the `platform` crate for host integration concerns.
+PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only; unfinished Linux and Windows implementations return explicit unsupported results, and app-facing code should call the `platform` crate for host integration concerns. Composite setup and uninstall commands check every required host integration before accessing PV paths or changing installation state; enabling a standalone integration does not enable an unfinished composite workflow.
 
 ## Implementation Language
 
@@ -141,6 +141,8 @@ PV configures macOS with `/etc/resolver/test`, pointing `.test` lookups at PV's 
 If `/etc/resolver/test` already exists and is not PV-owned, `pv dns:install` and `pv setup` fail safely, report the resolver conflict, and print manual repair instructions instead of overwriting it.
 
 PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed by PV`. PV only repairs or removes the resolver file when the ownership marker is present.
+
+On Linux, PV owns `pv-dns.service` and the dummy link `pv0`, marked `Managed by PV`, and routes `~test` through systemd-resolved to PV's high DNS port. PV checks the unit marker, loaded fragment and link ownership before mutations, and refuses competing `.test` domains. Removal preserves foreign configuration and keeps the DNS port reserved until full uninstall. Linux listens on `127.0.0.2` because systemd-resolved gives an address-less `pv0` no DNS scope and `127.0.0.1` belongs to `lo`; prepared files carry only the port through the existing localhost format.
 
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 

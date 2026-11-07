@@ -247,6 +247,8 @@ jobs:
           runner_uid=$(id -u)
           sudo -n loginctl enable-linger "$runner_account"
           sudo -n systemctl start "user@${runner_uid}.service"
+          # The DNS test needs lookups to go through systemd-resolved's stub.
+          sudo -n ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
           nextest_state_directory=$(mktemp -d "$RUNNER_TEMP/nextest-system-state.XXXXXX")
           {
             printf 'XDG_RUNTIME_DIR=/run/user/%s\n' "$runner_uid"

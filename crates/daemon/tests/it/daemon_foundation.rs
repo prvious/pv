@@ -2978,7 +2978,7 @@ async fn tcp_dns_query(port: u16, query: &[u8]) -> Result<Message> {
 }
 
 fn dns_address(port: u16) -> SocketAddr {
-    SocketAddr::from((Ipv4Addr::LOCALHOST, port))
+    SocketAddr::from((platform::DNS_LISTEN_ADDRESS, port))
 }
 
 async fn bind_preferred_dns_port_pair() -> Result<Option<(StdTcpListener, StdUdpSocket)>> {
@@ -3002,8 +3002,8 @@ async fn bind_preferred_dns_port_pair() -> Result<Option<(StdTcpListener, StdUdp
 }
 
 fn bind_loopback_tcp_udp_at(port: u16) -> io::Result<(StdTcpListener, StdUdpSocket)> {
-    let tcp_listener = StdTcpListener::bind((Ipv4Addr::LOCALHOST, port))?;
-    let udp_socket = StdUdpSocket::bind((Ipv4Addr::LOCALHOST, port))?;
+    let tcp_listener = StdTcpListener::bind(dns_address(port))?;
+    let udp_socket = StdUdpSocket::bind(dns_address(port))?;
 
     Ok((tcp_listener, udp_socket))
 }
@@ -3013,8 +3013,8 @@ fn bind_loopback_tcp_udp_pair() -> Result<(u16, StdTcpListener, StdUdpSocket)> {
 
     Ok((
         port,
-        StdTcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
-        StdUdpSocket::bind((Ipv4Addr::LOCALHOST, port))?,
+        StdTcpListener::bind(dns_address(port))?,
+        StdUdpSocket::bind(dns_address(port))?,
     ))
 }
 

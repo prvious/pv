@@ -56,6 +56,15 @@ where
     capability_check(&cli.command)?;
     let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
+    #[cfg(target_os = "linux")]
+    let _helper_lifecycle_lock =
+        if matches!(cli.command, Command::DnsInstall | Command::DnsUninstall) {
+            Some(state::HelperLifecycleLock::acquire(&pv_paths(
+                environment,
+            )?)?)
+        } else {
+            None
+        };
 
     match cli.command {
         Command::Env(args) => env::run(args, environment, streams),

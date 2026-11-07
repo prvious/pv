@@ -40,3 +40,4 @@ camino-tempfile = { workspace = true }
 insta = { workspace = true }
 platform = { path = "../platform", features = ["test-support"] }
 pv-fake = { path = "../pv-fake" }
+tokio = { workspace = true, features = ["rt-multi-thread"] }

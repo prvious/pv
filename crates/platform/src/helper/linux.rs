@@ -695,7 +695,7 @@ fn restore_file(path: &Utf8Path, mode: u32, existed: bool) -> Result<(), Platfor
     remove_file(path)
 }
 
-fn read_root_file(path: &Utf8Path, mode: u32) -> Result<Option<Vec<u8>>, PlatformError> {
+pub(crate) fn read_root_file(path: &Utf8Path, mode: u32) -> Result<Option<Vec<u8>>, PlatformError> {
     let descriptor = match open(
         path.as_std_path(),
         OFlags::RDONLY | OFlags::CLOEXEC | OFlags::NOFOLLOW | OFlags::NONBLOCK,
@@ -733,7 +733,7 @@ fn ensure_root_directory(path: &Utf8Path, mode: u32) -> Result<(), PlatformError
         .map_err(PlatformError::PrivilegedHelperIo)
 }
 
-fn acquire_lock(path: &Utf8Path) -> Result<RootFile, PlatformError> {
+pub(crate) fn acquire_lock(path: &Utf8Path) -> Result<RootFile, PlatformError> {
     let descriptor = open(
         path.as_std_path(),
         OFlags::RDWR | OFlags::CREATE | OFlags::CLOEXEC | OFlags::NOFOLLOW,
@@ -756,9 +756,13 @@ fn acquire_lock(path: &Utf8Path) -> Result<RootFile, PlatformError> {
     Ok(file)
 }
 
-fn write_root_file(path: &Utf8Path, content: &[u8], mode: u32) -> Result<(), PlatformError> {
-    // Units are stopped and originals are already in rollback files. Create exclusively from
-    // the pinned bytes: another foreground caller can replace the shared staging candidate.
+pub(crate) fn write_root_file(
+    path: &Utf8Path,
+    content: &[u8],
+    mode: u32,
+) -> Result<(), PlatformError> {
+    // Create exclusively from pinned bytes instead of promoting a shared staging candidate,
+    // which another foreground caller may replace.
     let descriptor = open(
         path.as_std_path(),
         OFlags::WRONLY | OFlags::CREATE | OFlags::EXCL | OFlags::CLOEXEC | OFlags::NOFOLLOW,
@@ -773,7 +777,7 @@ fn write_root_file(path: &Utf8Path, content: &[u8], mode: u32) -> Result<(), Pla
     Ok(())
 }
 
-fn rename(source: &Utf8Path, destination: &Utf8Path) -> Result<(), PlatformError> {
+pub(crate) fn rename(source: &Utf8Path, destination: &Utf8Path) -> Result<(), PlatformError> {
     state::fs::rename(source, destination).map_err(|error| installation_error(error.to_string()))
 }
 fn remove_file(path: &Utf8Path) -> Result<(), PlatformError> {

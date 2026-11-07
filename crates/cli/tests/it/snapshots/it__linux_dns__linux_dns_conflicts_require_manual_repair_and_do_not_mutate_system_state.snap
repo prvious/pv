@@ -1,0 +1,90 @@
+---
+source: crates/cli/tests/it/linux_dns.rs
+expression: observed
+---
+[
+    (
+        "conflict-rejected",
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    1,
+                ),
+            ),
+            stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/conflict-rejected/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nSystem DNS routing conflicts with existing configuration: /etc/systemd/system/pv-dns.service\n  Leaving it in place.\n  Ask an administrator to inspect pv-dns.service, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration.\n",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    1,
+                ),
+            ),
+            stdout: "Deleted prepared DNS resolver config: <tempdir>/conflict-rejected/.pv/config/resolver/test\n",
+            stderr: "error: PV privileged helper rejected the request: fixture refused unsafe DNS removal\n",
+        },
+    ),
+    (
+        "conflict-accepted",
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    1,
+                ),
+            ),
+            stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/conflict-accepted/.pv/config/resolver/test\n  DNS resolver port: <other-dns-port>\nSystem DNS routing conflicts with existing configuration: /etc/systemd/system/pv-dns.service\n  Leaving it in place.\n  Ask an administrator to inspect pv-dns.service, pv0 ownership, and competing test search or routing domains, including subdomains. Repair conflicts before retrying `pv dns:install`; `pv dns:uninstall` removes only PV-owned configuration.\n",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "Deleted prepared DNS resolver config: <tempdir>/conflict-accepted/.pv/config/resolver/test\nRemoved PV-owned system resolver config: /etc/systemd/system/pv-dns.service\n",
+            stderr: "",
+        },
+    ),
+    (
+        "unreadable-rejected",
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    1,
+                ),
+            ),
+            stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/unreadable-rejected/.pv/config/resolver/test\n  DNS resolver port: <other-dns-port>\nSystem resolver config could not be inspected: /etc/systemd/system/pv-dns.service\n  fixture resolved unavailable\n  Leaving it in place.\n",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    1,
+                ),
+            ),
+            stdout: "Deleted prepared DNS resolver config: <tempdir>/unreadable-rejected/.pv/config/resolver/test\n",
+            stderr: "error: PV privileged helper rejected the request: fixture refused unsafe DNS removal\n",
+        },
+    ),
+    (
+        "unreadable-accepted",
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    1,
+                ),
+            ),
+            stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/unreadable-accepted/.pv/config/resolver/test\n  DNS resolver port: <other-dns-port>\nSystem resolver config could not be inspected: /etc/systemd/system/pv-dns.service\n  fixture resolved unavailable\n  Leaving it in place.\n",
+            stderr: "",
+        },
+        RunOutput {
+            exit_code: ExitCode(
+                unix_exit_status(
+                    0,
+                ),
+            ),
+            stdout: "Deleted prepared DNS resolver config: <tempdir>/unreadable-accepted/.pv/config/resolver/test\nRemoved PV-owned system resolver config: /etc/systemd/system/pv-dns.service\n",
+            stderr: "",
+        },
+    ),
+]
