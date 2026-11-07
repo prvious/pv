@@ -7,7 +7,7 @@ cd "$ROOT"
 : "${PV_RECIPE_RESOURCE:?}" "${PV_RECIPE_TRACK:?}" "${PV_RECIPE_PLATFORM:?}"
 : "${PV_ARTIFACT_OUT_DIR:?}" "${PV_ARTIFACT_RECORD_DIR:?}"
 case "$PV_RECIPE_RESOURCE" in
-  php | composer | redis | mysql | postgres | mailpit | rustfs | caddy) ;;
+  php | redis | mysql | postgres | mailpit | rustfs | caddy) ;;
   *) printf 'unsupported resource: %s\n' "$PV_RECIPE_RESOURCE" >&2; exit 1 ;;
 esac
 case "$PV_RECIPE_PLATFORM:$(uname -m)" in
@@ -28,12 +28,6 @@ if [ "$PV_RECIPE_RESOURCE" = php ]; then
   spc --version
   spc build:php --help | grep -- '--build-frankenphp' >/dev/null
   spc build:php --help | grep -- '--dl-custom-local' >/dev/null
-fi
-
-if [ "$PV_RECIPE_RESOURCE" = composer ]; then
-  PV_RECIPE_PLATFORM=any
-  PV_COMPOSER_SMOKE_PHP=$(command -v php)
-  export PV_RECIPE_PLATFORM PV_COMPOSER_SMOKE_PHP
 fi
 
 "release/artifacts/recipes/$PV_RECIPE_RESOURCE/build.sh"
