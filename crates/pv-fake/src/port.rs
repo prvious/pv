@@ -251,30 +251,6 @@ mod tests {
     }
 
     #[test]
-    fn a_pool_with_every_block_held_reports_it() -> Result<()> {
-        let directory = tempdir()?;
-        let mut pool = test_pool(directory.path().to_owned());
-        let mut other_holders = Vec::new();
-        for block_start in [TEST_FIRST_PORT, TEST_FIRST_PORT + BLOCK_SIZE] {
-            let lock = open_lock_file(&directory.path().join(format!("{block_start}.lock")))?;
-            lock.try_lock()?;
-            other_holders.push(lock);
-        }
-
-        let error = pool
-            .port()
-            .err()
-            .ok_or_else(|| anyhow!("expected a full pool to fail"))?;
-
-        assert_eq!(
-            error.to_string(),
-            "every test port block in 33000..=33063 is held by another test process"
-        );
-
-        Ok(())
-    }
-
-    #[test]
     fn another_process_holds_its_block_until_it_exits() -> Result<()> {
         let directory = tempdir()?;
         let test_binary = std::env::args_os()

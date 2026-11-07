@@ -1,0 +1,44 @@
+---
+source: crates/protocol/src/tests.rs
+expression: wire_format
+---
+[
+  {
+    "job_id": "job-1",
+    "message": "job accepted",
+    "protocol_version": 3,
+    "status": "accepted",
+    "type": "response"
+  },
+  {
+    "message": "Managed Resource update check completed",
+    "protocol_version": 3,
+    "status": "ok",
+    "type": "response",
+    "update_check": {
+      "managed_resources": [
+        {
+          "blocked_by": null,
+          "current_artifact_path": "/Users/me/.pv/resources/redis/8.8/releases/8.8.0-pv1",
+          "current_artifact_version": "8.8.0-pv1",
+          "current_revocation": null,
+          "latest_artifact_version": "8.8.1-pv1",
+          "latest_revocation": null,
+          "reason": null,
+          "resource": "redis",
+          "status": "update_available",
+          "track": "8.8"
+        }
+      ]
+    }
+  },
+  {
+    "artifact_version": "8.8.1-pv1",
+    "downloaded_bytes": 42,
+    "job_id": "job-1",
+    "resource": "redis",
+    "total_bytes": 100,
+    "track": "8.8",
+    "type": "download_progress"
+  }
+]

@@ -18,3 +18,4 @@ tokio-util = { workspace = true }
 
 [dev-dependencies]
 anyhow = { workspace = true }
+insta = { workspace = true }

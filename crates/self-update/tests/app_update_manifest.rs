@@ -1,85 +1,13 @@
 use anyhow::Result;
-use insta::assert_debug_snapshot;
+use insta::{Settings, assert_debug_snapshot};
 use self_update::{AppUpdateManifest, AppUpdateManifestError, AppUpdatePlatform, AppUpdateVersion};
-
-#[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "snapshot-only structure is read through derived Debug"
-)]
-struct InvalidManifestSnapshot {
-    name: &'static str,
-    error: ManifestErrorSnapshot,
-}
-
-#[derive(Debug)]
-#[expect(
-    dead_code,
-    reason = "snapshot-only structure is read through derived Debug"
-)]
-enum ManifestErrorSnapshot {
-    UnsupportedManifestSchema {
-        schema_version: u64,
-        supported_schema_version: u64,
-    },
-    UnsupportedChannel {
-        channel: String,
-    },
-    InvalidIdentity {
-        kind: &'static str,
-        value: String,
-    },
-    RequiresNewerPv {
-        minimum_pv_version: String,
-        current_pv_version: &'static str,
-    },
-    InvalidPublishedAt {
-        value: String,
-    },
-    UnsupportedPlatform {
-        platform: String,
-    },
-    InvalidAssetUrl {
-        url: String,
-    },
-    InvalidAssetSize {
-        platform: String,
-        size: u64,
-    },
-    InvalidHelperProtocolVersion {
-        platform: String,
-        protocol_version: u32,
-    },
-    DuplicatePlatform {
-        platform: String,
-    },
-    Other {
-        message: String,
-    },
-}
 
 #[test]
 fn app_update_manifest_parses_stable_release_and_selects_platform() -> Result<()> {
     let manifest = AppUpdateManifest::parse(VALID_MANIFEST)?;
     let selected = manifest.select_platform(AppUpdatePlatform::DarwinArm64)?;
 
-    assert_eq!(manifest.schema_version(), 2);
-    assert_eq!(manifest.channel(), "stable");
-    assert_eq!(manifest.version().as_str(), "0.2.0");
-    assert_eq!(manifest.minimum_pv_version().as_str(), "0.1.0");
     assert_eq!(selected.platform(), AppUpdatePlatform::DarwinArm64);
-    assert_eq!(
-        selected.url(),
-        "https://downloads.example.test/pv/0.2.0/pv-darwin-arm64"
-    );
-    assert_eq!(
-        selected.sha256().as_str(),
-        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-    );
-    assert_eq!(selected.size(), 12345678);
-    assert_eq!(selected.helper().version().as_str(), "1.0.0");
-    assert_eq!(selected.helper().protocol_version(), 1);
-
     assert_debug_snapshot!(manifest);
 
     Ok(())
@@ -106,15 +34,15 @@ fn app_update_manifest_rejects_schema_channel_version_and_compatibility_errors()
         ("newer_minimum", newer_minimum),
     ]
     .into_iter()
-    .map(|(name, manifest)| {
-        Ok(InvalidManifestSnapshot {
-            name,
-            error: normalize_manifest_error(parse_manifest_error(&manifest)?),
-        })
-    })
+    .map(|(name, manifest)| Ok((name, parse_manifest_error(&manifest)?)))
     .collect::<Result<Vec<_>>>()?;
 
-    assert_debug_snapshot!(errors);
+    let mut settings = Settings::clone_current();
+    settings.add_filter(
+        r#"current_pv_version: "[^"]+""#,
+        r#"current_pv_version: "<current-pv-version>""#,
+    );
+    settings.bind(|| assert_debug_snapshot!(errors));
 
     Ok(())
 }
@@ -154,12 +82,7 @@ fn app_update_manifest_rejects_invalid_asset_fields() -> Result<()> {
         ("duplicate_platform", duplicate_platform),
     ]
     .into_iter()
-    .map(|(name, manifest)| {
-        Ok(InvalidManifestSnapshot {
-            name,
-            error: normalize_manifest_error(parse_manifest_error(&manifest)?),
-        })
-    })
+    .map(|(name, manifest)| Ok((name, parse_manifest_error(&manifest)?)))
     .collect::<Result<Vec<_>>>()?;
 
     assert_debug_snapshot!(errors);
@@ -193,12 +116,7 @@ fn app_update_manifest_rejects_invalid_helper_fields() -> Result<()> {
         ("zero_helper_size", zero_size),
     ]
     .into_iter()
-    .map(|(name, manifest)| {
-        Ok(InvalidManifestSnapshot {
-            name,
-            error: normalize_manifest_error(parse_manifest_error(&manifest)?),
-        })
-    })
+    .map(|(name, manifest)| Ok((name, parse_manifest_error(&manifest)?)))
     .collect::<Result<Vec<_>>>()?;
 
     assert_debug_snapshot!(errors);
@@ -246,56 +164,6 @@ fn parse_manifest_error(json: &str) -> Result<AppUpdateManifestError> {
     match AppUpdateManifest::parse(json) {
         Ok(manifest) => anyhow::bail!("manifest parsed successfully: {manifest:#?}"),
         Err(error) => Ok(error),
-    }
-}
-
-fn normalize_manifest_error(error: AppUpdateManifestError) -> ManifestErrorSnapshot {
-    match error {
-        AppUpdateManifestError::UnsupportedManifestSchema {
-            schema_version,
-            supported_schema_version,
-        } => ManifestErrorSnapshot::UnsupportedManifestSchema {
-            schema_version,
-            supported_schema_version,
-        },
-        AppUpdateManifestError::UnsupportedChannel { channel } => {
-            ManifestErrorSnapshot::UnsupportedChannel { channel }
-        }
-        AppUpdateManifestError::InvalidIdentity { kind, value } => {
-            ManifestErrorSnapshot::InvalidIdentity { kind, value }
-        }
-        AppUpdateManifestError::RequiresNewerPv {
-            minimum_pv_version,
-            current_pv_version: _,
-        } => ManifestErrorSnapshot::RequiresNewerPv {
-            minimum_pv_version,
-            current_pv_version: "<current-pv-version>",
-        },
-        AppUpdateManifestError::InvalidPublishedAt { value } => {
-            ManifestErrorSnapshot::InvalidPublishedAt { value }
-        }
-        AppUpdateManifestError::UnsupportedPlatform { platform } => {
-            ManifestErrorSnapshot::UnsupportedPlatform { platform }
-        }
-        AppUpdateManifestError::InvalidAssetUrl { url } => {
-            ManifestErrorSnapshot::InvalidAssetUrl { url }
-        }
-        AppUpdateManifestError::InvalidAssetSize { platform, size } => {
-            ManifestErrorSnapshot::InvalidAssetSize { platform, size }
-        }
-        AppUpdateManifestError::InvalidHelperProtocolVersion {
-            platform,
-            protocol_version,
-        } => ManifestErrorSnapshot::InvalidHelperProtocolVersion {
-            platform,
-            protocol_version,
-        },
-        AppUpdateManifestError::DuplicatePlatform { platform } => {
-            ManifestErrorSnapshot::DuplicatePlatform { platform }
-        }
-        error => ManifestErrorSnapshot::Other {
-            message: error.to_string(),
-        },
     }
 }
 
