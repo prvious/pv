@@ -24,9 +24,11 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 
 ## Platform Scope
 
-PV v1 supports macOS 14 and newer and the Linux distribution/CPU pairs below. Stabilizing the macOS application remains the immediate product priority.
+PV v1 supports macOS 14 and newer and Linux. Stabilizing the macOS application remains the immediate product priority.
 
-| Linux distribution | Supported CPUs |
+The Linux acceptance run covers these distribution/CPU pairs:
+
+| Linux distribution | CPUs |
 | --- | --- |
 | Ubuntu 22.04 | amd64, arm64 |
 | Ubuntu 24.04 | amd64, arm64 |
@@ -36,18 +38,13 @@ PV v1 supports macOS 14 and newer and the Linux distribution/CPU pairs below. St
 | Fedora 43 | amd64, arm64 |
 | Fedora 44 | amd64, arm64 |
 
-A Linux pair enters this list only after every Managed Resource artifact smoke
-and the full system acceptance journey pass. The same list is embedded from
-`release/linux-supported-distributions.txt` into installer warnings and
-informational diagnostics. Other glibc distributions may run PV but remain
-untested. Derivatives do not inherit support from their base distribution.
+PV does not check which distribution it runs on. Any host that meets the
+requirements below can install it, so users on other distributions can try it.
 
-Linux requires glibc 2.35 or newer, kernel 5.15 or newer, systemd as PID 1, a
-reachable per-user manager, systemd-resolved as the active stub resolver, sudo
-and NSS certutil. Setup reports missing prerequisites with repair guidance;
-PV does not install system packages. musl, non-systemd hosts, WSL and containers
-as installed PV hosts are unsupported. Disposable acceptance containers are
-test infrastructure.
+Linux requires glibc 2.35 or newer, systemd with a reachable per-user manager,
+systemd-resolved, sudo and NSS certutil. Setup reports missing prerequisites
+with repair guidance; PV does not install system packages. musl, non-systemd
+hosts, WSL and containers as installed PV hosts are unsupported.
 
 macOS 13 may continue to run PV when the application and Managed Resource binaries remain compatible, but it is untested and unsupported. Dropping support does not by itself require raising binary deployment targets or republishing otherwise compatible Managed Resource artifacts. Before PV deliberately ships an application binary that cannot run on macOS 13, the application update manifest and updater must prevent an incompatible update from being activated there.
 
@@ -55,7 +52,7 @@ The full macOS CI quality and behavior suite covers the available hosted macOS m
 
 Windows is a committed subsequent platform. The installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
 
-Native Windows compile support and explicit unsupported behavior do not make Windows supported or authorize publishing Windows binaries. Linux implementation and acceptance do not authorize publication; the owner runs releases separately.
+Native Windows compile support and explicit unsupported behavior do not make Windows supported or authorize publishing Windows binaries.
 
 Resource and application manifests recognize `linux-amd64` and `linux-arm64` alongside the two macOS platforms. Before any Linux entries are published, the macOS release that recognizes these platform names must be installed on both maintainer laptops; older clients reject manifests containing unknown platforms.
 
@@ -107,7 +104,7 @@ Initial PV distribution is a standalone install script/direct binary download. H
 
 The install script downloads the PV application and its separate privileged helper artifact, verifies each against its published SHA-256 checksum, and installs both plus the required adjacent `pv-helper.json` release metadata into the user-owned release directory. Setup and update require that metadata rather than relying on a checksum compiled into the application. If either verification fails, installation deletes the bad download and stops before editing shell profiles or running setup. Dogfood helper artifacts use ad-hoc code signing; Developer ID signing, notarization, and a signed package are deferred until public release. No correctness path may depend on the signing identity of PV or of any ancestor process.
 
-Linux app and helper binaries are built on native runners inside the same digest-pinned Ubuntu 22.04 builder used for resource recipes, with no signing or registry publication. Helper reuse is scoped to the selected platform and helper version, so a first Linux release builds its own helper even when macOS already publishes that version. The app workflow keeps its macOS-only default; Linux platforms must be selected explicitly. The build-only Linux acceptance path generates local app records and an installer from the same source checkout.
+Linux app and helper binaries are built on native runners inside the same digest-pinned Ubuntu 22.04 builder used for resource recipes and are not signed. Helper reuse is scoped to the selected platform and helper version, so a first Linux release builds its own helper even when macOS already publishes that version. The app workflow keeps its macOS-only default; Linux platforms must be selected explicitly.
 
 The stable installer URL serves a generated installer script based on PV app release metadata. The bash installer does not need to parse the JSON PV app update manifest. The installer script may embed or otherwise receive the resolved current PV version, platform asset URLs, and SHA-256 checksums from the server-side installer generation flow. The JSON PV app update manifest is used by the Rust self-updater.
 
@@ -733,7 +730,7 @@ The v1 PV app update manifest is a single stable-channel release document. It do
 
 `schema_version` must be `2`; other schema versions fail as unsupported rather than being partially interpreted. `channel` must be exactly `stable`; runtime/user-facing channel selection is not part of v1. `version`, `minimum_pv_version`, and helper `version` use PV's simple version identity, `major.minor.patch` with no leading zero components. `minimum_pv_version` is the minimum currently installed PV application version that may apply this release; if the running PV binary is older than that value, self-update manifest parsing fails clearly and tells the user that a newer PV parser is required.
 
-`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes a native PV application binary and separate native helper binary for one exact target platform. App update metadata recognizes `darwin-arm64`, `darwin-amd64`, `linux-amd64`, and `linux-arm64`; `any` is not valid. Recognizing a platform does not authorize its publication. Helper `protocol_version` is a positive integer versioned independently from the app and helper release versions. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
+`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes a native PV application binary and separate native helper binary for one exact target platform. App update metadata recognizes `darwin-arm64`, `darwin-amd64`, `linux-amd64`, and `linux-arm64`; `any` is not valid. Helper `protocol_version` is a positive integer versioned independently from the app and helper release versions. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
 
 The manifest must contain at least one asset and must not contain duplicate assets for the same platform. Selecting the current platform returns the matching asset for the current target platform. If the current target platform is missing, selection fails clearly instead of falling back to another platform.
 
@@ -1006,9 +1003,9 @@ Managed Resource artifacts must run from PV's installed resource layout before p
 
 Native recipe metadata requires `darwin-arm64`, `darwin-amd64`, `linux-amd64` and `linux-arm64`. Composer remains platform-independent with `any`. Source archives shared across platforms stay common inputs; recipes that wrap upstream binaries pin a source URL and SHA-256 for each platform.
 
-Linux artifacts are built separately for each CPU architecture in the digest-pinned Ubuntu 22.04 builder from `scripts/linux/builder.Dockerfile`. GitHub builds that image in a job step and runs the native recipe with Docker on `ubuntu-24.04` or `ubuntu-24.04-arm`; the image is never pushed to a registry. The workflow’s existing default selects macOS, while `all-linux` selects both Linux CPUs. Its glibc 2.35 baseline is the portability ceiling. Recipe validation inspects every ELF file with `readelf`: its machine must match the target, numeric `GLIBC` symbol versions may not exceed 2.35, and `GLIBC_ABI_DT_RELR` is rejected because it requires the 2.36 loader. Each `DT_NEEDED` library must be a bundled regular file or one of `libc.so.6`, `libm.so.6`, `libpthread.so.0`, `libdl.so.2`, `librt.so.1`, `libresolv.so.2`, `ld-linux-x86-64.so.2`, `ld-linux-aarch64.so.1`, `libgcc_s.so.1` or `libstdc++.so.6`. Library search paths contain only `$ORIGIN`-relative entries. Archive validation rejects links. Linux binaries are not signed. Linux MySQL 9.7 uses upstream’s bundled static curl 8.14.1 to retain its server and client telemetry modules without external curl dependencies. macOS keeps its system curl selection. This is a narrow dependency-provider exception to shared build flags: Linux telemetry export uses HTTP/1.1 rather than HTTP/2. The artifact carries the bundled curl license, and its smoke test loads both telemetry modules.
+Linux artifacts are built separately for each CPU architecture in the digest-pinned Ubuntu 22.04 builder from `scripts/linux/builder.Dockerfile`. Its glibc 2.35 baseline is the portability ceiling. Recipe validation checks every ELF file the way it checks Mach-O files: the CPU matches the target, no symbol needs a glibc newer than 2.35, bundled files depend only on bundled libraries, glibc, libgcc and libstdc++, and library search paths are `$ORIGIN`-relative. Archive validation rejects links. Linux binaries are not signed. Linux MySQL 9.7 uses upstream’s bundled static curl 8.14.1 to retain its server and client telemetry modules without external curl dependencies. macOS keeps its system curl selection. This is a narrow dependency-provider exception to shared build flags: Linux telemetry export uses HTTP/1.1 rather than HTTP/2. The artifact carries the bundled curl license, and its smoke test loads both telemetry modules.
 
-A Linux distribution/CPU pair is supported only after every resource archive passes its smoke hook on that pair and the Linux acceptance workflow passes installation, setup, system-trusted Project HTTPS, resource connectivity, daemon restart, logout recovery and complete uninstall. Acceptance uses candidate files from a completed build-only Artifact Recipes run, with a compile-time unreachable manifest URL and the existing download cache. Native app binaries and helper records are built from the same acceptance source checkout. Test installer asset URLs point at local files; production manifest selection is unchanged. Failed pairs retain their logs and remain unsupported.
+Linux acceptance runs on each distribution/CPU pair in Platform Scope: every resource archive passes its smoke hook, then PV installs from the archives the same run built and passes setup, system-trusted Project HTTPS, resource connectivity, daemon restart, logout recovery and complete uninstall.
 
 Artifact recipes prove portability through archive layout validation, adapter-required file checks, the platform-specific Mach-O or ELF checks, and target-platform smoke tests. Binary or string scans are not a substitute for these checks.
 
@@ -1096,7 +1093,7 @@ Maintainer-local macOS artifact builds also run natively on macOS. Docker is not
 
 Linux artifact builds must use the shared builder definition under `scripts/linux/`, based on Ubuntu 22.04 pinned by digest, so glibc 2.35 is the runtime baseline for both `linux-amd64` and `linux-arm64`. Docker is the supported path for local Linux builds and tests. Each architecture builds and runs natively; Apple Silicon development uses ARM64 containers and amd64 validation uses native CI runners.
 
-Linux system integration tests use disposable systemd containers separately from the builder. Their source mount is read-only, their test user is unprivileged. Test-only linger does not change the installed daemon's login-session lifecycle. Container tests do not establish a supported distro until the artifact and system acceptance gates both pass.
+Linux system integration tests run in disposable systemd containers, separate from the builder.
 
 The Real Artifact E2E workflow runs its Gateway, resource-matrix and runtime-contract suites on a native runner for the selected macOS or Linux architecture, defaulting to `darwin-arm64`. Its optional privileged macOS RC remains a separate macOS workflow.
 

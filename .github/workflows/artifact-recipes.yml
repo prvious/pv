@@ -3,12 +3,8 @@ name: Artifact Recipes
 on:
   workflow_dispatch:
     inputs:
-      acceptance_source_run_id:
-        description: "Skip builds and run Linux acceptance using this completed recipe run"
-        required: false
-        type: string
-      acceptance_composer_run_id:
-        description: "Completed explicit Composer any build for Linux acceptance"
+      acceptance_run_id:
+        description: "Skip builds and run Linux acceptance against this earlier all-linux run's outputs"
         required: false
         type: string
       resource:
@@ -50,18 +46,22 @@ permissions:
 
 jobs:
   linux-acceptance:
-    if: ${{ inputs.acceptance_source_run_id != '' }}
+    needs: [build-linux, build-composer]
+    # An all-linux run of every resource and track tests what it just built.
+    if: >-
+      ${{ !cancelled() && (inputs.acceptance_run_id != '' || (inputs.platform == 'all-linux'
+      && inputs.resource == 'all' && inputs.track == 'all'
+      && needs.build-linux.result == 'success' && needs.build-composer.result == 'success')) }}
     permissions:
       actions: read
       contents: read
     uses: ./.github/workflows/linux-acceptance.yml
     with:
-      source_run_id: ${{ inputs.acceptance_source_run_id }}
-      composer_run_id: ${{ inputs.acceptance_composer_run_id }}
+      source_run_id: ${{ inputs.acceptance_run_id || github.run_id }}
 
   validate:
     name: validate
-    if: ${{ inputs.acceptance_source_run_id == '' }}
+    if: ${{ inputs.acceptance_run_id == '' }}
     runs-on: ${{ (inputs.platform == 'all-linux' || startsWith(inputs.platform, 'linux-')) && 'ubuntu-24.04' || 'macos-15' }}
     outputs:
       linux_matrix: ${{ steps.linux-matrix.outputs.matrix }}
@@ -345,7 +345,7 @@ jobs:
   build-composer:
     name: "composer ${{ matrix.track }} ${{ matrix.platform }}"
     needs: validate
-    if: ${{ (inputs.platform == 'all' || inputs.platform == 'any' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'composer') }}
+    if: ${{ (inputs.platform == 'all' || inputs.platform == 'any' || inputs.platform == 'all-linux' || startsWith(inputs.platform, 'darwin-')) && (inputs.resource == 'all' || inputs.resource == 'composer') }}
     runs-on: macos-15
     strategy:
       fail-fast: false

@@ -254,32 +254,16 @@ bash scripts/linux/container.sh down ubuntu-22.04
 Containers mount the source read-only. Test-only linger applies to their user.
 Run `shellcheck scripts/linux/*.sh` when changing the scripts.
 
-For acceptance, dispatch `artifact-recipes.yml` on the branch with
-`platform=all-linux`, then `linux-acceptance.yml` with that recipe run ID.
-These build and test; publication remains a separate owner action.
+For Linux acceptance, dispatch `artifact-recipes.yml` on the branch with
+`resource=all`, `track=all` and `platform=all-linux`. That run builds every
+Linux resource and Composer, then runs every resource track through install,
+setup and uninstall on Ubuntu 22.04/24.04/26.04, Debian 12/13 and Fedora 43/44
+for both CPUs, uploading each pair's step logs. To re-test acceptance changes
+without rebuilding, dispatch it again with `acceptance_run_id` set to that
+run. These workflows build and test; publishing stays a separate owner action.
 
-To add a supported distribution/CPU pair, update the acceptance matrix and
-`release/linux-supported-distributions.txt`, then pass every resource smoke
-and the system acceptance journey on that pair before listing it in DESIGN.md.
-
-For a complete Linux support run, first dispatch `artifact-recipes.yml` on the
-Linux branch with `resource=all`, `track=all`, and `platform=all-linux`. After
-that build completes, dispatch `linux-acceptance.yml` on the same stack with its
-`source_run_id`. Before that new workflow reaches the default branch, dispatch
-`artifact-recipes.yml` with `acceptance_source_run_id` instead; it calls the same
-acceptance workflow and skips resource builds. These workflows upload test outputs;
-they do not publish releases or push builder images to a registry. Acceptance
-checks all resource tracks on Ubuntu 22.04/24.04/26.04, Debian 12/13 and Fedora
-43/44 for both native CPUs, plus native Ubuntu and Alpine installer refusal.
-Each pair uploads its result and step logs. The acceptance script runs only as
-an ordinary user on an explicitly opted-in disposable machine, with its own
-user manager and no existing PV installation.
-
-Record passing pairs in `release/linux-supported-distributions.txt` as
-`ID:VERSION_ID:platform`, using `/etc/os-release` and PV's platform names. Both
-the generated installer and diagnostics embed this list. Add a pair only after
-its complete artifact and system acceptance gate passes.
-
+To test another distribution/CPU pair, add it to the acceptance matrix, then
+list it in DESIGN.md once acceptance passes on it.
 
 The daemon-registration system test requires a disposable user's real user
 manager and refuses an existing PV home, unit file, or loaded service. Build PV
