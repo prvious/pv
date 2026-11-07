@@ -36,7 +36,7 @@ pub use daemon_registration::{
 };
 pub use error::PlatformError;
 #[cfg(target_os = "linux")]
-pub use helper::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
+pub use helper::run_privileged_helper_lifecycle;
 
 pub use helper::{
     HELPER_EXECUTABLE_PATH, HELPER_LAUNCH_DAEMON_PATH, HELPER_METADATA_PATH,

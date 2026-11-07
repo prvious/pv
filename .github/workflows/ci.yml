@@ -238,11 +238,11 @@ jobs:
           name: nextest-run-${{ matrix.runner }}
           path: ${{ runner.temp }}/nextest-run.zip
 
-      - name: Prepare native Linux daemon registration test
+      - name: Prepare native Linux system tests
         shell: bash
         run: |
           set -euo pipefail
-          cargo build --locked --all-features -p pv -p daemon --examples --bins
+          cargo build --locked --all-features -p pv -p daemon -p pv-privileged-helper --examples --bins
           runner_account=$(id -un)
           runner_uid=$(id -u)
           sudo -n loginctl enable-linger "$runner_account"
@@ -254,15 +254,17 @@ jobs:
             printf 'NEXTEST_STATE_DIR=%s\n' "$nextest_state_directory"
           } >> "$GITHUB_ENV"
 
-      - name: Run native Linux daemon registration test
+      # The system tests share systemd and the helper, so they run one at a time.
+      - name: Run native Linux system tests
         id: linux_system_tests
         env:
           PV_LINUX_SYSTEM_TESTS: "1"
           PV_LINUX_SYSTEM_PV: ${{ github.workspace }}/target/debug/pv
+          PV_LINUX_SYSTEM_HELPER: ${{ github.workspace }}/target/debug/pv-helper
         run: |
           cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
-            --run-ignored only -p cli -p daemon --all-features --locked \
-            -E 'test(/^linux_daemon_registration_system::/)'
+            --run-ignored only -p cli -p daemon --all-features --locked --test-threads 1 \
+            -E 'test(/^linux_(daemon_registration|helper)_system::/)'
 
       - name: Export Linux system test recording
         if: ${{ !cancelled() && steps.linux_system_tests.outcome != 'skipped' }}
@@ -274,40 +276,6 @@ jobs:
         with:
           name: nextest-system-run-${{ matrix.runner }}
           path: ${{ runner.temp }}/nextest-system-run.zip
-
-      - name: Prepare native Linux helper lifecycle test
-        shell: bash
-        run: |
-          set -euo pipefail
-          cargo build --locked --all-features -p pv-privileged-helper
-          cargo nextest list --locked --all-features -p cli --run-ignored only \
-            -E 'test(/^linux_helper_system::/)'
-          nextest_state_directory=$(mktemp -d "$RUNNER_TEMP/nextest-helper-state.XXXXXX")
-          printf 'NEXTEST_STATE_DIR=%s\n' "$nextest_state_directory" >> "$GITHUB_ENV"
-
-      - name: Run native Linux helper lifecycle test
-        id: linux_helper_tests
-        env:
-          PV_LINUX_SYSTEM_TESTS: "1"
-          PV_LINUX_SYSTEM_HELPER: ${{ github.workspace }}/target/debug/pv-helper
-          INSTA_UPDATE: "no"
-        run: |
-          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
-            --run-ignored only -p cli --all-features --locked \
-            -E 'test(/^linux_helper_system::/)'
-
-      - name: Export Linux helper test recording
-        id: export_linux_helper_recording
-        if: ${{ !cancelled() && steps.linux_helper_tests.outcome != 'skipped' }}
-        run: cargo nextest store export latest --archive-file "$RUNNER_TEMP/nextest-helper-run.zip"
-
-      - name: Upload Linux helper test recording
-        if: ${{ !cancelled() && steps.export_linux_helper_recording.outcome == 'success' }}
-        uses: actions/upload-artifact@v7
-        with:
-          name: nextest-helper-run-${{ matrix.runner }}
-          path: ${{ runner.temp }}/nextest-helper-run.zip
-          if-no-files-found: error
 
   runtime-portability:
     name: Runtime (${{ matrix.target }})

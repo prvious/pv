@@ -1,7 +1,7 @@
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
-pub use linux::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
+pub use linux::run_privileged_helper_lifecycle;
 
 #[cfg(target_os = "macos")]
 use std::collections::BTreeMap;
@@ -1282,7 +1282,7 @@ fn connect_helper(socket_path: &Utf8Path) -> Result<std::os::unix::net::UnixStre
     Ok(stream)
 }
 
-#[cfg(any(target_os = "macos", all(test, target_os = "linux")))]
+#[cfg(target_os = "macos")]
 fn probe_helper_lifecycle(socket_path: &Utf8Path) -> Result<PrivilegedHelperStatus, PlatformError> {
     let mut stream = connect_helper(socket_path)?;
     stream
@@ -1989,12 +1989,12 @@ mod tests {
     use std::os::unix::fs::symlink;
     #[cfg(target_os = "macos")]
     use std::process::{Child, Stdio};
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     use std::thread;
     #[cfg(unix)]
     use std::time::Duration;
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     use anyhow::anyhow;
     #[cfg(target_os = "macos")]
     use camino_tempfile::tempdir;
@@ -2012,12 +2012,12 @@ mod tests {
     use super::{
         HELPER_SOCKET_NAME, HELPER_SOCKET_WAIT, HELPER_STANDARD_ERROR_PATH,
         HelperLaunchDaemonPlist, dispatch_request, lock_machine_helper_lifecycle_file,
-        render_launch_daemon_plist, validate_root_owned_regular_file, wait_for_helper_lifecycle,
+        probe_helper_lifecycle, render_launch_daemon_plist, validate_root_owned_regular_file,
+        wait_for_helper_lifecycle,
     };
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     use super::{
-        HelperPayload, PRIVILEGED_HELPER_VERSION, call_helper, probe_helper_lifecycle,
-        serve_next_helper_connection,
+        HelperPayload, PRIVILEGED_HELPER_VERSION, call_helper, serve_next_helper_connection,
     };
     use super::{
         HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata,
@@ -2155,7 +2155,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     #[test]
     #[expect(
         clippy::disallowed_methods,

@@ -683,6 +683,7 @@ fn run_app_update_phase(
         return Err(error.into());
     }
 
+    let mut helper_install_cleanup_warning = None;
     if helper_update_required {
         super::write_administrator_step(
             stderr,
@@ -760,7 +761,7 @@ fn run_app_update_phase(
                 return Err(error.into());
             }
         };
-        let _ = write_privileged_helper_cleanup_warning(stderr, install_outcome.cleanup_warning());
+        helper_install_cleanup_warning = install_outcome.cleanup_warning().map(str::to_string);
         if let Some(download) = &helper_only_download {
             let promotion_result = layout
                 .install_release_helper(target_release_version, download)
@@ -850,6 +851,10 @@ fn run_app_update_phase(
                 asset.helper().protocol_version()
             ),
         )?;
+        let _ = write_privileged_helper_cleanup_warning(
+            stderr,
+            helper_install_cleanup_warning.as_deref(),
+        );
         if manifest.version() < &current_version {
             output.flow_step(
                 Mark::Done,
@@ -908,6 +913,10 @@ fn run_app_update_phase(
                 asset.helper().protocol_version()
             ),
         )?;
+        let _ = write_privileged_helper_cleanup_warning(
+            stderr,
+            helper_install_cleanup_warning.as_deref(),
+        );
     } else if let InstalledHelperState::Ready(status) = &installed_helper {
         output.flow_step(
             Mark::Done,
@@ -1704,16 +1713,16 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
         AppUpdateStatusValue::Current
     };
     let installed_helper = environment.privileged_helper_status();
-    let current_helper_version = installed_helper
-        .as_ref()
-        .ok()
-        .map(|status| status.version.clone());
-    let current_helper_protocol_version = installed_helper
-        .as_ref()
-        .ok()
-        .map(|status| status.protocol_version);
-    let installed_helper_state =
-        installed_helper_state(installed_helper).map_err(|error| error.to_string());
+    let installed_helper_state = match installed_helper.as_ref() {
+        Ok(status) => Ok(InstalledHelperState::Ready((*status).clone())),
+        Err(platform::PlatformError::PrivilegedHelperUnavailable) => {
+            Ok(InstalledHelperState::Missing)
+        }
+        Err(platform::PlatformError::PrivilegedHelperProtocolMismatch { .. }) => {
+            Ok(InstalledHelperState::ProtocolMismatch)
+        }
+        Err(error) => Err(error.to_string()),
+    };
     let (helper_status, helper_reason) = match installed_helper_state {
         Ok(installed_helper_state) => match app_update_plan(
             &current_version,
@@ -1742,9 +1751,15 @@ fn app_update_status(environment: &impl Environment) -> Result<AppUpdateStatus, 
     };
     let helper = PrivilegedHelperUpdateStatus {
         status: helper_status,
-        current_version: current_helper_version,
+        current_version: installed_helper
+            .as_ref()
+            .ok()
+            .map(|status| status.version.clone()),
         latest_version: asset.helper().version().to_string(),
-        current_protocol_version: current_helper_protocol_version,
+        current_protocol_version: installed_helper
+            .as_ref()
+            .ok()
+            .map(|status| status.protocol_version),
         latest_protocol_version: asset.helper().protocol_version(),
         url: asset.helper().url().to_string(),
         sha256: asset.helper().sha256().as_str().to_string(),

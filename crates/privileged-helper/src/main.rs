@@ -1,9 +1,9 @@
 #[cfg(target_os = "linux")]
 use clap::{Parser, Subcommand};
+#[cfg(target_os = "linux")]
+use platform::run_privileged_helper_lifecycle;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use platform::serve_privileged_helper;
-#[cfg(target_os = "linux")]
-use platform::{PrivilegedHelperLifecycleAction, run_privileged_helper_lifecycle};
 #[cfg(target_os = "linux")]
 use std::io;
 
@@ -19,15 +19,8 @@ struct Arguments {
 enum Command {
     #[command(hide = true)]
     HelperLifecycle {
-        action: PrivilegedHelperLifecycleAction,
         #[arg(long)]
         owner_uid: u32,
-        #[arg(long)]
-        sha256: String,
-        #[arg(long)]
-        helper_version: String,
-        #[arg(long)]
-        protocol_version: u32,
     },
 }
 
@@ -41,20 +34,8 @@ fn main() -> anyhow::Result<()> {
 #[cfg(target_os = "linux")]
 fn main() -> anyhow::Result<()> {
     match Arguments::parse().command {
-        Some(Command::HelperLifecycle {
-            action,
-            owner_uid,
-            sha256,
-            helper_version,
-            protocol_version,
-        }) => {
-            let outcome = run_privileged_helper_lifecycle(
-                action,
-                owner_uid,
-                &sha256,
-                &helper_version,
-                protocol_version,
-            )?;
+        Some(Command::HelperLifecycle { owner_uid }) => {
+            let outcome = run_privileged_helper_lifecycle(owner_uid)?;
             serde_json::to_writer(io::stdout().lock(), &outcome)?;
         }
         None => serve_privileged_helper()?,

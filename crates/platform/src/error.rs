@@ -80,10 +80,6 @@ pub enum PlatformError {
     #[error("daemon registration file could not be read at {path}: {message}")]
     DaemonRegistrationUnreadable { path: Utf8PathBuf, message: String },
 
-    #[cfg(target_os = "linux")]
-    #[error("privileged helper systemd operation failed: {0}")]
-    PrivilegedHelperBus(#[source] Box<zbus::Error>),
-
     #[error("system integration operation failed: {0}")]
     SystemIntegration(String),
 

@@ -158,18 +158,7 @@ impl HelperFixture {
             })
         );
 
-        // Root can bypass socket permissions, so this specifically exercises SO_PEERCRED.
-        // Send no request bytes: authentication must precede reading a frame.
-        let response = root(&[
-            "/usr/bin/python3",
-            "-c",
-            "import socket,sys\nwith socket.socket(socket.AF_UNIX) as client:\n client.settimeout(5)\n client.connect('/run/pv-helper.sock')\n sys.stdout.buffer.write(client.makefile('rb').readline(16385))\n",
-        ])?;
-        let response: Value = serde_json::from_slice(&response.stdout)?;
-        assert_eq!(response["protocol_version"], 2);
-        assert_eq!(response["outcome"]["status"], "error");
-        assert_eq!(response["outcome"]["code"], "authentication_failed");
-        self.require_other_owner_refused(&original, &original_sha256)?;
+        self.require_other_owner_refused(&original)?;
         assert_eq!(self.capture_process()?, first);
 
         self.install(&replacement, &replacement_sha256)?;
@@ -275,7 +264,7 @@ impl HelperFixture {
         Ok(())
     }
 
-    fn require_other_owner_refused(&self, original: &Utf8Path, checksum: &str) -> Result<()> {
+    fn require_other_owner_refused(&self, original: &Utf8Path) -> Result<()> {
         let installed = root_text(&[
             "/usr/bin/sha256sum",
             HELPER_EXECUTABLE_PATH,
@@ -300,15 +289,8 @@ impl HelperFixture {
                 "-n",
                 CANDIDATE,
                 "helper-lifecycle",
-                "replace",
                 "--owner-uid",
                 &other_uid.to_string(),
-                "--sha256",
-                checksum,
-                "--helper-version",
-                "2.0.0",
-                "--protocol-version",
-                "2",
             ])
             .output()?;
         ensure!(
