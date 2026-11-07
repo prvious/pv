@@ -8,4 +8,6 @@ expression: normalized_states
     "RepairRequired { certificate_path: \"[tempdir]/mismatched-ca.pem\", private_key_path: \"[tempdir]/mismatched-ca-key.pem\", reason: KeyMismatch }",
     "RepairRequired { certificate_path: \"[tempdir]/malformed-ca.pem\", private_key_path: \"[tempdir]/malformed-ca-key.pem\", reason: MalformedCertificate }",
     "Unreadable { path: \"[tempdir]/unreadable-ca.pem\", message: \"<read error>\" }",
+    "RepairRequired { certificate_path: \"[tempdir]/current-ca.pem\", private_key_path: \"[tempdir]/missing-ca-key.pem\", reason: OneFileMissing }",
+    "RepairRequired { certificate_path: \"[tempdir]/current-ca.pem\", private_key_path: \"[tempdir]/malformed-private-key.pem\", reason: MalformedPrivateKey }",
 ]

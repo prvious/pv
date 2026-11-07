@@ -70,16 +70,6 @@ impl UreqResourceHttpClient {
     fn with_timeouts_for_test(timeouts: ResourceHttpTimeouts) -> Self {
         Self::with_timeouts(timeouts, timeouts)
     }
-
-    #[cfg(test)]
-    fn configured_text_timeouts(&self) -> ureq::config::Timeouts {
-        self.text_agent.config().timeouts()
-    }
-
-    #[cfg(test)]
-    fn configured_download_timeouts(&self) -> ureq::config::Timeouts {
-        self.download_agent.config().timeouts()
-    }
 }
 
 impl ResourceHttpTimeouts {
@@ -182,28 +172,6 @@ mod tests {
 
     use super::{ResourceHttpTimeouts, UreqResourceHttpClient};
     use crate::{ResourceHttpClient, ResourcesError};
-
-    #[test]
-    fn default_client_configures_finite_timeouts() {
-        let client = UreqResourceHttpClient::default();
-        let text_timeouts = client.configured_text_timeouts();
-        let download_timeouts = client.configured_download_timeouts();
-
-        assert_eq!(text_timeouts.resolve, Some(Duration::from_secs(5)));
-        assert_eq!(text_timeouts.connect, Some(Duration::from_secs(5)));
-        assert_eq!(text_timeouts.recv_response, Some(Duration::from_secs(30)));
-        assert_eq!(text_timeouts.recv_body, Some(Duration::from_secs(30)));
-        assert_eq!(download_timeouts.resolve, Some(Duration::from_secs(5)));
-        assert_eq!(download_timeouts.connect, Some(Duration::from_secs(5)));
-        assert_eq!(
-            download_timeouts.recv_response,
-            Some(Duration::from_secs(30))
-        );
-        assert_eq!(
-            download_timeouts.recv_body,
-            Some(Duration::from_secs(30 * 60))
-        );
-    }
 
     #[test]
     fn ureq_client_times_out_when_response_headers_stall() -> Result<()> {

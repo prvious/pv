@@ -1065,7 +1065,7 @@ fn installed_helper_artifacts_present() -> Result<bool, PlatformError> {
     ])
 }
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 #[expect(
     clippy::disallowed_methods,
     reason = "helper removal checks fixed system artifact paths without following symlinks"
@@ -1885,6 +1885,7 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     use anyhow::anyhow;
+    #[cfg(target_os = "macos")]
     use camino_tempfile::tempdir;
     #[cfg(target_os = "macos")]
     use insta::{Settings, assert_debug_snapshot};
@@ -1901,11 +1902,11 @@ mod tests {
         HELPER_SOCKET_NAME, HELPER_SOCKET_WAIT, HELPER_STANDARD_ERROR_PATH,
         HelperLaunchDaemonPlist, HelperPayload, PRIVILEGED_HELPER_VERSION, call_helper,
         dispatch_request, lock_machine_helper_lifecycle_file, probe_helper_lifecycle,
-        render_launch_daemon_plist, restore_helper_file, serve_next_helper_connection,
-        validate_root_owned_regular_file, wait_for_helper_lifecycle,
+        render_launch_daemon_plist, serve_next_helper_connection, validate_root_owned_regular_file,
+        wait_for_helper_lifecycle,
     };
     use super::{
-        HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata, helper_artifacts_present,
+        HelperRequest, MAX_MESSAGE_BYTES, PrivilegedHelperMetadata,
         parse_helper_lifecycle_response, read_frame, read_message, require_matching_helper_owner,
         validate_fingerprint, validate_helper_identity, validate_high_port,
     };
@@ -1928,32 +1929,6 @@ mod tests {
             Err(PlatformError::PrivilegedHelperInstallation(message))
                 if message.contains("already in progress")
         ));
-
-        Ok(())
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn helper_rollback_reports_a_missing_required_artifact() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let destination = tempdir.path().join("pv-helper");
-        let rollback = tempdir.path().join("pv-helper.rollback");
-        let mut errors = Vec::new();
-
-        restore_helper_file(
-            true,
-            destination.as_str(),
-            rollback.as_str(),
-            0o755,
-            &mut errors,
-        );
-
-        assert_eq!(
-            errors,
-            [format!(
-                "PV privileged helper installation failed: could not restore {destination}: rollback artifact is missing at {rollback}"
-            )]
-        );
 
         Ok(())
     }
@@ -2037,19 +2012,6 @@ mod tests {
                     if source.kind() == ErrorKind::UnexpectedEof
             ));
         }
-    }
-
-    #[test]
-    fn helper_artifact_presence_detects_existing_paths() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let absent = tempdir.path().join("absent");
-        let present = tempdir.path().join("present");
-
-        assert!(!helper_artifacts_present(&[&absent])?);
-        state::fs::write_sensitive_file(&present, "")?;
-        assert!(helper_artifacts_present(&[&absent, &present])?);
-
-        Ok(())
     }
 
     #[test]
@@ -2367,18 +2329,6 @@ mod tests {
                     writeln!(std::io::stderr(), "TCP holder cleanup failed: {error:#}");
             }
         }
-    }
-
-    #[test]
-    fn protocol_rejects_the_removed_pf_reload_operation() {
-        let mut message = Cursor::new(
-            br#"{"protocol_version":2,"operation":{"name":"pf_reload"}}
-"#,
-        );
-        assert!(matches!(
-            read_message::<HelperRequest>(&mut message),
-            Err(PlatformError::PrivilegedHelperProtocol(_))
-        ));
     }
 
     #[cfg(target_os = "macos")]

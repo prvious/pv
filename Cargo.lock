@@ -3071,6 +3071,7 @@ version = "0.2.9"
 dependencies = [
  "anyhow",
  "futures-util",
+ "insta",
  "resources",
  "serde",
  "serde_json",

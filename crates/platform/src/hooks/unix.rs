@@ -464,9 +464,34 @@ mod tests {
     use super::{HookError, finish_cleanup, parse_environment};
 
     #[test]
-    fn cleanup_failure_after_success_remains_distinguishable() {
-        let result = finish_cleanup(Ok(()), Err(io::Error::other("could not stop group")), false);
-        assert!(matches!(result, Err(HookError::CleanupFailed(_))));
+    fn hook_cleanup_keeps_command_cleanup_and_interruption_outcomes_apart() {
+        let cleanup_failure =
+            || -> io::Result<()> { Err(io::Error::other("could not stop group")) };
+        let command_failure = || -> Result<(), HookError> {
+            Err(HookError::CommandFailed {
+                command: "exit 7".to_string(),
+                status: "exit status: 7".to_string(),
+            })
+        };
+        let outcomes = [
+            (
+                "cleanup fails after success",
+                finish_cleanup(Ok(()), cleanup_failure(), false),
+            ),
+            (
+                "cleanup fails after command failure",
+                finish_cleanup(command_failure(), cleanup_failure(), false),
+            ),
+            (
+                "interrupted, cleanup succeeds",
+                finish_cleanup(Ok(()), Ok(()), true),
+            ),
+            (
+                "interrupted, cleanup fails",
+                finish_cleanup(Ok(()), cleanup_failure(), true),
+            ),
+        ];
+        insta::assert_debug_snapshot!(outcomes);
     }
 
     #[test]
@@ -478,36 +503,6 @@ mod tests {
         let values = environment.values.into_iter().collect::<Vec<_>>();
         insta::assert_debug_snapshot!(values);
         Ok(())
-    }
-
-    #[test]
-    fn hook_cleanup_preserves_the_original_command_failure() -> anyhow::Result<()> {
-        let failure = HookError::CommandFailed {
-            command: "exit 7".to_string(),
-            status: "exit status: 7".to_string(),
-        };
-        let result: Result<(), HookError> = finish_cleanup(
-            Err(failure),
-            Err(io::Error::other("could not stop group")),
-            false,
-        );
-        let Err(error @ HookError::Cleanup { .. }) = result else {
-            anyhow::bail!("expected original and cleanup failures");
-        };
-        insta::assert_snapshot!(error.to_string());
-        Ok(())
-    }
-
-    #[test]
-    fn interruption_during_final_cleanup_cannot_report_success() {
-        assert!(matches!(
-            finish_cleanup(Ok(()), Ok(()), true),
-            Err(HookError::Interrupted)
-        ));
-        assert!(matches!(
-            finish_cleanup(Ok(()), Err(io::Error::other("could not stop group")), true),
-            Err(HookError::Cleanup { original, .. }) if matches!(*original, HookError::Interrupted)
-        ));
     }
 
     #[cfg(target_os = "macos")]

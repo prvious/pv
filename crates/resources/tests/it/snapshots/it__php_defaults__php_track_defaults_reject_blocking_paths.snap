@@ -1,0 +1,27 @@
+---
+source: crates/resources/tests/it/php_defaults.rs
+expression: errors
+---
+[
+    (
+        "conf_d_is_a_file",
+        (
+            "home/.pv/resources/php/8.5/etc/conf.d",
+            "PHP track defaults conf.d path is not a directory",
+        ),
+    ),
+    (
+        "php_ini_is_a_directory",
+        (
+            "home/.pv/resources/php/8.5/etc/php.ini",
+            "PHP track defaults php.ini path is not a file",
+        ),
+    ),
+    (
+        "php_ini_is_a_symlink",
+        (
+            "home/.pv/resources/php/8.5/etc/php.ini",
+            "PHP track defaults php.ini path is not a file",
+        ),
+    ),
+]

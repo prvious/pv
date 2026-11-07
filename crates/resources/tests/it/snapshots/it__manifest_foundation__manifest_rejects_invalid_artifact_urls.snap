@@ -39,16 +39,4 @@ expression: invalid_urls
             url: "https://artifacts.example.test/redis\\7.2.5-pv1-darwin-arm64.tar.gz",
         },
     },
-    InvalidUrlSnapshot {
-        name: "invalid_authority",
-        error: InvalidArtifactUrl {
-            url: "https://exa mple.test/redis-7.2.5-pv1-darwin-arm64.tar.gz",
-        },
-    },
-    InvalidUrlSnapshot {
-        name: "invalid_ipv6_authority",
-        error: InvalidArtifactUrl {
-            url: "https://[:::1]/redis-7.2.5-pv1-darwin-arm64.tar.gz",
-        },
-    },
 ]

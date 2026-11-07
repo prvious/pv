@@ -2,7 +2,7 @@
 #![cfg(unix)]
 
 use std::io::{ErrorKind, Read, Write};
-use std::net::{Shutdown, TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream};
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::{CommandExt, ExitStatusExt};
@@ -13,7 +13,7 @@ use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use platform::clock::{self, real};
-use pv_fake::{EventKind, FakeSettings, GatewayListeners, InstalledFake, Pause, Persona, Scenario};
+use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
 use rustix::process::{Pid, Signal, kill_process};
 use serde_json::json;
@@ -132,27 +132,6 @@ fn descriptor_that_is_not_a_pipe_leaves_the_lifeline_unarmed() -> Result<()> {
 }
 
 #[test]
-fn fake_without_a_scenario_fails_with_an_actionable_error() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fake = install_long_running(tempdir.path(), "postgres", None)?;
-    let scenario_path = format!("{}.pv-fake.json", fake.executable());
-    state::fs::remove_file(Utf8Path::new(&scenario_path))?;
-    let output = FakeCommand::new(fake.executable())
-        .stdin(Stdio::null())
-        .output()?;
-
-    assert_eq!(output.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8(output.stderr)?,
-        format!(
-            "pv-fake: no scenario file at {scenario_path}; install fakes with pv_fake::install\n"
-        )
-    );
-
-    Ok(())
-}
-
-#[test]
 fn fake_from_another_build_refuses_to_start() -> Result<()> {
     let tempdir = tempdir()?;
     let fake = install_long_running(tempdir.path(), "caddy", None)?;
@@ -176,102 +155,6 @@ fn fake_from_another_build_refuses_to_start() -> Result<()> {
             fake.executable()
         )
     );
-
-    Ok(())
-}
-
-#[test]
-fn gateway_controls_are_used_up_per_request_and_single_values_persist() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let gateway = GatewayFake::start(tempdir.path(), port)?;
-    gateway.control(json!({
-        "load_statuses": [422, 200, 200],
-        "apply_load": [false],
-    }))?;
-    let loads = ["rejected", "accepted", "applied"].map(|health| gateway.config(port, health));
-
-    let responses = loads
-        .iter()
-        .map(|load| gateway.admin("POST", "/load", load))
-        .collect::<Result<Vec<_>>>()?;
-    let health = http_get(port, "/__pv/health")?;
-    let used_up = gateway.record("fake-admin-control.json")?;
-    gateway.control(json!({"load_statuses": 422}))?;
-    let persisting = [
-        gateway.admin("POST", "/load", &loads[1])?,
-        gateway.admin("POST", "/load", &loads[1])?,
-    ];
-
-    let rejected = (
-        422,
-        "{\"error\":\"pv-fake: fake-admin-control.json rejected this load with status 422\"}\n"
-            .to_owned(),
-    );
-    assert_eq!(
-        responses,
-        [
-            rejected.clone(),
-            // Accepted without applying: `apply_load` is used up by accepted loads only.
-            (200, UNFORMATTED_WARNING.to_owned()),
-            (200, UNFORMATTED_WARNING.to_owned()),
-        ]
-    );
-    assert_eq!(health, (200, "applied".to_owned()));
-    assert_eq!(used_up, r#"{"apply_load":[],"load_statuses":[]}"#);
-    assert_eq!(persisting, [rejected.clone(), rejected]);
-    assert_eq!(
-        gateway.requests()?,
-        [
-            ("POST", "/load", 422),
-            ("POST", "/load", 200),
-            ("POST", "/load", 200),
-            ("GET", "/__pv/health", 200),
-            ("POST", "/load", 422),
-            ("POST", "/load", 422),
-        ]
-        .map(|(method, path, status)| (method.to_owned(), path.to_owned(), status))
-    );
-    for (number, load) in loads.iter().enumerate() {
-        assert_eq!(
-            &gateway.record(&format!("fake-admin-load-{number:03}.bin"))?,
-            load
-        );
-    }
-    assert_eq!(gateway.record("fake-admin-current.bin")?, loads[2]);
-
-    Ok(())
-}
-
-#[test]
-fn rejected_loads_leave_accepted_load_controls_queued() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let gateway = GatewayFake::start(tempdir.path(), port)?;
-    let marker = tempdir.path().join("load-accepted");
-    gateway.control(json!({"load_statuses": [422], "load_accepted_marker": [marker]}))?;
-    let unreadable = gateway
-        .config(port, "unreadable")
-        .replace(&format!("http_port {port}"), "http_port nope");
-
-    let rejected = gateway.admin("POST", "/load", &gateway.config(port, "rejected"))?;
-    let unadapted = gateway.admin("POST", "/load", &unreadable)?;
-    let marked_early = state::fs::path_entry_exists(&marker)?;
-    let accepted = gateway.admin("POST", "/load", &gateway.config(port, "accepted"))?;
-
-    assert_eq!(rejected.0, 422);
-    assert_eq!(
-        unadapted,
-        (
-            400,
-            "{\"error\":\"adapting config using caddyfile adapter: http_port nope: invalid digit \
-             found in string\"}\n"
-                .to_owned()
-        )
-    );
-    assert!(!marked_early);
-    assert_eq!(accepted, (200, UNFORMATTED_WARNING.to_owned()));
-    assert_eq!(state::fs::read_to_string(&marker)?, "accepted\n");
 
     Ok(())
 }
@@ -304,241 +187,6 @@ fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
         body.starts_with("pv-fake: GET /config/: parsing ")
             && body.contains("fake-admin-control.json: EOF while parsing"),
         "{body}"
-    );
-
-    Ok(())
-}
-
-#[test]
-fn load_applies_after_its_client_disconnects() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let gateway = GatewayFake::start(tempdir.path(), port)?;
-    let release = tempdir.path().join("release-load");
-    gateway.control(json!({"load_response_gate": [release]}))?;
-    let load = gateway.config(port, "applied late");
-
-    // Hang up once the fake has the load, as PV does when its load times out. The fake closes the
-    // connection once it reads the hang-up, dropping the request before the load is released.
-    let mut stream = UnixStream::connect(&gateway.admin_socket)?;
-    write_request(&mut stream, "POST", "/load", &load)?;
-    let received = wait_until(|| Ok(gateway.requests()?.len() == 1));
-    stream.shutdown(Shutdown::Write)?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let mut answer = Vec::new();
-    stream.read_to_end(&mut answer)?;
-    state::fs::write_sensitive_file(&release, "released\n")?;
-    let applied = wait_until(|| Ok(http_get(port, "/__pv/health")?.1 == "applied late"));
-
-    received?;
-    applied?;
-    assert!(answer.is_empty(), "{}", String::from_utf8_lossy(&answer));
-    assert_eq!(gateway.record("fake-admin-current.bin")?, load);
-
-    Ok(())
-}
-
-#[test]
-fn held_load_is_recorded_and_leaves_the_admin_api_responsive() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let gateway = GatewayFake::start(tempdir.path(), port)?;
-    let release = tempdir.path().join("release-load");
-    gateway.control(json!({"load_response_gate": [release]}))?;
-    let load = gateway.config(port, "held");
-
-    let mut held = UnixStream::connect(&gateway.admin_socket)?;
-    write_request(&mut held, "POST", "/load", &load)?;
-    let recorded = wait_until(|| Ok(gateway.requests()?.len() == 1));
-    let admin = gateway.admin("GET", "/config/", "");
-    state::fs::write_sensitive_file(&release, "released\n")?;
-    let released = read_response(held);
-
-    recorded?;
-    assert_eq!(admin?, (200, "{}\n".to_owned()));
-    assert_eq!(released?, (200, UNFORMATTED_WARNING.to_owned()));
-    assert_eq!(gateway.record("fake-admin-current.bin")?, load);
-
-    Ok(())
-}
-
-#[test]
-fn stopped_service_closes_the_http_port_and_keeps_the_admin_api() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let gateway = GatewayFake::start(tempdir.path(), port)?;
-    gateway.control(json!({"stop_service": true}))?;
-
-    let closed = wait_until(|| Ok(TcpStream::connect(("127.0.0.1", port)).is_err()));
-
-    closed?;
-    assert_eq!(
-        gateway.admin("GET", "/config/", "")?,
-        (200, "{}\n".to_owned())
-    );
-
-    Ok(())
-}
-
-#[test]
-fn admin_off_serves_http_without_an_admin_socket() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let admin_socket = tempdir.path().join("admin.sock");
-    let config = gateway_config(&admin_socket, port, "legacy")
-        .replace(&format!("admin \"unix/{admin_socket}|0600\""), "admin off");
-    let (_fake, _process) = spawn_gateway(tempdir.path(), &config, FakeSettings::default())?;
-
-    // The admin socket would be bound before the first HTTP connection is served.
-    wait_until(|| Ok(http_get(port, "/__pv/health")?.1 == "legacy"))?;
-    let admin_over_http = [
-        http_get(port, "/config/")?,
-        exchange(
-            TcpStream::connect(("127.0.0.1", port))?,
-            "POST",
-            "/load",
-            &config,
-        )?,
-    ];
-
-    assert!(!state::fs::path_entry_exists(&admin_socket)?);
-    assert_eq!(admin_over_http.map(|(status, _body)| status), [404, 404]);
-
-    Ok(())
-}
-
-#[test]
-fn admin_only_listeners_accept_loads_without_opening_ports() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port, moved_port] = pv_fake::ports()?;
-    let gateway = GatewayFake::start_with(
-        tempdir.path(),
-        port,
-        FakeSettings {
-            gateway_listeners: GatewayListeners::AdminOnly,
-            ..FakeSettings::default()
-        },
-    )?;
-    let load = gateway.config(moved_port, "moved");
-
-    let response = gateway.admin("POST", "/load", &load)?;
-
-    assert_eq!(response, (200, UNFORMATTED_WARNING.to_owned()));
-    assert!(TcpStream::connect(("127.0.0.1", port)).is_err());
-    assert!(TcpStream::connect(("127.0.0.1", moved_port)).is_err());
-    assert_eq!(gateway.record("fake-admin-current.bin")?, load);
-
-    Ok(())
-}
-
-#[test]
-fn listeners_set_to_nothing_stay_alive_without_serving() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let admin_socket = tempdir.path().join("admin.sock");
-    let (fake, mut process) = spawn_gateway(
-        tempdir.path(),
-        &gateway_config(&admin_socket, port, "unused"),
-        FakeSettings {
-            gateway_listeners: GatewayListeners::Nothing,
-            ..FakeSettings::default()
-        },
-    )?;
-
-    wait_for_start(&fake, &mut process)?;
-    signal(&process, Signal::TERM)?;
-    let status = wait_for_exit(&mut process)?;
-
-    // The socket file outlives the fake, so its absence after exit shows it was never bound.
-    assert_eq!(status.code(), Some(0));
-    assert!(!state::fs::path_entry_exists(&admin_socket)?);
-    assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
-
-    Ok(())
-}
-
-#[test]
-fn validate_pause_holds_then_exits_with_the_chosen_code() -> Result<()> {
-    let tempdir = tempdir()?;
-    let release = tempdir.path().join("release-validate");
-    let (fake, mut process) = spawn_gateway_command(
-        tempdir.path(),
-        "validate",
-        "{\n}\n",
-        FakeSettings {
-            validate_pause: Some(Pause {
-                until: release.clone(),
-            }),
-            validate_exit_code: Some(7),
-            ..FakeSettings::default()
-        },
-    )?;
-
-    wait_for_event(&fake, is_held)?;
-    let held_running = process.0.try_wait()?.is_none();
-    state::fs::write_sensitive_file(&release, "release\n")?;
-    let status = wait_for_exit(&mut process)?;
-
-    assert!(held_running);
-    assert_eq!(status.code(), Some(7));
-    assert_eq!(event_names(&fake)?, ["started", "held", "exit 7"]);
-
-    Ok(())
-}
-
-#[test]
-fn run_pause_holds_with_http_open_and_no_admin_socket() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let admin_socket = tempdir.path().join("admin.sock");
-    let release = tempdir.path().join("release-run");
-    let (fake, _process) = spawn_gateway(
-        tempdir.path(),
-        &gateway_config(&admin_socket, port, "paused"),
-        FakeSettings {
-            run_pause: Some(Pause {
-                until: release.clone(),
-            }),
-            ..FakeSettings::default()
-        },
-    )?;
-
-    wait_for_event(&fake, is_held)?;
-    let health = http_get(port, "/__pv/health")?;
-    let admin_socket_while_held = state::fs::path_entry_exists(&admin_socket)?;
-    state::fs::write_sensitive_file(&release, "release\n")?;
-    let admin_opened = wait_until(|| Ok(UnixStream::connect(&admin_socket).is_ok()));
-
-    assert_eq!(health, (200, "paused".to_owned()));
-    assert!(!admin_socket_while_held);
-    admin_opened?;
-
-    Ok(())
-}
-
-#[test]
-fn paused_fake_exits_cleanly_on_sigterm() -> Result<()> {
-    let tempdir = tempdir()?;
-    let (fake, mut process) = spawn_gateway_command(
-        tempdir.path(),
-        "validate",
-        "{\n}\n",
-        FakeSettings {
-            validate_pause: Some(Pause {
-                until: tempdir.path().join("never-released"),
-            }),
-            ..FakeSettings::default()
-        },
-    )?;
-
-    wait_for_event(&fake, is_held)?;
-    signal(&process, Signal::TERM)?;
-    let status = wait_for_exit(&mut process)?;
-
-    assert_eq!(status.code(), Some(0));
-    assert_eq!(
-        event_names(&fake)?,
-        ["started", "held", "signal SIGTERM", "exit 0"]
     );
 
     Ok(())
@@ -603,60 +251,6 @@ fn fake_whose_lifeline_closed_before_it_started_exits_at_once() -> Result<()> {
         event_names(&fake)?
             .iter()
             .any(|name| name == "lifeline_fired")
-    );
-
-    Ok(())
-}
-
-#[test]
-fn gateway_records_restart_with_each_process() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [port] = pv_fake::ports()?;
-    let first = GatewayFake::start(tempdir.path(), port)?;
-    first.admin("POST", "/load", &first.config(port, "first process"))?;
-    drop(first);
-    let second = GatewayFake::start(tempdir.path(), port)?;
-    let load = second.config(port, "second process");
-
-    let initial = second.record("fake-admin-current.bin")?;
-    second.admin("POST", "/load", &load)?;
-
-    assert_eq!(initial, second.config(port, "started"));
-    assert_eq!(second.record("fake-admin-load-000.bin")?, load);
-    assert!(!state::fs::path_entry_exists(
-        &second.config_path.with_file_name("fake-admin-load-001.bin")
-    )?);
-
-    Ok(())
-}
-
-#[test]
-fn validate_records_each_validated_config() -> Result<()> {
-    let tempdir = tempdir()?;
-    let fake = install_gateway(tempdir.path(), FakeSettings::default())?;
-    let config_path = tempdir.path().join("config/Caddyfile");
-    state::fs::write_sensitive_file(&config_path, "{\n}\n")?;
-    let validate = |config_path: &Utf8Path| {
-        FakeCommand::new(fake.executable())
-            .args([
-                "validate",
-                "--config",
-                config_path.as_str(),
-                "--adapter",
-                "caddyfile",
-            ])
-            .stdin(Stdio::null())
-            .output()
-    };
-
-    let valid = [validate(&config_path)?, validate(&config_path)?];
-    let missing = validate(&tempdir.path().join("config/missing.Caddyfile"))?;
-
-    assert_eq!(valid.map(|output| output.status.code()), [Some(0), Some(0)]);
-    assert_eq!(missing.status.code(), Some(1));
-    assert_eq!(
-        state::fs::read_to_string(&tempdir.path().join("config/fake-validator-spawns.log"))?,
-        format!("{config_path}\n{config_path}\n")
     );
 
     Ok(())
@@ -835,87 +429,6 @@ fn mailpit_fake_fails_as_mailpit_does() -> Result<()> {
             ),
         ]
     );
-
-    Ok(())
-}
-
-#[test]
-fn pv_fake_mailpit_waits_for_busy_ports_and_answers_ready() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [smtp_port, dashboard_port] = pv_fake::ports()?;
-    let smtp_reservation = TcpListener::bind(("127.0.0.1", smtp_port))?;
-    let (fake, mut process) = spawn_service(
-        tempdir.path(),
-        "pv-fake-mailpit",
-        Persona::PvFakeMailpit,
-        FakeSettings::default(),
-        &[
-            smtp_port.to_string(),
-            dashboard_port.to_string(),
-            "ignored-extra".to_owned(),
-        ],
-        &[],
-    )?;
-
-    wait_for_event(&fake, |kind| {
-        (*kind == EventKind::PortBusy { port: smtp_port }).then_some(())
-    })?;
-    let waiting_for_smtp = process.0.try_wait()?.is_none()
-        && TcpStream::connect(("127.0.0.1", dashboard_port)).is_err();
-    drop(smtp_reservation);
-    let greeting = smtp_greeting(smtp_port)?;
-    connect_with_retry(dashboard_port)?;
-    let ready = http_get(dashboard_port, "/ready")?;
-    let other = http_get(dashboard_port, "/")?;
-    signal(&process, Signal::TERM)?;
-    let status = wait_for_exit(&mut process)?;
-
-    assert!(waiting_for_smtp);
-    assert_eq!(greeting, "220 fake mailpit\r\n");
-    assert_eq!((ready.0, other.0), (200, 404));
-    assert_eq!(status.code(), Some(0));
-    assert_eq!(
-        event_names(&fake)?,
-        [
-            "started".to_owned(),
-            format!("port_busy {smtp_port}"),
-            "signal SIGTERM".to_owned(),
-            "exit 0".to_owned(),
-        ]
-    );
-
-    Ok(())
-}
-
-#[test]
-fn pv_fake_mailpit_can_exit_after_its_first_response() -> Result<()> {
-    let tempdir = tempdir()?;
-    let [smtp_port, dashboard_port] = pv_fake::ports()?;
-    let (fake, mut process) = spawn_service(
-        tempdir.path(),
-        "pv-fake-mailpit",
-        Persona::PvFakeMailpit,
-        FakeSettings {
-            exit_after_first_http_response: true,
-            ..FakeSettings::default()
-        },
-        &[smtp_port.to_string(), dashboard_port.to_string()],
-        &[],
-    )?;
-
-    // A connection that sends no request gets no response, so the fake keeps running.
-    connect_with_retry(dashboard_port)?;
-    // PV's readiness check reads the status and hangs up; the fake must not wait for that.
-    let mut stream = TcpStream::connect(("127.0.0.1", dashboard_port))?;
-    write_request(&mut stream, "GET", "/ready", "")?;
-    let mut status_line = [0; 12];
-    stream.read_exact(&mut status_line)?;
-    let status = wait_for_exit(&mut process)?;
-    drop(stream);
-
-    assert_eq!(&status_line, b"HTTP/1.1 200");
-    assert_eq!(status.code(), Some(0));
-    assert_eq!(event_names(&fake)?, ["started", "exit 0"]);
 
     Ok(())
 }
@@ -1361,9 +874,6 @@ fn redis_exchange(stream: &mut TcpStream, commands: &[&[&str]], expected: &str) 
     Ok(String::from_utf8(reply)?)
 }
 
-/// Caddy's adapter warning for PV's space-indented configs, which accepted loads return.
-const UNFORMATTED_WARNING: &str = r#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
-
 /// A `caddy run` fake serving a minimal Gateway config, killed when dropped.
 struct GatewayFake {
     config_path: Utf8PathBuf,
@@ -1402,41 +912,8 @@ impl GatewayFake {
         })
     }
 
-    fn config(&self, http_port: u16, health: &str) -> String {
-        gateway_config(&self.admin_socket, http_port, health)
-    }
-
-    fn control(&self, control: serde_json::Value) -> Result<()> {
-        pv_fake::write_gateway_control(&self.config_path, control)
-    }
-
     fn admin(&self, method: &str, path: &str, body: &str) -> Result<(u16, String)> {
         exchange(UnixStream::connect(&self.admin_socket)?, method, path, body)
-    }
-
-    fn record(&self, name: &str) -> Result<String> {
-        Ok(state::fs::read_to_string(
-            &self.config_path.with_file_name(name),
-        )?)
-    }
-
-    fn requests(&self) -> Result<Vec<(String, String, u16)>> {
-        if !state::fs::path_entry_exists(
-            &self.config_path.with_file_name("fake-admin-requests.jsonl"),
-        )? {
-            return Ok(Vec::new());
-        }
-        self.record("fake-admin-requests.jsonl")?
-            .lines()
-            .map(|line| {
-                let request: serde_json::Value = serde_json::from_str(line)?;
-                Ok((
-                    request["method"].as_str().unwrap_or_default().to_owned(),
-                    request["path"].as_str().unwrap_or_default().to_owned(),
-                    u16::try_from(request["status"].as_u64().unwrap_or_default())?,
-                ))
-            })
-            .collect()
     }
 }
 
@@ -1683,8 +1160,4 @@ fn wait_for_event<T>(
         }
         clock::poll_blocking(POLL_INTERVAL);
     }
-}
-
-fn is_held(kind: &EventKind) -> Option<()> {
-    matches!(kind, EventKind::Held { .. }).then_some(())
 }

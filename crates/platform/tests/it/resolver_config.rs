@@ -5,11 +5,11 @@ use anyhow::Result;
 use camino_tempfile::tempdir;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
-    CaFileState, CaRepairReason, GeneratedLocalCa, KeychainCertificate, KeychainTrustResult,
-    LocalCaMetadata, PfConfReference, PfRedirectConfig, ResolverConfig, SystemTrustInspector,
-    TrustDomainState, generate_local_ca, generate_project_certificate, inspect_local_ca_files,
-    inspect_pf_anchor_file, inspect_pf_conf_reference, inspect_resolver_file,
-    inspect_system_ca_trust, project_certificate_matches, trusted_pv_ca_fingerprints,
+    GeneratedLocalCa, KeychainCertificate, KeychainTrustResult, LocalCaMetadata, PfConfReference,
+    PfRedirectConfig, ResolverConfig, SystemTrustInspector, TrustDomainState, generate_local_ca,
+    generate_project_certificate, inspect_local_ca_files, inspect_pf_anchor_file,
+    inspect_pf_conf_reference, inspect_resolver_file, inspect_system_ca_trust,
+    project_certificate_matches, trusted_pv_ca_fingerprints,
 };
 use rcgen::{
     CertificateParams, DnType, ExtendedKeyUsagePurpose, Issuer, KeyPair, KeyUsagePurpose,
@@ -267,8 +267,6 @@ fn local_ca_generation_produces_matching_pv_root_certificate_and_key() -> Result
     assert!(metadata.is_ca);
     assert!(metadata.can_sign_certificates);
     assert!(!metadata.fingerprint.is_empty());
-    assert!(generated.certificate_pem.contains("BEGIN CERTIFICATE"));
-    assert!(generated.private_key_pem.contains("BEGIN PRIVATE KEY"));
 
     Ok(())
 }
@@ -281,8 +279,6 @@ fn project_certificate_generation_signs_primary_hostname_with_local_ca() -> Resu
         generate_project_certificate("acme.test", &local.certificate_pem, &local.private_key_pem)?;
     let certificate_chain = format!("{}{}", generated.certificate_pem, local.certificate_pem);
 
-    assert!(generated.certificate_pem.contains("BEGIN CERTIFICATE"));
-    assert!(generated.private_key_pem.contains("BEGIN PRIVATE KEY"));
     assert!(project_certificate_matches(
         &certificate_chain,
         &generated.private_key_pem,
@@ -329,30 +325,8 @@ fn project_certificate_generation_uses_current_366_day_validity_profile() -> Res
 }
 
 #[test]
-fn project_certificate_match_requires_more_than_30_days_remaining() -> Result<()> {
-    let local = generate_local_ca()?;
-    let now = OffsetDateTime::now_utc();
-    let certificate = project_certificate_with_validity(
-        "acme.test",
-        &local.certificate_pem,
-        &local.private_key_pem,
-        now - Duration::days(1),
-        now + Duration::days(30),
-    )?;
-    let certificate_chain = format!("{}{}", certificate.certificate_pem, local.certificate_pem);
-
-    assert!(!project_certificate_matches(
-        &certificate_chain,
-        &certificate.private_key_pem,
-        "acme.test",
-        &local.certificate_pem,
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn project_certificate_match_requires_current_validity_and_maximum_span() -> Result<()> {
+fn project_certificate_match_requires_current_validity_renewal_margin_and_maximum_span()
+-> Result<()> {
     let local = generate_local_ca()?;
     let now = OffsetDateTime::now_utc();
     let cases = [
@@ -366,6 +340,12 @@ fn project_certificate_match_requires_current_validity_and_maximum_span() -> Res
             "expired",
             now - Duration::days(365),
             now - Duration::seconds(1),
+            false,
+        ),
+        (
+            "only 30 days remaining",
+            now - Duration::days(1),
+            now + Duration::days(30),
             false,
         ),
         (
@@ -462,6 +442,7 @@ fn local_ca_file_inspection_reports_missing_current_repair_required_and_unreadab
     let malformed_key = tempdir.path().join("malformed-ca-key.pem");
     let unreadable_certificate = tempdir.path().join("unreadable-ca.pem");
     let unreadable_key = tempdir.path().join("unreadable-ca-key.pem");
+    let malformed_private_key = tempdir.path().join("malformed-private-key.pem");
     let first = generate_local_ca()?;
     let second = generate_local_ca()?;
 
@@ -473,6 +454,7 @@ fn local_ca_file_inspection_reports_missing_current_repair_required_and_unreadab
     fs::write_sensitive_file(&malformed_key, &first.private_key_pem)?;
     fs::write_sensitive_file(&unreadable_certificate.join("child"), "child\n")?;
     fs::write_sensitive_file(&unreadable_key, &first.private_key_pem)?;
+    fs::write_sensitive_file(&malformed_private_key, "not a private key\n")?;
 
     let states = vec![
         inspect_local_ca_files(&missing_certificate, &missing_key),
@@ -480,6 +462,8 @@ fn local_ca_file_inspection_reports_missing_current_repair_required_and_unreadab
         inspect_local_ca_files(&mismatched_certificate, &mismatched_key),
         inspect_local_ca_files(&malformed_certificate, &malformed_key),
         inspect_local_ca_files(&unreadable_certificate, &unreadable_key),
+        inspect_local_ca_files(&current_certificate, &missing_key),
+        inspect_local_ca_files(&current_certificate, &malformed_private_key),
     ];
     let normalized_states = states
         .into_iter()
@@ -487,41 +471,6 @@ fn local_ca_file_inspection_reports_missing_current_repair_required_and_unreadab
         .collect::<Vec<_>>();
 
     assert_debug_snapshot!(normalized_states);
-
-    Ok(())
-}
-
-#[test]
-fn local_ca_file_state_exposes_typed_repair_reasons() -> Result<()> {
-    let tempdir = tempdir()?;
-    let certificate_path = tempdir.path().join("ca.pem");
-    let key_path = tempdir.path().join("ca-key.pem");
-    let malformed_key_certificate_path = tempdir.path().join("malformed-key-ca.pem");
-    let malformed_key_path = tempdir.path().join("malformed-ca-key.pem");
-    let generated = generate_local_ca()?;
-
-    fs::write_sensitive_file(&certificate_path, &generated.certificate_pem)?;
-    fs::write_sensitive_file(&malformed_key_certificate_path, &generated.certificate_pem)?;
-    fs::write_sensitive_file(&malformed_key_path, "not a private key\n")?;
-
-    let missing_key_state = inspect_local_ca_files(&certificate_path, &key_path);
-    let malformed_key_state =
-        inspect_local_ca_files(&malformed_key_certificate_path, &malformed_key_path);
-
-    assert!(matches!(
-        missing_key_state,
-        CaFileState::RepairRequired {
-            reason: CaRepairReason::OneFileMissing,
-            ..
-        }
-    ));
-    assert!(matches!(
-        malformed_key_state,
-        CaFileState::RepairRequired {
-            reason: CaRepairReason::MalformedPrivateKey,
-            ..
-        }
-    ));
 
     Ok(())
 }

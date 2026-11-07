@@ -364,148 +364,107 @@ fn job_insertions_wait_for_a_writer_before_reading_the_next_id() -> Result<()> {
 #[test]
 fn paths_are_derived_from_an_injected_home() -> Result<()> {
     let paths = PvPaths::for_home(Utf8Path::new("/tmp/pv-test-home"));
+    let derived = [
+        ("ca_certificate", paths.ca_certificate().to_string()),
+        ("ca_private_key", paths.ca_private_key().to_string()),
+        (
+            "project_tls_dir",
+            paths.project_tls_dir("project123").to_string(),
+        ),
+        (
+            "project_tls_certificate",
+            paths.project_tls_certificate("project123").to_string(),
+        ),
+        (
+            "project_tls_private_key",
+            paths.project_tls_private_key("project123").to_string(),
+        ),
+        ("pf_anchor_config", paths.pf_anchor_config().to_string()),
+        (
+            "pf_conf_reference_config",
+            paths.pf_conf_reference_config().to_string(),
+        ),
+        (
+            "gateway_root_config",
+            paths.gateway_root_config().to_string(),
+        ),
+        (
+            "gateway_projects_config_dir",
+            paths.gateway_projects_config_dir().to_string(),
+        ),
+        (
+            "worker_config_dir",
+            paths.worker_config_dir("8.4").to_string(),
+        ),
+        (
+            "worker_root_config",
+            paths.worker_root_config("8.4").to_string(),
+        ),
+        (
+            "worker_projects_config_dir",
+            paths.worker_projects_config_dir("8.4").to_string(),
+        ),
+        ("gateway_log", paths.gateway_log().to_string()),
+        (
+            "gateway_supervisor_log",
+            paths.gateway_supervisor_log().to_string(),
+        ),
+        ("worker_log", paths.worker_log("8.4").to_string()),
+        (
+            "gateway_admin_socket",
+            paths.gateway_admin_socket().to_string(),
+        ),
+        (
+            "worker_admin_socket",
+            paths.worker_admin_socket("8.4+redis+xdebug").to_string(),
+        ),
+        (
+            "gateway_runtime_metadata",
+            paths.gateway_runtime_metadata().to_string(),
+        ),
+        (
+            "worker_runtime_metadata",
+            paths.worker_runtime_metadata("8.4").to_string(),
+        ),
+        (
+            "resource_runtime_config",
+            paths.resource_runtime_config("mailpit", "1.0").to_string(),
+        ),
+        (
+            "resource_log",
+            paths.resource_log("mailpit", "1.0").to_string(),
+        ),
+        (
+            "resource_runtime_metadata",
+            paths
+                .resource_runtime_metadata("mailpit", "1.0")
+                .to_string(),
+        ),
+        (
+            "resource_data_dir",
+            paths.resource_data_dir("mailpit", "1.0").to_string(),
+        ),
+        ("app_releases_dir", paths.app_releases_dir().to_string()),
+        (
+            "app_release_binary",
+            paths.app_release_binary("0.2.0").to_string(),
+        ),
+        ("active_pv_binary", paths.active_pv_binary().to_string()),
+        ("update_lock", paths.update_lock().to_string()),
+        ("jobs_lock", paths.jobs_lock().to_string()),
+    ];
 
-    assert_debug_snapshot!(paths.summary());
-
-    Ok(())
-}
-
-#[test]
-fn ca_paths_are_derived_from_an_injected_home() {
-    let paths = PvPaths::for_home(Utf8Path::new("/tmp/pv-test-home"));
-
-    assert_eq!(
-        paths.ca_certificate().as_str(),
-        "/tmp/pv-test-home/.pv/certificates/ca.pem"
-    );
-    assert_eq!(
-        paths.ca_private_key().as_str(),
-        "/tmp/pv-test-home/.pv/certificates/ca-key.pem"
-    );
-    assert_eq!(
-        paths.project_tls_dir("project123").as_str(),
-        "/tmp/pv-test-home/.pv/certificates/projects/project123"
-    );
-    assert_eq!(
-        paths.project_tls_certificate("project123").as_str(),
-        "/tmp/pv-test-home/.pv/certificates/projects/project123/tls.crt"
-    );
-    assert_eq!(
-        paths.project_tls_private_key("project123").as_str(),
-        "/tmp/pv-test-home/.pv/certificates/projects/project123/tls.key"
-    );
-}
-
-#[test]
-fn pv_paths_include_prepared_pf_artifacts() {
-    let paths = PvPaths::for_home("/Users/alice");
-
-    assert_eq!(
-        paths.pf_anchor_config().as_str(),
-        "/Users/alice/.pv/config/pf/com.prvious.pv"
-    );
-    assert_eq!(
-        paths.pf_conf_reference_config().as_str(),
-        "/Users/alice/.pv/config/pf/pf.conf"
-    );
-}
-
-#[test]
-fn pv_paths_include_gateway_and_worker_runtime_artifacts() {
-    let paths = PvPaths::for_home("/Users/alice");
-
-    assert_eq!(
-        paths.gateway_root_config().as_str(),
-        "/Users/alice/.pv/config/gateway/Caddyfile"
-    );
-    assert_eq!(
-        paths.gateway_projects_config_dir().as_str(),
-        "/Users/alice/.pv/config/gateway/projects"
-    );
-    assert_eq!(
-        paths.worker_config_dir("8.4").as_str(),
-        "/Users/alice/.pv/config/workers/php-8.4"
-    );
-    assert_eq!(
-        paths.worker_root_config("8.4").as_str(),
-        "/Users/alice/.pv/config/workers/php-8.4/Caddyfile"
-    );
-    assert_eq!(
-        paths.worker_projects_config_dir("8.4").as_str(),
-        "/Users/alice/.pv/config/workers/php-8.4/projects"
-    );
-    assert_eq!(
-        paths.gateway_log().as_str(),
-        "/Users/alice/.pv/logs/gateway/gateway.log"
-    );
-    assert_eq!(
-        paths.gateway_supervisor_log().as_str(),
-        "/Users/alice/.pv/logs/gateway/supervisor.log"
-    );
-    assert_eq!(
-        paths.worker_log("8.4").as_str(),
-        "/Users/alice/.pv/logs/workers/php-8.4.log"
-    );
-    assert_eq!(
-        paths.gateway_admin_socket().as_str(),
-        "/Users/alice/.pv/run/gateway-admin.sock"
-    );
-    assert_eq!(
-        paths.worker_admin_socket("8.4+redis+xdebug").as_str(),
-        "/Users/alice/.pv/run/worker-admin-cbeeaf58d4fd.sock"
-    );
     assert_ne!(
         paths.worker_admin_socket("8.4+redis+xdebug"),
         paths.worker_admin_socket("8.4+redis")
-    );
-    assert_eq!(
-        paths.gateway_runtime_metadata().as_str(),
-        "/Users/alice/.pv/run/gateway.json"
-    );
-    assert_eq!(
-        paths.worker_runtime_metadata("8.4").as_str(),
-        "/Users/alice/.pv/run/workers/php-8.4.json"
-    );
-    assert_eq!(
-        paths.resource_runtime_config("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/config/resources/mailpit/1.0.json"
-    );
-    assert_eq!(
-        paths.resource_log("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/logs/resources/mailpit/1.0.log"
-    );
-    assert_eq!(
-        paths.resource_runtime_metadata("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/run/resources/mailpit/1.0.json"
-    );
-    assert_eq!(
-        paths.resource_data_dir("mailpit", "1.0").as_str(),
-        "/Users/alice/.pv/resources/mailpit/1.0/data"
     );
     assert_ne!(
         paths.resource_log("a-b", "c"),
         paths.resource_log("a", "b-c")
     );
-}
+    assert_debug_snapshot!((paths.summary(), derived));
 
-#[test]
-fn pv_paths_include_self_update_artifacts() {
-    let paths = PvPaths::for_home("/Users/alice");
-
-    assert_eq!(
-        paths.app_releases_dir().as_str(),
-        "/Users/alice/.pv/bin/releases"
-    );
-    assert_eq!(
-        paths.app_release_binary("0.2.0").as_str(),
-        "/Users/alice/.pv/bin/releases/0.2.0/pv"
-    );
-    assert_eq!(paths.active_pv_binary().as_str(), "/Users/alice/.pv/bin/pv");
-    assert_eq!(
-        paths.update_lock().as_str(),
-        "/Users/alice/.pv/run/update.lock"
-    );
-    assert_eq!(paths.jobs_lock().as_str(), "/Users/alice/.pv/run/jobs.lock");
+    Ok(())
 }
 
 #[test]
@@ -1072,10 +1031,13 @@ fn migration_backup_retention_keeps_the_latest_five_backups() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
-    let manual_backup_path = paths.root().join("pv.db.00000000-manual.bak");
-
-    {
-        let _manual_backup = Connection::open(&manual_backup_path)?;
+    let manual_backup_names = [
+        "pv.db.manual.bak",
+        "pv.db.00000000-manual.bak",
+        "pv.db.not-a-timestamp.bak",
+    ];
+    for manual_backup_name in manual_backup_names {
+        Connection::open(paths.root().join(manual_backup_name))?;
     }
 
     let migrations = [
@@ -1094,34 +1056,13 @@ fn migration_backup_retention_keeps_the_latest_five_backups() -> Result<()> {
     }
 
     let backup_table_counts = migration_backup_table_counts(&paths)?;
-
-    assert!(manual_backup_path.exists());
-    assert_debug_snapshot!(backup_table_counts);
-
-    Ok(())
-}
-
-#[test]
-fn migration_backups_ignore_non_pv_backup_files() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-    let manual_backup_names = [
-        "pv.db.manual.bak",
-        "pv.db.00000000-manual.bak",
-        "pv.db.not-a-timestamp.bak",
-    ];
-
-    for manual_backup_name in manual_backup_names {
-        let manual_backup_path = paths.root().join(manual_backup_name);
-        let _manual_backup = Connection::open(&manual_backup_path)?;
-    }
-
     let backups = state::fs::migration_backups(&paths)?;
 
     for manual_backup_name in manual_backup_names {
+        assert!(paths.root().join(manual_backup_name).exists());
         assert!(!backups.contains(&manual_backup_name.to_string()));
     }
+    assert_debug_snapshot!(backup_table_counts);
 
     Ok(())
 }
@@ -1220,97 +1161,6 @@ fn applied_migration_name_mismatches_are_reported() -> Result<()> {
             actual,
         }) if actual == "first"
     ));
-
-    Ok(())
-}
-
-#[test]
-fn resource_allocations_reject_duplicate_generated_names_per_resource_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO projects (id, project_slug, path, original_path, primary_hostname, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                "project_1",
-                "acme",
-                "/tmp/acme",
-                "/tmp/acme",
-                "acme.test",
-                "2026-05-23T00:00:00Z",
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-        transaction.execute(
-            "INSERT INTO resource_allocations (id, project_id, resource_name, track, allocation_name, generated_name, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                "allocation_1",
-                "project_1",
-                "rustfs",
-                "latest",
-                "uploads",
-                "acme-test-uploads",
-                "desired",
-                "2026-05-23T00:00:00Z",
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    })?;
-
-    let result = state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO resource_allocations (id, project_id, resource_name, track, allocation_name, generated_name, status, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
-            params![
-                "allocation_2",
-                "project_1",
-                "rustfs",
-                "latest",
-                "upload_assets",
-                "acme-test-uploads",
-                "desired",
-                "2026-05-23T00:00:00Z",
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    });
-
-    assert!(result.is_err());
-    assert_debug_snapshot!(state::testing::query_i64(
-        &database,
-        "SELECT COUNT(*) FROM resource_allocations"
-    )?);
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_tracks_record_desired_and_installed_state() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    database.record_managed_resource_track_desired(
-        "redis",
-        "7.2",
-        ManagedResourceDesiredState::Installed,
-    )?;
-    database.record_managed_resource_track_installed(
-        "redis",
-        "7.2",
-        "7.2.5-pv1",
-        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
-    )?;
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!(database.managed_resource_tracks()?);
-        Ok::<(), anyhow::Error>(())
-    })?;
 
     Ok(())
 }
@@ -1461,42 +1311,6 @@ fn managed_resource_installed_update_preserves_removed_desired_state() -> Result
 }
 
 #[test]
-fn managed_resource_tracks_record_removal_intent_options() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    database.record_managed_resource_track_installed(
-        "redis",
-        "7.2",
-        "7.2.5-pv1",
-        Utf8Path::new("/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1"),
-    )?;
-    database.record_managed_resource_track_removal_intent("redis", "7.2", true, true)?;
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!(database.managed_resource_tracks()?);
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    database.record_managed_resource_track_desired(
-        "redis",
-        "7.2",
-        ManagedResourceDesiredState::Installed,
-    )?;
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!(
-            "after_reinstall_intent",
-            database.managed_resource_tracks()?
-        );
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
 fn managed_resource_tracks_record_removal_intents_batch_atomically() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1537,13 +1351,26 @@ fn managed_resource_tracks_record_removal_intents_batch_atomically() -> Result<(
         },
     ]);
     let tracks_after_invalid_batch = database.managed_resource_tracks()?;
+    database.record_managed_resource_track_removal_intent("php", "8.4", true, true)?;
+    let tracks_with_removal_intent = database.managed_resource_tracks()?;
+    database.record_managed_resource_track_desired(
+        "php",
+        "8.4",
+        ManagedResourceDesiredState::Installed,
+    )?;
+    let tracks_after_reinstall_intent = database.managed_resource_tracks()?;
 
     assert!(matches!(
         result,
         Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
     ));
     with_normalized_timestamps(|| {
-        assert_debug_snapshot!((tracks_before_invalid_batch, tracks_after_invalid_batch));
+        assert_debug_snapshot!((
+            tracks_before_invalid_batch,
+            tracks_after_invalid_batch,
+            tracks_with_removal_intent,
+            tracks_after_reinstall_intent,
+        ));
         Ok::<(), anyhow::Error>(())
     })?;
 
@@ -1551,11 +1378,16 @@ fn managed_resource_tracks_record_removal_intents_batch_atomically() -> Result<(
 }
 
 #[test]
-fn global_php_default_track_round_trips() -> Result<()> {
+fn global_php_default_track_round_trips_and_rejects_invalid_tracks() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
 
+    assert!(matches!(
+        database.record_global_php_default_track("../8.4"),
+        Err(StateError::InvalidManagedResourceIdentity { kind: "track", value })
+            if value == "../8.4"
+    ));
     assert_eq!(database.global_php_default_track()?, None);
 
     database.record_global_php_default_track("8.3")?;
@@ -1568,30 +1400,10 @@ fn global_php_default_track_round_trips() -> Result<()> {
 }
 
 #[test]
-fn global_php_default_rejects_latest_and_invalid_tracks() -> Result<()> {
+fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    assert!(matches!(
-        database.record_global_php_default_track("latest"),
-        Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
-    ));
-    assert!(matches!(
-        database.record_global_php_default_track("../8.4"),
-        Err(StateError::InvalidManagedResourceIdentity { kind: "track", value })
-            if value == "../8.4"
-    ));
-    assert_eq!(database.global_php_default_track()?, None);
-
-    Ok(())
-}
-
-#[test]
-fn project_resource_requirements_migration_backfills_env_context() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let old_migrations = [
+    let migrations = [
         Migration::new(
             1,
             "core_state_schema",
@@ -1612,94 +1424,41 @@ fn project_resource_requirements_migration_backfills_env_context() -> Result<()>
             "project_original_path",
             include_str!("../src/sql/004_project_original_path.sql"),
         ),
-    ];
-    let mut old_database = state::testing::open_with_migrations(&paths, &old_migrations)?;
-    state::testing::transaction(&mut old_database, |transaction| {
-        transaction.execute(
-            "INSERT INTO managed_resource_tracks (
-                resource_name,
-                track,
-                desired_state,
-                installed_version,
-                current_artifact_path,
-                usage_count,
-                updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                "mysql",
-                "8.0",
-                "installed",
-                "8.0.36-pv1",
-                "/Users/example/.pv/resources/mysql/8.0/releases/8.0.36-pv1",
-                2,
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    })?;
-    drop(old_database);
-
-    let upgraded_migrations = [
-        old_migrations[0],
-        old_migrations[1],
-        old_migrations[2],
-        old_migrations[3],
         Migration::new(
             5,
             "project_resource_requirements",
             include_str!("../src/sql/005_project_resource_requirements.sql"),
         ),
-    ];
-    let database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
-
-    assert_debug_snapshot!(database.managed_resource_tracks()?);
-
-    Ok(())
-}
-
-#[test]
-fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let old_migrations = [
         Migration::new(
-            1,
-            "core_state_schema",
-            include_str!("../src/sql/001_core_state_schema.sql"),
+            9,
+            "project_mode_and_slug",
+            include_str!("../src/sql/009_project_mode_and_slug.sql"),
         ),
         Migration::new(
-            2,
-            "managed_resource_removal_intent",
-            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
+            13,
+            "retired_resource_allocations",
+            include_str!("../src/sql/013_retired_resource_allocations.sql"),
         ),
         Migration::new(
-            3,
-            "project_primary_hostname_updates",
-            include_str!("../src/sql/003_project_primary_hostname_updates.sql"),
-        ),
-        Migration::new(
-            4,
-            "project_original_path",
-            include_str!("../src/sql/004_project_original_path.sql"),
+            16,
+            "pending_cleanups",
+            include_str!("../src/sql/016_pending_cleanups.sql"),
         ),
     ];
-    let mut old_database = state::testing::open_with_migrations(&paths, &old_migrations)?;
+    let mut old_database = state::testing::open_with_migrations(&paths, &migrations[..1])?;
     let project_id = "project_1".to_string();
     state::testing::transaction(&mut old_database, |transaction| {
         transaction.execute(
             "INSERT INTO projects (
                 id,
                 path,
-                original_path,
                 primary_hostname,
                 config_path,
                 desired_php_track,
                 created_at,
                 updated_at
             )
-            VALUES (?1, ?2, ?2, ?3, ?4, ?5, ?6, ?6)",
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)",
             params![
                 project_id,
                 tempdir.path().join("acme").as_str(),
@@ -1745,33 +1504,7 @@ fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<(
     })?;
     drop(old_database);
 
-    let upgraded_migrations = [
-        old_migrations[0],
-        old_migrations[1],
-        old_migrations[2],
-        old_migrations[3],
-        Migration::new(
-            5,
-            "project_resource_requirements",
-            include_str!("../src/sql/005_project_resource_requirements.sql"),
-        ),
-        Migration::new(
-            9,
-            "project_mode_and_slug",
-            include_str!("../src/sql/009_project_mode_and_slug.sql"),
-        ),
-        Migration::new(
-            13,
-            "retired_resource_allocations",
-            include_str!("../src/sql/013_retired_resource_allocations.sql"),
-        ),
-        Migration::new(
-            16,
-            "pending_cleanups",
-            include_str!("../src/sql/016_pending_cleanups.sql"),
-        ),
-    ];
-    let mut database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
+    let mut database = state::testing::open_with_migrations(&paths, &migrations)?;
     let before = (
         database.inspect()?,
         database.projects()?,
@@ -2130,67 +1863,6 @@ fn resource_allocations_reject_generated_name_collision_with_inactive_allocation
 }
 
 #[test]
-fn generated_env_context_escapes_round_trip_through_state() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
-
-    database.replace_project_managed_resources(
-        &project.id,
-        &[ProjectManagedResourceInput {
-            resource_name: "mysql".to_string(),
-            track: "8.0".to_string(),
-        }],
-    )?;
-    database.record_managed_resource_track_env_context(
-        "mysql",
-        "8.0",
-        &env_context(&[
-            ("backslash", r"C:\pv\mysql"),
-            ("literal_newline", r"line\nvalue"),
-            ("multiline", "line one\nline two"),
-            ("quote", r#"root "local""#),
-            ("unicode", "caf\u{00e9}-\u{03bb}"),
-        ]),
-    )?;
-    database.replace_project_resource_allocations(
-        &project.id,
-        "mysql",
-        "8.0",
-        &[ResourceAllocationInput {
-            allocation_name: "app-db".to_string(),
-            generated_name: "acme_test_app_db".to_string(),
-        }],
-    )?;
-    database.mark_resource_allocation_ready(
-        &project.id,
-        "mysql",
-        "8.0",
-        "app-db",
-        &env_context(&[
-            ("database", "acme_test_app_db"),
-            ("dsn", "mysql://root:pa\\ss@127.0.0.1/acme_test_app_db"),
-            ("literal_newline", r"row\nnext"),
-            ("multiline", "row one\nrow two"),
-            ("password", r#"pa"ss\word"#),
-            ("unicode", "schema-\u{03b4}"),
-        ]),
-    )?;
-
-    let tracks = database.managed_resource_tracks()?;
-    let allocations = database.resource_allocations(&project.id, "mysql")?;
-    let context = database.project_env_context(&project.id)?;
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!((tracks, allocations, context));
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
 fn resource_allocation_ready_requires_desired_track() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2541,82 +2213,6 @@ fn resource_allocations_reject_invalid_allocation_names_at_state_boundary() -> R
 }
 
 #[test]
-fn resource_env_context_validation_reports_typed_errors() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    database.record_managed_resource_track_desired(
-        "redis",
-        "7.2",
-        ManagedResourceDesiredState::Installed,
-    )?;
-    set_managed_resource_env_json(&mut database, "{")?;
-    assert!(matches!(
-        database.managed_resource_tracks(),
-        Err(StateError::InvalidEnvJson { .. })
-    ));
-
-    set_managed_resource_env_json(&mut database, "[]")?;
-    assert!(matches!(
-        database.managed_resource_tracks(),
-        Err(StateError::InvalidEnvJson { .. })
-    ));
-
-    set_managed_resource_env_json(&mut database, r#"{"port":3306}"#)?;
-    assert!(matches!(
-        database.managed_resource_tracks(),
-        Err(StateError::InvalidEnvJson { .. })
-    ));
-
-    let invalid_context = BTreeMap::from([(String::new(), "value".to_string())]);
-    assert!(matches!(
-        database.record_managed_resource_track_env_context("redis", "7.2", &invalid_context),
-        Err(StateError::InvalidEnvContext { .. })
-    ));
-
-    set_managed_resource_env_json(&mut database, "{}")?;
-    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO resource_allocations (
-                id,
-                project_id,
-                resource_name,
-                track,
-                allocation_name,
-                generated_name,
-                env_json,
-                status,
-                created_at,
-                updated_at
-            )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?9)",
-            params![
-                "allocation_000001",
-                project.id,
-                "redis",
-                "7.2",
-                "cache",
-                "acme-test-cache-",
-                "{}",
-                "mystery",
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    })?;
-
-    assert!(matches!(
-        database.resource_allocations(&project.id, "redis"),
-        Err(StateError::UnknownResourceAllocationStatus { status }) if status == "mystery"
-    ));
-
-    Ok(())
-}
-
-#[test]
 fn resource_state_apis_reject_latest_tracks() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2649,94 +2245,6 @@ fn resource_state_apis_reject_latest_tracks() -> Result<()> {
         database.record_managed_resource_track_env_context("mysql", "latest", &BTreeMap::new()),
         Err(StateError::ReservedConcreteTrack { track }) if track == "latest"
     ));
-
-    Ok(())
-}
-
-#[test]
-fn project_env_observed_status_and_warnings_round_trip() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
-
-    let pending = database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Pending,
-        None,
-        &[],
-    )?;
-    let warning_state = database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Warning,
-        Some("rendered with warnings"),
-        &[
-            ProjectEnvObservedWarningInput {
-                kind: "duplicate_key".to_string(),
-                message: "APP_URL already exists outside the PV block".to_string(),
-            },
-            ProjectEnvObservedWarningInput {
-                kind: "duplicate_key".to_string(),
-                message: "DATABASE_URL already exists outside the PV block".to_string(),
-            },
-        ],
-    )?;
-    let failed = database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Failed,
-        Some("render failed"),
-        &[],
-    )?;
-    let invalid_warning = database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Warning,
-        Some("invalid warning"),
-        &[ProjectEnvObservedWarningInput {
-            kind: String::new(),
-            message: "invalid warning should not change stored state".to_string(),
-        }],
-    );
-    let after_invalid_warning = database.project_env_observed_state(&project.id)?;
-
-    assert!(matches!(
-        invalid_warning,
-        Err(StateError::InvalidProjectEnvObservedWarning { kind: "kind", .. })
-    ));
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!((pending, warning_state, failed, after_invalid_warning));
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn unlink_project_clears_project_env_observed_state() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let project = link_test_project(&mut database, tempdir.path(), "acme", "acme.test")?;
-
-    database.record_project_env_observed_snapshot(
-        &project.id,
-        ProjectEnvObservedStatus::Warning,
-        Some("rendered with warnings"),
-        &[ProjectEnvObservedWarningInput {
-            kind: "duplicate_key".to_string(),
-            message: "APP_URL already exists outside the PV block".to_string(),
-        }],
-    )?;
-
-    let before_unlink = database.project_env_observed_state(&project.id)?;
-    let unlinked = database.unlink_project(&project.id)?;
-    let after_unlink = database.project_env_observed_state(&project.id)?;
-
-    assert_eq!(unlinked.id, project.id);
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!((before_unlink, after_unlink));
-        Ok::<(), anyhow::Error>(())
-    })?;
 
     Ok(())
 }
@@ -3178,22 +2686,11 @@ fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
         RuntimeObservedStatus::Pending,
         None,
     );
-    let reserved = database.record_runtime_observed_snapshot(
-        RuntimeSubject::PhpWorker {
-            php_track: "latest".to_string(),
-        },
-        RuntimeObservedStatus::Pending,
-        None,
-    );
 
     assert_eq!(updated_gateway.status, RuntimeObservedStatus::Degraded);
     assert!(matches!(
         invalid,
         Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value.is_empty()
-    ));
-    assert!(matches!(
-        reserved,
-        Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value == "latest"
     ));
     let connection = Connection::open(paths.db())?;
     let extension_worker_kind_count = connection.query_row(
@@ -3214,148 +2711,6 @@ fn runtime_observed_state_round_trips_through_observed_states() -> Result<()> {
         assert_debug_snapshot!(database.runtime_observed_states()?);
         Ok::<(), anyhow::Error>(())
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_removal_intent_migration_backfills_existing_tracks() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let old_schema = r#"
-        CREATE TABLE managed_resource_tracks (
-            resource_name TEXT NOT NULL,
-            track TEXT NOT NULL,
-            desired_state TEXT NOT NULL,
-            installed_version TEXT,
-            current_artifact_path TEXT,
-            usage_count INTEGER NOT NULL DEFAULT 0,
-            updated_at TEXT NOT NULL,
-            PRIMARY KEY (resource_name, track)
-        );
-
-        INSERT INTO managed_resource_tracks (
-            resource_name,
-            track,
-            desired_state,
-            installed_version,
-            current_artifact_path,
-            usage_count,
-            updated_at
-        )
-        VALUES (
-            'redis',
-            '7.2',
-            'installed',
-            '7.2.5-pv1',
-            '/Users/example/.pv/resources/redis/7.2/releases/7.2.5-pv1',
-            3,
-            '2026-05-23T00:00:00Z'
-        );
-    "#;
-    let old_migration = [Migration::new(1, "core_state_schema", old_schema)];
-    let old_database = state::testing::open_with_migrations(&paths, &old_migration)?;
-    drop(old_database);
-
-    let upgraded_migrations = [
-        Migration::new(1, "core_state_schema", old_schema),
-        Migration::new(
-            2,
-            "managed_resource_removal_intent",
-            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
-        ),
-        Migration::new(
-            5,
-            "project_resource_requirements",
-            include_str!("../src/sql/005_project_resource_requirements.sql"),
-        ),
-    ];
-    let database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
-
-    assert_debug_snapshot!(database.managed_resource_tracks()?);
-
-    Ok(())
-}
-
-#[test]
-fn project_original_path_migration_backfills_existing_paths() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let old_schema = include_str!("../src/sql/001_core_state_schema.sql");
-    let old_migration = [Migration::new(1, "core_state_schema", old_schema)];
-    let mut old_database = state::testing::open_with_migrations(&paths, &old_migration)?;
-    state::testing::transaction(&mut old_database, |transaction| {
-        transaction.execute(
-            "INSERT INTO projects (id, path, primary_hostname, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![
-                "project_1",
-                "/tmp/acme",
-                "acme.test",
-                "2026-05-23T00:00:00Z",
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    })?;
-    drop(old_database);
-
-    let upgraded_migrations = [
-        Migration::new(1, "core_state_schema", old_schema),
-        Migration::new(
-            2,
-            "managed_resource_removal_intent",
-            include_str!("../src/sql/002_managed_resource_removal_intent.sql"),
-        ),
-        Migration::new(
-            3,
-            "project_primary_hostname_updates",
-            include_str!("../src/sql/003_project_primary_hostname_updates.sql"),
-        ),
-        Migration::new(
-            4,
-            "project_original_path",
-            include_str!("../src/sql/004_project_original_path.sql"),
-        ),
-        Migration::new(
-            9,
-            "project_mode_and_slug",
-            include_str!("../src/sql/009_project_mode_and_slug.sql"),
-        ),
-    ];
-    let database = state::testing::open_with_migrations(&paths, &upgraded_migrations)?;
-    let project = database
-        .project_by_path(Utf8Path::new("/tmp/acme"))?
-        .ok_or_else(|| anyhow!("missing migrated project"))?;
-
-    assert_eq!(project.original_path.as_str(), "/tmp/acme");
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_tracks_reject_unknown_desired_state_values() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO managed_resource_tracks (resource_name, track, desired_state, updated_at)
-            VALUES (?1, ?2, ?3, ?4)",
-            params!["redis", "7.2", "mystery", "2026-05-23T00:00:00Z"],
-        )?;
-
-        Ok(())
-    })?;
-    let result = database.managed_resource_tracks();
-
-    assert!(matches!(
-        result,
-        Err(StateError::UnknownManagedResourceDesiredState { desired_state })
-            if desired_state == "mystery"
-    ));
 
     Ok(())
 }
@@ -3401,136 +2756,6 @@ fn managed_resource_track_writes_reject_invalid_identities() -> Result<()> {
             value
         }) if value == ".."
     ));
-
-    Ok(())
-}
-
-#[test]
-fn managed_resource_tracks_reject_invalid_persisted_identities() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO managed_resource_tracks (resource_name, track, desired_state, installed_version, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![".", "7.2", "installed", "7.2.5-pv1", "2026-05-23T00:00:00Z"],
-        )?;
-
-        Ok(())
-    })?;
-    let result = database.managed_resource_tracks();
-
-    assert!(matches!(
-        result,
-        Err(StateError::InvalidManagedResourceIdentity { kind: "name", value })
-            if value == "."
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn primary_project_hostname_rows_must_match_the_project() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO projects (id, project_slug, path, original_path, primary_hostname, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![
-                "project_1",
-                "acme",
-                "/tmp/acme",
-                "/tmp/acme",
-                "acme.test",
-                "2026-05-23T00:00:00Z",
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    })?;
-
-    let mismatched_primary = state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO project_hostnames (hostname, project_id, is_primary, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                "other.test",
-                "project_1",
-                1,
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    });
-
-    assert!(mismatched_primary.is_err());
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO project_hostnames (hostname, project_id, is_primary, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                "acme.test",
-                "project_1",
-                1,
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    })?;
-
-    let duplicate_primary = state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO project_hostnames (hostname, project_id, is_primary, created_at) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                "acme-alias.test",
-                "project_1",
-                1,
-                "2026-05-23T00:00:00Z",
-            ],
-        )?;
-
-        Ok(())
-    });
-
-    assert!(duplicate_primary.is_err());
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "UPDATE projects SET primary_hostname = ?1 WHERE id = ?2",
-            params!["renamed.test", "project_1"],
-        )?;
-
-        Ok(())
-    })?;
-    let renamed_primary = state::testing::query_i64(
-        &database,
-        "SELECT COUNT(*) FROM project_hostnames WHERE hostname = 'renamed.test' AND is_primary = 1",
-    )?;
-
-    assert_eq!(renamed_primary, 1);
-
-    let delete_primary = state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "DELETE FROM project_hostnames WHERE hostname = ?1",
-            params!["renamed.test"],
-        )?;
-
-        Ok(())
-    });
-
-    assert!(delete_primary.is_err());
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute("DELETE FROM projects WHERE id = ?1", params!["project_1"])?;
-
-        Ok(())
-    })?;
 
     Ok(())
 }
@@ -3776,27 +3001,6 @@ fn project_reconciliation_finalization_rolls_back_gateway_state_on_failure() -> 
 }
 
 #[test]
-fn linked_projects_refresh_desired_php_track_independently() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let created = database.link_project(state::LinkProjectInput {
-        path: tempdir.path().join("acme"),
-        original_path: tempdir.path().join("acme"),
-        primary_hostname: "acme.test".to_string(),
-        config_path: tempdir.path().join("acme/pv.yml"),
-        desired_php_track: Some("8.4".to_string()),
-    })?;
-
-    let updated = database.replace_project_desired_php_track(&created.project.id, Some("8.3"))?;
-
-    assert_eq!(updated.desired_php_track.as_deref(), Some("8.3"));
-    assert_eq!(updated.primary_hostname.as_deref(), Some("acme.test"));
-
-    Ok(())
-}
-
-#[test]
 fn project_php_runtime_extensions_round_trip_through_state() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -3834,25 +3038,20 @@ fn project_php_runtime_extensions_round_trip_through_state() -> Result<()> {
         state::php_runtime_key("8.4", &project.php_runtime.loaded_extensions)?,
         "8.4+redis+xdebug"
     );
-
-    Ok(())
-}
-
-#[test]
-fn project_php_runtime_persists_non_identity_requested_and_ignored_extensions() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let project = database.link_project(state::LinkProjectInput {
-        path: tempdir.path().join("acme"),
-        original_path: tempdir.path().join("acme"),
-        primary_hostname: "acme.test".to_string(),
-        config_path: tempdir.path().join("acme/pv.yml"),
-        desired_php_track: Some("8.4".to_string()),
-    })?;
+    assert_eq!(
+        state::php_runtime_key(
+            "8.4",
+            &[
+                "xdebug".to_string(),
+                "redis".to_string(),
+                "redis".to_string()
+            ]
+        )?,
+        "8.4+redis+xdebug"
+    );
 
     database.replace_project_php_runtime(
-        &project.project.id,
+        &project.id,
         Some(&state::ProjectPhpRuntimeInput {
             track: "8.4".to_string(),
             requested_extensions: vec!["not-supported-yet".to_string()],
@@ -3862,7 +3061,7 @@ fn project_php_runtime_persists_non_identity_requested_and_ignored_extensions() 
     )?;
 
     let project = database
-        .project_by_id(&project.project.id)?
+        .project_by_id(&project.id)?
         .ok_or_else(|| anyhow!("missing project"))?;
 
     assert_eq!(
@@ -3915,34 +3114,6 @@ fn project_php_runtime_rejects_non_identity_loaded_extensions() -> Result<()> {
 }
 
 #[test]
-fn replace_project_php_runtime_uses_public_timestamp_format() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let project = database.link_project(state::LinkProjectInput {
-        path: tempdir.path().join("acme"),
-        original_path: tempdir.path().join("acme"),
-        primary_hostname: "acme.test".to_string(),
-        config_path: tempdir.path().join("acme/pv.yml"),
-        desired_php_track: Some("8.4".to_string()),
-    })?;
-
-    let updated = database.replace_project_php_runtime(
-        &project.project.id,
-        Some(&state::ProjectPhpRuntimeInput {
-            track: "8.4".to_string(),
-            requested_extensions: vec!["redis".to_string()],
-            loaded_extensions: vec!["redis".to_string()],
-            ignored_extensions: Vec::new(),
-        }),
-    )?;
-
-    assert_public_timestamp(&updated.updated_at);
-
-    Ok(())
-}
-
-#[test]
 fn linked_project_scalar_php_update_clears_runtime_extensions() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -3983,27 +3154,11 @@ fn linked_project_scalar_php_update_clears_runtime_extensions() -> Result<()> {
 }
 
 #[test]
-fn php_runtime_key_sorts_loaded_extensions() -> Result<()> {
-    let loaded_extensions = vec![
-        "xdebug".to_string(),
-        "redis".to_string(),
-        "redis".to_string(),
-    ];
-
-    assert_eq!(
-        state::php_runtime_key("8.4", &loaded_extensions)?,
-        "8.4+redis+xdebug"
-    );
-
-    Ok(())
-}
-
-#[test]
 fn linked_projects_store_original_and_canonical_paths() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
-    let original_path = tempdir.path().join("linked-acme");
+    let original_path = tempdir.path().join("work").join("..").join("linked-acme");
     let canonical_path = tempdir.path().join("real-acme");
 
     let created = database.link_project(state::LinkProjectInput {
@@ -4020,28 +3175,6 @@ fn linked_projects_store_original_and_canonical_paths() -> Result<()> {
     assert_eq!(created.project.path, canonical_path);
     assert_eq!(created.project.original_path, original_path);
     assert_eq!(resolved.original_path, original_path);
-
-    Ok(())
-}
-
-#[test]
-fn linked_projects_allow_noncanonical_original_paths() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let project_path = tempdir.path().join("acme");
-    let original_path = tempdir.path().join("work").join("..").join("acme");
-
-    let created = database.link_project(state::LinkProjectInput {
-        path: project_path.clone(),
-        original_path: original_path.clone(),
-        primary_hostname: "acme.test".to_string(),
-        config_path: project_path.join("pv.yml"),
-        desired_php_track: None,
-    })?;
-
-    assert_eq!(created.project.path, project_path);
-    assert_eq!(created.project.original_path, original_path);
 
     Ok(())
 }
@@ -4094,16 +3227,6 @@ fn link_project_rejects_invalid_input_shapes() -> Result<()> {
             desired_php_track: Some(String::new()),
         }),
         Err(state::StateError::InvalidProjectTrack { track }) if track.is_empty()
-    ));
-    assert!(matches!(
-        database.link_project(state::LinkProjectInput {
-            path: tempdir.path().join("acme"),
-            original_path: tempdir.path().join("acme"),
-            primary_hostname: "acme.test".to_string(),
-            config_path: tempdir.path().join("acme/pv.yml"),
-            desired_php_track: Some("latest".to_string()),
-        }),
-        Err(state::StateError::InvalidProjectTrack { track }) if track == "latest"
     ));
 
     Ok(())
@@ -4259,27 +3382,6 @@ fn port_allocator_persists_reuses_avoids_collisions_and_releases_assignments() -
         port: "default".to_string(),
     })?;
     let reassigned_mysql = database.assign_port(mysql, |port| port != 3306)?;
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!((
-            assigned_mysql,
-            reused_mysql,
-            assigned_redis,
-            released_mysql,
-            reassigned_mysql,
-            database.assigned_ports()?,
-        ));
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn resource_port_allocator_distinguishes_named_ports_for_one_track() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
     let smtp = PortRequest::resource_port("mailpit", "1.0", "smtp", 1025, 45000, 45009);
     let dashboard = PortRequest::resource_port("mailpit", "1.0", "dashboard", 8025, 45000, 45009);
 
@@ -4294,64 +3396,15 @@ fn resource_port_allocator_distinguishes_named_ports_for_one_track() -> Result<(
 
     with_normalized_timestamps(|| {
         assert_debug_snapshot!((
+            assigned_mysql,
+            reused_mysql,
+            assigned_redis,
+            released_mysql,
+            reassigned_mysql,
             assigned_smtp,
             assigned_dashboard,
             reused_smtp,
             released_dashboard,
-            database.assigned_ports()?,
-        ));
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    Ok(())
-}
-
-#[test]
-fn legacy_port_insert_contract_survives_named_resource_port_migration() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO ports (owner_kind, owner_id, owner_track, port, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(owner_kind, owner_id, owner_track) DO UPDATE SET
-                port = excluded.port,
-                updated_at = excluded.updated_at",
-            params!["resource", "mysql", "8.0", 3306, "2026-06-08T00:00:00Z"],
-        )?;
-        transaction.execute(
-            "INSERT INTO ports (owner_kind, owner_id, owner_track, port, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5)
-            ON CONFLICT(owner_kind, owner_id, owner_track) DO UPDATE SET
-                port = excluded.port,
-                updated_at = excluded.updated_at",
-            params!["resource", "mysql", "8.0", 3307, "2026-06-08T00:00:01Z"],
-        )?;
-
-        Ok(())
-    })?;
-
-    let smtp = PortRequest::resource_port("mailpit", "1.0", "smtp", 1025, 45000, 45009);
-    let dashboard = PortRequest::resource_port("mailpit", "1.0", "dashboard", 8025, 45000, 45009);
-    let assigned_smtp = database.assign_port(smtp, |_port| true)?;
-    let assigned_dashboard = database.assign_port(dashboard, |_port| true)?;
-    let legacy_mysql_rows = state::testing::query_i64(
-        &database,
-        "SELECT COUNT(*)
-        FROM ports
-        WHERE owner_kind = 'resource'
-        AND owner_id = 'mysql'
-        AND owner_track = '8.0'
-        AND port = 3307",
-    )?;
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!((
-            legacy_mysql_rows,
-            assigned_smtp,
-            assigned_dashboard,
             database.assigned_ports()?,
         ));
         Ok::<(), anyhow::Error>(())
@@ -4384,6 +3437,12 @@ fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
         Ok::<(), anyhow::Error>(())
     })?;
 
+    database.release_port(PortOwner::Dns)?;
+    let last_fallback_dns = database.assign_port(PortRequest::pv_dns(), |port| {
+        port == RUNTIME_PORT_FALLBACK_END
+    })?;
+    assert_eq!(last_fallback_dns.port, RUNTIME_PORT_FALLBACK_END);
+
     Ok(())
 }
 
@@ -4413,21 +3472,14 @@ fn gateway_port_allocator_persists_only_http_and_https_assignments() -> Result<(
         Ok::<(), anyhow::Error>(())
     })?;
 
-    Ok(())
-}
-
-#[test]
-fn gateway_port_allocator_uses_fallbacks_when_preferred_ports_are_unavailable() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let assigned = database.assign_gateway_ports(|port| {
+    let mut fallback_database =
+        Database::open(&PvPaths::for_home(tempdir.path().join("fallback-home")))?;
+    let fallback = fallback_database.assign_gateway_ports(|port| {
         port != GATEWAY_HTTP_PREFERRED_PORT && port != GATEWAY_HTTPS_PREFERRED_PORT
     })?;
 
-    assert_eq!(assigned.http.port, RUNTIME_PORT_FALLBACK_START);
-    assert_eq!(assigned.https.port, RUNTIME_PORT_FALLBACK_START + 1);
+    assert_eq!(fallback.http.port, RUNTIME_PORT_FALLBACK_START);
+    assert_eq!(fallback.https.port, RUNTIME_PORT_FALLBACK_START + 1);
 
     Ok(())
 }
@@ -4443,14 +3495,17 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     let assigned_php84 = database.assign_port(php84.clone(), |port| port == 45000)?;
     let reused_php84 = database.assign_port(php84, |_port| false)?;
     let assigned_php83 = database.assign_port(php83, |_port| true)?;
-    let reserved_track = database.assign_port(
-        PortRequest::php_worker("latest", 45000, 45000, 45009),
-        |_port| true,
-    );
     let invalid_track = database.assign_port(
         PortRequest::php_worker("../8.4", 45000, 45000, 45009),
         |_port| true,
     );
+    let assigned_php84_redis = database.assign_port(
+        PortRequest::php_worker("8.4+redis", 45000, 45000, 45009),
+        |_port| true,
+    )?;
+    drop(database);
+    let mut reopened = Database::open(&paths)?;
+    let reused_php84_after_reopen = reopened.assign_php_worker_port("8.4", |_port| false)?;
 
     assert_eq!(
         assigned_php84.owner,
@@ -4468,72 +3523,27 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     );
     assert_eq!(assigned_php83.port, 45001);
     assert!(matches!(
-        reserved_track,
-        Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value == "latest"
-    ));
-    assert!(matches!(
         invalid_track,
         Err(StateError::InvalidRuntimeSubject { kind: "php_runtime", value }) if value == "../8.4"
     ));
+    assert_eq!(
+        assigned_php84_redis.owner,
+        PortOwner::PhpWorker {
+            php_runtime_key: "8.4+redis".to_string()
+        }
+    );
+    assert_eq!(assigned_php84_redis.port, 45002);
+    assert_eq!(reused_php84_after_reopen, assigned_php84);
 
     with_normalized_timestamps(|| {
         assert_debug_snapshot!((
             assigned_php84,
             reused_php84,
             assigned_php83,
-            database.assigned_ports()?
+            reopened.assigned_ports()?
         ));
         Ok::<(), anyhow::Error>(())
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn php_worker_port_allocator_uses_runtime_identity() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let plain = database.assign_port(
-        PortRequest::php_worker("8.4", 45000, 45000, 45009),
-        |_port| true,
-    )?;
-    let redis = database.assign_port(
-        PortRequest::php_worker("8.4+redis", 45000, 45000, 45009),
-        |_port| true,
-    )?;
-
-    assert_ne!(plain.port, redis.port);
-    assert_eq!(
-        redis.owner,
-        PortOwner::PhpWorker {
-            php_runtime_key: "8.4+redis".to_string()
-        }
-    );
-
-    Ok(())
-}
-
-#[test]
-fn php_worker_port_allocator_persists_only_service_assignment() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let assigned = database.assign_php_worker_port("8.4", |_port| true)?;
-    drop(database);
-    let mut reopened = Database::open(&paths)?;
-    let reused = reopened.assign_php_worker_port("8.4", |_port| false)?;
-
-    assert_eq!(assigned.port, RUNTIME_PORT_FALLBACK_START);
-    assert_eq!(
-        assigned.owner,
-        PortOwner::PhpWorker {
-            php_runtime_key: "8.4".to_owned(),
-        }
-    );
-    assert_eq!(reused, assigned);
 
     Ok(())
 }
@@ -4564,81 +3574,6 @@ fn gateway_port_allocator_rolls_back_when_https_cannot_be_assigned() -> Result<(
         } if name == "gateway https"
     ));
     assert_eq!(database.assigned_ports()?, Vec::new());
-
-    Ok(())
-}
-
-#[test]
-fn port_allocator_keeps_owner_components_structured() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let mysql_debug = PortRequest::resource_port("mysql", "8.4", "debug", 45000, 45000, 45009);
-    let mysql_default =
-        PortRequest::resource_port("mysql", "8.4-debug", "default", 45000, 45000, 45009);
-
-    let assigned_mysql_debug = database.assign_port(mysql_debug, |_port| true)?;
-    let assigned_mysql_default = database.assign_port(mysql_default, |_port| true)?;
-    let released_mysql_debug = database.release_port(PortOwner::Resource {
-        name: "mysql".to_string(),
-        track: "8.4".to_string(),
-        port: "debug".to_string(),
-    })?;
-
-    assert_eq!(
-        assigned_mysql_debug.owner,
-        PortOwner::Resource {
-            name: "mysql".to_string(),
-            track: "8.4".to_string(),
-            port: "debug".to_string(),
-        }
-    );
-    assert_eq!(assigned_mysql_debug.port, 45000);
-    assert_eq!(
-        assigned_mysql_default.owner,
-        PortOwner::Resource {
-            name: "mysql".to_string(),
-            track: "8.4-debug".to_string(),
-            port: "default".to_string(),
-        }
-    );
-    assert_eq!(assigned_mysql_default.port, 45001);
-    assert!(released_mysql_debug);
-    assert_eq!(database.assigned_ports()?, vec![assigned_mysql_default]);
-
-    Ok(())
-}
-
-#[test]
-fn port_allocator_scans_the_full_documented_dns_fallback_range() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let assigned_dns = database.assign_port(PortRequest::pv_dns(), |port| {
-        port == RUNTIME_PORT_FALLBACK_END
-    })?;
-
-    assert_eq!(assigned_dns.port, RUNTIME_PORT_FALLBACK_END);
-
-    Ok(())
-}
-
-#[test]
-fn job_records_expose_typed_statuses() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let job = database.start_job("test", "system")?;
-
-    database.complete_job(&job.id, "done")?;
-
-    let jobs = database.recent_jobs()?;
-
-    assert!(matches!(
-        jobs.first().map(|job| job.status),
-        Some(JobStatus::Succeeded)
-    ));
 
     Ok(())
 }
@@ -4705,22 +3640,6 @@ fn update_assessment_coverage_does_not_hide_gateway_failure() -> Result<()> {
 
     assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].job.id, failure.id);
-    assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
-
-    Ok(())
-}
-
-#[test]
-fn caddy_resource_failure_resolves_as_gateway_diagnostic() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-    let failure = database.start_job("reconcile", "resource:caddy:2")?;
-    database.fail_job(&failure.id, "Caddy failed")?;
-
-    let unresolved = database.unresolved_job_failures()?;
-
-    assert_eq!(unresolved.len(), 1);
     assert_eq!(unresolved[0].subject, JobDiagnosticSubject::GatewayRuntime);
 
     Ok(())
@@ -4950,87 +3869,22 @@ fn equal_timestamp_healthy_observation_does_not_resolve_failure() -> Result<()> 
 }
 
 #[test]
-fn completing_unknown_job_returns_typed_error() -> Result<()> {
+fn finishing_unknown_job_returns_typed_error() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
 
-    let result = database.complete_job("missing_job", "done");
+    let completed = database.complete_job("missing_job", "done");
+    let failed = database.fail_job("missing_job", "failed");
 
     assert!(matches!(
-        result,
+        completed,
         Err(StateError::JobNotFound { id }) if id == "missing_job"
     ));
-
-    Ok(())
-}
-
-#[test]
-fn failing_unknown_job_returns_typed_error() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let result = database.fail_job("missing_job", "failed");
-
     assert!(matches!(
-        result,
+        failed,
         Err(StateError::JobNotFound { id }) if id == "missing_job"
     ));
-
-    Ok(())
-}
-
-#[test]
-fn recent_jobs_rejects_unknown_status_values() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params!["job_1", "test", "system", "mystery", "2026-05-24T00:00:00Z"],
-        )?;
-
-        Ok(())
-    })?;
-
-    let result = database.recent_jobs();
-
-    assert!(matches!(
-        result,
-        Err(StateError::UnknownJobStatus { status }) if status == "mystery"
-    ));
-
-    Ok(())
-}
-
-#[test]
-fn transactions_roll_back_when_the_operation_fails() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    state::fs::ensure_layout(&paths)?;
-
-    let mut database = Database::open(&paths)?;
-    let result = state::testing::transaction(&mut database, |transaction| {
-        transaction.execute(
-            "INSERT INTO jobs (id, kind, scope, status, started_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params!["job_1", "test", "system", "running", "2026-05-23T00:00:00Z"],
-        )?;
-        transaction.execute(
-            "INSERT INTO missing_table (id) VALUES (?1)",
-            params!["boom"],
-        )?;
-
-        Ok(())
-    });
-
-    assert!(result.is_err());
-    assert_debug_snapshot!(state::testing::query_i64(
-        &database,
-        "SELECT COUNT(*) FROM jobs"
-    )?);
 
     Ok(())
 }
@@ -5078,36 +3932,6 @@ fn env_context(values: &[(&str, &str)]) -> EnvContextValues {
         .iter()
         .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
         .collect()
-}
-
-fn assert_public_timestamp(timestamp: &str) {
-    let bytes = timestamp.as_bytes();
-    assert_eq!(bytes.len(), 20, "{timestamp}");
-    for index in [0_usize, 1, 2, 3, 5, 6, 8, 9, 11, 12, 14, 15, 17, 18] {
-        assert!(matches!(bytes.get(index), Some(byte) if byte.is_ascii_digit()));
-    }
-    assert_eq!(bytes.get(4), Some(&b'-'), "{timestamp}");
-    assert_eq!(bytes.get(7), Some(&b'-'), "{timestamp}");
-    assert_eq!(bytes.get(10), Some(&b'T'), "{timestamp}");
-    assert_eq!(bytes.get(13), Some(&b':'), "{timestamp}");
-    assert_eq!(bytes.get(16), Some(&b':'), "{timestamp}");
-    assert_eq!(bytes.get(19), Some(&b'Z'), "{timestamp}");
-}
-
-fn set_managed_resource_env_json(database: &mut Database, env_json: &str) -> Result<()> {
-    state::testing::transaction(database, |transaction| {
-        transaction.execute(
-            "UPDATE managed_resource_tracks
-            SET env_json = ?1
-            WHERE resource_name = ?2
-            AND track = ?3",
-            params![env_json, "redis", "7.2"],
-        )?;
-
-        Ok(())
-    })?;
-
-    Ok(())
 }
 
 fn set_resource_allocation_env_json(

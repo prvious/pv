@@ -1,0 +1,16 @@
+---
+source: crates/resources/tests/it/artifact_cache_download.rs
+expression: "[without_cache, with_cache]"
+---
+[
+    Err(
+        InvalidManifestUrl {
+            url: "http://artifacts.example.test/manifest.json",
+        },
+    ),
+    Err(
+        InvalidManifestUrl {
+            url: "http://artifacts.example.test/manifest.json",
+        },
+    ),
+]

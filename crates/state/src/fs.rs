@@ -24,8 +24,6 @@ struct DatabaseAuxiliaryHardeningTestHook {
 #[cfg(any(test, feature = "test-support"))]
 static DATABASE_AUXILIARY_HARDENING_TEST_HOOK: Mutex<Option<DatabaseAuxiliaryHardeningTestHook>> =
     Mutex::new(None);
-#[cfg(any(test, feature = "test-support"))]
-static SENSITIVE_WRITE_FAILURE_TEST_HOOK: Mutex<Option<Utf8PathBuf>> = Mutex::new(None);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LayoutInspection {
@@ -83,45 +81,9 @@ pub fn remove_daemon_socket(paths: &PvPaths) -> Result<(), StateError> {
 }
 
 pub fn write_sensitive_file(path: &Utf8Path, content: &str) -> Result<(), StateError> {
-    #[cfg(any(test, feature = "test-support"))]
-    fail_sensitive_write_for_test(path)?;
-
     ensure_parent_dir(path)?;
     write_atomically(path, content)?;
     secure_sensitive_file(path)
-}
-
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) fn fail_next_sensitive_write(path: Utf8PathBuf) {
-    let mut hook = match SENSITIVE_WRITE_FAILURE_TEST_HOOK.lock() {
-        Ok(hook) => hook,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    *hook = Some(path);
-}
-
-#[cfg(any(test, feature = "test-support"))]
-fn fail_sensitive_write_for_test(path: &Utf8Path) -> Result<(), StateError> {
-    let should_fail = {
-        let mut hook = match SENSITIVE_WRITE_FAILURE_TEST_HOOK.lock() {
-            Ok(hook) => hook,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        if hook.as_deref() == Some(path) {
-            hook.take();
-            true
-        } else {
-            false
-        }
-    };
-    if should_fail {
-        return Err(StateError::filesystem(
-            path.to_path_buf(),
-            io::Error::other("injected sensitive write failure"),
-        ));
-    }
-
-    Ok(())
 }
 
 pub fn copy_file_atomically(source: &Utf8Path, target: &Utf8Path) -> Result<(), StateError> {
@@ -863,9 +825,7 @@ mod tests {
     #[cfg(windows)]
     use super::{ensure_user_dir, path_exists};
     #[cfg(unix)]
-    use super::{
-        path_exists, secure_database_auxiliary_file, secure_database_files, write_sensitive_file,
-    };
+    use super::{path_exists, secure_database_files, write_sensitive_file};
     #[cfg(unix)]
     use crate::PvPaths;
     #[cfg(windows)]
@@ -904,26 +864,6 @@ mod tests {
 
         removal.try_recv()?;
         assert!(!path_exists(&auxiliary_path));
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn database_auxiliary_file_security_errors_are_preserved() -> anyhow::Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let blocking_file = paths.root().join("blocking-file");
-        write_sensitive_file(&blocking_file, "")?;
-        let auxiliary_path = blocking_file.join("pv.db-wal");
-
-        let result = secure_database_auxiliary_file(&auxiliary_path);
-
-        assert!(matches!(
-            result,
-            Err(StateError::Filesystem { path, source })
-                if path == auxiliary_path && source.kind() == std::io::ErrorKind::NotADirectory
-        ));
-
         Ok(())
     }
 

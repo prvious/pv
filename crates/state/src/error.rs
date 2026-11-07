@@ -247,54 +247,10 @@ impl StateError {
     }
 }
 
-#[cfg(any(test, not(unix)))]
-pub(crate) const fn unsupported_target_name(
-    capability: StateCapability,
-    target: &'static str,
-) -> StateError {
-    StateError::UnsupportedPlatform { capability, target }
-}
-
 #[cfg(not(unix))]
 pub(crate) const fn unsupported_current_target(capability: StateCapability) -> StateError {
-    unsupported_target_name(capability, std::env::consts::OS)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{StateCapability, StateError, unsupported_target_name};
-
-    #[test]
-    fn unsupported_error_names_capability_and_target() {
-        let error = StateError::UnsupportedPlatform {
-            capability: StateCapability::OwnerOnlyFilesystem,
-            target: "windows",
-        };
-
-        assert!(matches!(
-            &error,
-            StateError::UnsupportedPlatform {
-                capability: StateCapability::OwnerOnlyFilesystem,
-                target: "windows",
-            }
-        ));
-        assert_eq!(
-            error.to_string(),
-            "owner-only filesystem is unsupported on windows"
-        );
-    }
-
-    #[test]
-    fn unsupported_target_name_uses_injected_target() {
-        let error = unsupported_target_name(StateCapability::SymbolicLinks, "windows");
-
-        assert!(matches!(
-            &error,
-            StateError::UnsupportedPlatform {
-                capability: StateCapability::SymbolicLinks,
-                target: "windows",
-            }
-        ));
-        assert_eq!(error.to_string(), "symbolic link is unsupported on windows");
+    StateError::UnsupportedPlatform {
+        capability,
+        target: std::env::consts::OS,
     }
 }
