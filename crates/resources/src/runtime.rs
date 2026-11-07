@@ -1,7 +1,7 @@
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::fs;
-use crate::{ResourceAdapter, ResourceName, ResourcesError, Result};
+use crate::{ResourceAdapter, ResourceName, ResourcesError, Result, TargetPlatform};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RuntimeArtifactAdapter {
@@ -91,15 +91,21 @@ pub fn mysql_adapter() -> Result<RuntimeArtifactAdapter> {
     runtime_adapter("mysql", "bin/mysqld")
 }
 
-pub fn postgres_adapter() -> Result<RuntimeArtifactAdapter> {
-    Ok(runtime_adapter("postgres", "bin/postgres")?
+pub fn postgres_adapter(target_platform: TargetPlatform) -> Result<RuntimeArtifactAdapter> {
+    let mut adapter = runtime_adapter("postgres", "bin/postgres")?
         .required_file("bin/initdb")
-        .required_file("share/postgres.bki")
-        .required_file("lib/libcrypto.3.dylib")
-        .required_file("lib/libssl.3.dylib")
-        .required_file("lib/postgresql/pg_trgm.dylib")
-        .required_file("lib/postgresql/pgcrypto.dylib")
-        .required_file("lib/postgresql/sslinfo.dylib")
+        .required_file("share/postgres.bki");
+    for library in target_platform.openssl_library_names() {
+        adapter = adapter.required_file(format!("lib/{library}"));
+    }
+    for library in ["pg_trgm", "pgcrypto", "sslinfo"] {
+        adapter = adapter.required_file(format!(
+            "lib/postgresql/{library}{}",
+            target_platform.shared_library_suffix()
+        ));
+    }
+
+    Ok(adapter
         .required_file("share/extension/pg_trgm.control")
         .required_file("share/extension/pgcrypto.control")
         .required_file("share/extension/sslinfo.control"))

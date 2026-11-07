@@ -234,14 +234,15 @@ impl ManagedResourceRuntimeCatalog {
             mysql::RESOURCE_NAME,
             Box::new(mysql::MysqlRuntimeAdapter::new()),
         );
-        let postgres = postgres::PostgresRuntimeAdapter::new();
+        let target_platform = resources::TargetPlatform::current()?;
+        let postgres = postgres::PostgresRuntimeAdapter::new(target_platform);
         adapters.insert(postgres.resource_name(), Box::new(postgres));
 
         Ok(Self {
             adapters,
             install_options: ManagedResourceInstallOptions {
                 manifest_url: resources::default_artifact_manifest_url().to_string(),
-                target_platform: resources::TargetPlatform::current()?,
+                target_platform,
             },
             http_client: None,
         })
@@ -2429,6 +2430,6 @@ pub(crate) fn postgres_runtime_catalog(
             manifest_url: manifest_url.to_string(),
             target_platform: resources::TargetPlatform::current()?,
         },
-        postgres::PostgresRuntimeAdapter::new(),
+        postgres::PostgresRuntimeAdapter::new(resources::TargetPlatform::current()?),
     ))
 }

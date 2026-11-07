@@ -14,6 +14,17 @@ fn app_update_manifest_parses_stable_release_and_selects_platform() -> Result<()
 }
 
 #[test]
+fn app_update_manifest_selects_linux_platforms() -> Result<()> {
+    let manifest = AppUpdateManifest::parse(&VALID_MANIFEST.replace("darwin", "linux"))?;
+
+    for platform in [AppUpdatePlatform::LinuxArm64, AppUpdatePlatform::LinuxAmd64] {
+        assert_eq!(manifest.select_platform(platform)?.platform(), platform);
+    }
+
+    Ok(())
+}
+
+#[test]
 fn app_update_manifest_rejects_schema_channel_version_and_compatibility_errors() -> Result<()> {
     let unsupported_schema =
         VALID_MANIFEST.replacen("\"schema_version\": 2", "\"schema_version\": 3", 1);

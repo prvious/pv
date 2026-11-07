@@ -1,9 +1,8 @@
 use anyhow::{Result, bail};
-use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use resources::{
-    ResourceAdapter, ResourcesError, composer_adapter, frankenphp_adapter, mailpit_adapter,
-    mysql_adapter, php_adapter, postgres_adapter, redis_adapter, rustfs_adapter,
+    ResourceAdapter, ResourcesError, TargetPlatform, composer_adapter, frankenphp_adapter,
+    mailpit_adapter, mysql_adapter, php_adapter, postgres_adapter, redis_adapter, rustfs_adapter,
 };
 use state::fs::write_sensitive_file;
 
@@ -35,34 +34,46 @@ fn runtime_adapters_validate_expected_executable_layouts() -> Result<()> {
 
 #[test]
 fn postgres_adapter_validates_pv2_runtime_layout() -> Result<()> {
-    let tempdir = tempdir()?;
-    let release = tempdir.path();
-    let adapter = postgres_adapter()?;
-    let executable_path = release.join("bin/postgres");
-    write_sensitive_file(&executable_path, "postgres executable")?;
-    write_sensitive_file(&release.join("bin/initdb"), "postgres initdb")?;
-    write_sensitive_file(&release.join("share/postgres.bki"), "postgres catalog")?;
-    write_postgres_pv2_support_files(release)?;
-
-    adapter.validate_installation(release)?;
-
-    assert_eq!(adapter.executable_path(release), executable_path);
-
-    Ok(())
-}
-
-fn write_postgres_pv2_support_files(release: &Utf8Path) -> Result<()> {
-    for relative_path in [
-        "lib/libcrypto.3.dylib",
-        "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.dylib",
-        "lib/postgresql/pgcrypto.dylib",
-        "lib/postgresql/sslinfo.dylib",
-        "share/extension/pg_trgm.control",
-        "share/extension/pgcrypto.control",
-        "share/extension/sslinfo.control",
+    for (target, libraries) in [
+        (
+            TargetPlatform::DarwinArm64,
+            [
+                "lib/libcrypto.3.dylib",
+                "lib/libssl.3.dylib",
+                "lib/postgresql/pg_trgm.dylib",
+                "lib/postgresql/pgcrypto.dylib",
+                "lib/postgresql/sslinfo.dylib",
+            ],
+        ),
+        (
+            TargetPlatform::LinuxAmd64,
+            [
+                "lib/libcrypto.so.3",
+                "lib/libssl.so.3",
+                "lib/postgresql/pg_trgm.so",
+                "lib/postgresql/pgcrypto.so",
+                "lib/postgresql/sslinfo.so",
+            ],
+        ),
     ] {
-        write_sensitive_file(&release.join(relative_path), "postgres pv2 support file")?;
+        let tempdir = tempdir()?;
+        let release = tempdir.path();
+        let adapter = postgres_adapter(target)?;
+        let executable_path = release.join("bin/postgres");
+        write_sensitive_file(&executable_path, "postgres executable")?;
+        write_sensitive_file(&release.join("bin/initdb"), "postgres initdb")?;
+        write_sensitive_file(&release.join("share/postgres.bki"), "postgres catalog")?;
+        for relative_path in libraries.into_iter().chain([
+            "share/extension/pg_trgm.control",
+            "share/extension/pgcrypto.control",
+            "share/extension/sslinfo.control",
+        ]) {
+            write_sensitive_file(&release.join(relative_path), "postgres pv2 support file")?;
+        }
+
+        adapter.validate_installation(release)?;
+
+        assert_eq!(adapter.executable_path(release), executable_path);
     }
 
     Ok(())
@@ -72,7 +83,7 @@ fn write_postgres_pv2_support_files(release: &Utf8Path) -> Result<()> {
 fn postgres_adapter_rejects_missing_initdb_and_support_files() -> Result<()> {
     let tempdir = tempdir()?;
     let release = tempdir.path();
-    let adapter = postgres_adapter()?;
+    let adapter = postgres_adapter(TargetPlatform::DarwinArm64)?;
     write_sensitive_file(&release.join("bin/postgres"), "postgres executable")?;
     let missing_initdb = adapter.validate_installation(release);
     write_sensitive_file(&release.join("bin/initdb"), "postgres initdb")?;
@@ -115,7 +126,7 @@ fn runtime_adapters_reject_missing_executables() -> Result<()> {
     assert_missing_executable_error(rustfs_adapter()?.validate_installation(release), "rustfs")?;
     assert_missing_executable_error(mysql_adapter()?.validate_installation(release), "mysql")?;
     assert_missing_executable_error(
-        postgres_adapter()?.validate_installation(release),
+        postgres_adapter(TargetPlatform::DarwinArm64)?.validate_installation(release),
         "postgres",
     )?;
 
