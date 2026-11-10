@@ -1,22 +1,27 @@
 use std::cell::RefCell;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use crate::support::run_pv;
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::assert_debug_snapshot;
 use platform::{
-    KeychainCertificate, KeychainTrustResult, LocalCaMetadata, PlatformError, generate_local_ca,
+    KeychainCertificate, KeychainTrustResult, LocalCaMetadata, PlatformError, PlatformTarget,
+    TrustDomainState, generate_local_ca,
 };
 use state::{PvPaths, StateError};
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
+    target: PlatformTarget,
+    browser_databases: Vec<Utf8PathBuf>,
+    trusted_browsers: RefCell<BTreeSet<Utf8PathBuf>>,
     current_dir: RefCell<PathBuf>,
     certificates: RefCell<Vec<KeychainCertificate>>,
     keychain_error: Option<String>,
@@ -28,6 +33,9 @@ impl TestEnvironment {
     fn new(home: &Utf8Path, current_dir: &Utf8Path) -> Self {
         Self {
             home: home.as_std_path().to_path_buf(),
+            target: PlatformTarget::Macos,
+            browser_databases: Vec::new(),
+            trusted_browsers: RefCell::new(BTreeSet::new()),
             current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
             certificates: RefCell::new(Vec::new()),
             keychain_error: None,
@@ -41,6 +49,7 @@ impl TestEnvironment {
         self
     }
 
+    #[cfg(target_os = "macos")]
     fn with_keychain_error(mut self, message: &str) -> Self {
         self.keychain_error = Some(message.to_string());
         self
@@ -54,6 +63,57 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    fn platform_target(&self) -> Result<PlatformTarget, PlatformError> {
+        Ok(self.target)
+    }
+
+    fn browser_ca_databases(&self, _home: &Utf8Path) -> Result<Vec<Utf8PathBuf>, PlatformError> {
+        Ok(self.browser_databases.clone())
+    }
+
+    fn inspect_browser_ca_trust(
+        &self,
+        database: &Utf8Path,
+        metadata: Option<&LocalCaMetadata>,
+    ) -> TrustDomainState {
+        let Some(metadata) = metadata else {
+            return TrustDomainState::Unknown {
+                reason: "local CA is unavailable".to_owned(),
+            };
+        };
+        if self.trusted_browsers.borrow().contains(database) {
+            TrustDomainState::Current {
+                fingerprint: metadata.fingerprint.clone(),
+            }
+        } else {
+            TrustDomainState::NotTrusted {
+                fingerprint: metadata.fingerprint.clone(),
+            }
+        }
+    }
+
+    fn trust_browser_ca(
+        &self,
+        database: &Utf8Path,
+        _certificate: &Utf8Path,
+    ) -> Result<(), PlatformError> {
+        self.operations
+            .borrow_mut()
+            .push(format!("browser-trust {database}"));
+        self.trusted_browsers
+            .borrow_mut()
+            .insert(database.to_owned());
+        Ok(())
+    }
+
+    fn untrust_browser_ca(&self, database: &Utf8Path) -> Result<(), PlatformError> {
+        self.operations
+            .borrow_mut()
+            .push(format!("browser-untrust {database}"));
+        self.trusted_browsers.borrow_mut().remove(database);
+        Ok(())
+    }
+
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
         Err(platform::PlatformError::PrivilegedHelperUnavailable)
     }
@@ -267,6 +327,7 @@ fn ca_trust_removes_denied_system_ca_before_retrusting() -> anyhow::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn ca_status_reports_local_and_system_trust_without_creating_files() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
@@ -393,5 +454,40 @@ fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {
     settings.add_filter(tempdir.as_str(), "<tempdir>");
     settings.add_filter("/private<tempdir>", "<tempdir>");
     settings.add_filter(r"[a-f0-9]{64}", "<fingerprint>");
+    // Each system names its trust store; the CA flow is the same on both.
+    settings.add_filter("System CA", "System keychain");
     settings.bind(assertion);
+}
+
+#[test]
+fn linux_ca_trust_follows_the_local_ca_into_browser_databases() -> anyhow::Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let mut environment = TestEnvironment::new(&home, directory.path());
+    environment.target = PlatformTarget::Linux;
+    environment.browser_databases = vec![
+        home.join(".pki/nssdb"),
+        home.join(".mozilla/firefox/default"),
+    ];
+
+    let before_setup = run_pv(&["ca:status"], &environment)?;
+    let trusted = run_pv(&["ca:trust"], &environment)?;
+    environment.trusted_browsers.borrow_mut().clear();
+    let browsers_missing = run_pv(&["ca:status"], &environment)?;
+    let repaired = run_pv(&["ca:trust"], &environment)?;
+    let removed = run_pv(&["ca:untrust"], &environment)?;
+
+    assert!(environment.trusted_browsers.borrow().is_empty());
+    assert!(environment.certificates.borrow().is_empty());
+    with_normalized_tempdir(directory.path(), || {
+        assert_debug_snapshot!((
+            before_setup,
+            trusted,
+            browsers_missing,
+            repaired,
+            removed,
+            environment.operations.borrow().clone(),
+        ));
+    });
+    Ok(())
 }

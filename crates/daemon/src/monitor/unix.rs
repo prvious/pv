@@ -3,6 +3,7 @@ use std::io::{self, BufRead as _, BufReader, Write as _};
 use std::os::fd::{AsFd as _, OwnedFd};
 use std::os::unix::net::UnixStream as StdUnixStream;
 use std::os::unix::process::{CommandExt as _, ExitStatusExt as _};
+use std::path::{Path, PathBuf};
 use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
@@ -40,6 +41,7 @@ const EXEC_TIMEOUT: Limit = Limit::new("monitor exec", Duration::from_secs(10));
 const REQUEST_TIMEOUT: Limit = Limit::new("monitor request", Duration::from_secs(5));
 const RELEASE_TIMEOUT: Limit = Limit::new("monitor release", Duration::from_secs(5));
 const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
+#[cfg(target_os = "macos")]
 const GATE_FAILURE_TIMEOUT: Limit = Limit::new("monitor gate failure", Duration::from_millis(100));
 const EXITING_LEADER_TIMEOUT: Limit = Limit::new("monitor exiting leader", Duration::from_secs(1));
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -244,8 +246,8 @@ async fn recover_reserved(paths: &PvPaths, subject: &str) -> Result<(), DaemonEr
     let Some(record) = read_record(paths, subject)? else {
         return remove_monitor_dir(paths, subject);
     };
-    // After a reboot, nothing the record names can still be running. A runtime leader that
-    // exited is at most a zombie, which no live member keeps company.
+    // After a reboot, nothing the record names can still be running. During this boot,
+    // stop live group members only while the recorded leader still proves ownership.
     if record.boot_session_id == platform::current_boot_session_id()?
         && platform::process_group_has_live_members(record.runtime.pid)?
     {
@@ -561,9 +563,9 @@ async fn start_runtime(
         .transpose()?;
     fs::ensure_user_dir(&paths.monitor_dir(subject))?;
     let (gate, gate_end) = StdUnixStream::pair()?;
-    let pid = spawn_gate(start, &log, gate_end)?;
+    let (pid, gate_program) = spawn_gate(start, &log, gate_end)?;
 
-    match supervise_gate(paths, hooks, request, pid, gate, &socket).await {
+    match supervise_gate(paths, hooks, request, pid, gate, &socket, &gate_program).await {
         Ok((watch, exit, record, listener)) => Ok(Monitor {
             paths: paths.clone(),
             record,
@@ -602,11 +604,16 @@ async fn supervise_gate(
     pid: u32,
     gate: StdUnixStream,
     socket: &Utf8Path,
+    gate_program: &Path,
 ) -> Result<SupervisedGate, DaemonError> {
     let start = &request.start;
     let subject = &start.subject;
-    // A kqueue descriptor is only ever readable; registering it as writable fails.
-    let mut watch = AsyncFd::with_interest(ProcessExitWatch::with_exec(pid)?, Interest::READABLE)?;
+    #[cfg(target_os = "macos")]
+    let process_watch = ProcessExitWatch::with_exec(pid)?;
+    #[cfg(target_os = "linux")]
+    let process_watch = ProcessExitWatch::new(pid)?;
+    // Process notifications are readable; kqueue cannot be registered as writable.
+    let mut watch = AsyncFd::with_interest(process_watch, Interest::READABLE)?;
     let record = MonitorRecord {
         version: PROTOCOL_VERSION,
         subject: subject.clone(),
@@ -632,11 +639,15 @@ async fn supervise_gate(
         arguments: start.arguments.clone(),
     };
     write_line(&mut gate, &permission).await?;
-    let events = clock::timeout(&EXEC_TIMEOUT, confirm_exec(&mut watch, &mut gate, subject))
-        .await
-        .map_err(|_elapsed| startup_failed(subject, "the runtime did not start in time"))??;
+    pause(hooks, MonitorPause::AfterPermission).await;
+    let events = clock::timeout(
+        &EXEC_TIMEOUT,
+        confirm_exec(&mut watch, &mut gate, subject, pid, gate_program),
+    )
+    .await
+    .map_err(|_elapsed| startup_failed(subject, "the runtime did not start in time"))??;
     let exit = events.exit.map(MonitorExit::from);
-    // An exit event ends the kqueue watch.
+    // Stop watching once the exit is known; the leader stays unreaped until cleanup.
     let watch = exit.is_none().then_some(watch);
     fs::remove_file_if_exists(socket)?;
     let listener = UnixListener::bind(socket)?;
@@ -647,10 +658,13 @@ async fn supervise_gate(
 
 /// Waits for the gate's exec. The gate's socket closing proves nothing: only the kqueue exec
 /// event does, or the gate's own report that the exec failed.
+#[cfg(target_os = "macos")]
 async fn confirm_exec(
     watch: &mut AsyncFd<ProcessExitWatch>,
     gate: &mut DaemonTransport<UnixStream>,
     subject: &str,
+    _pid: u32,
+    _gate_program: &Path,
 ) -> Result<ProcessEvents, DaemonError> {
     let mut gate_open = true;
 
@@ -681,6 +695,48 @@ async fn confirm_exec(
     }
 }
 
+#[cfg(target_os = "linux")]
+async fn confirm_exec(
+    watch: &mut AsyncFd<ProcessExitWatch>,
+    gate: &mut DaemonTransport<UnixStream>,
+    subject: &str,
+    pid: u32,
+    gate_program: &Path,
+) -> Result<ProcessEvents, DaemonError> {
+    if let Some(line) = gate.next().await {
+        let line = line.map_err(ProtocolError::from)?;
+        return Err(startup_failed(subject, failure_message(&line)));
+    }
+    let gate_name = gate_program
+        .file_name()
+        .ok_or_else(|| startup_failed(subject, "the gate executable has no file name"))?
+        .as_encoded_bytes();
+    let gate_name = String::from_utf8_lossy(&gate_name[..gate_name.len().min(15)]);
+    // EOF can precede waitable exit. Keep checking status then name within the
+    // caller's timeout; the gate's own name remains inconclusive.
+    // ponytail: same-name runtimes fail closed; kernel exec events would remove this limit.
+    loop {
+        let exit = watch.get_mut().try_exit_status()?;
+        let runtime_name = platform::inspect_process_comm(pid)?.ok_or_else(|| {
+            DaemonError::MissingProcessIdentity {
+                name: "runtime gate".to_owned(),
+                pid,
+            }
+        })?;
+        if runtime_name != gate_name {
+            return Ok(ProcessEvents { exec: true, exit });
+        }
+        if let Some(status) = exit {
+            return Err(startup_failed(
+                subject,
+                format!("the gate exited before the runtime started ({status})"),
+            ));
+        }
+        clock::poll(POLL_INTERVAL).await;
+    }
+}
+
+#[cfg(target_os = "macos")]
 async fn gate_failure(gate: &mut DaemonTransport<UnixStream>) -> Option<String> {
     let line = gate.next().await?.ok()?;
 
@@ -725,8 +781,9 @@ fn spawn_gate(
     start: &MonitorStart,
     log: &std::fs::File,
     gate_end: StdUnixStream,
-) -> Result<u32, DaemonError> {
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+) -> Result<(u32, PathBuf), DaemonError> {
+    let gate_program = std::env::current_exe()?;
+    let mut command = std::process::Command::new(&gate_program);
     command
         .arg(MONITOR_GATE_COMMAND)
         .process_group(0)
@@ -739,7 +796,7 @@ fn spawn_gate(
     command.envs(&start.private_environment);
 
     // Dropping the std child neither waits for nor kills it.
-    Ok(command.spawn()?.id())
+    Ok((command.spawn()?.id(), gate_program))
 }
 
 /// Starts the runtime: `pv monitor:gate`. Its stdin is the monitor's gate socket. It waits for
@@ -788,7 +845,7 @@ fn runtime_command(permission: &GatePermission) -> std::process::Command {
 struct Monitor {
     paths: PvPaths,
     record: MonitorRecord,
-    /// The runtime's kqueue watch until its exit is known.
+    /// The runtime's native exit watch until its exit is known.
     watch: Option<AsyncFd<ProcessExitWatch>>,
     listener: UnixListener,
     log: std::fs::File,
@@ -929,6 +986,26 @@ impl Monitor {
             return;
         }
         let pid = self.record.runtime.pid;
+        // ponytail: Linux contains runtimes with process groups only, the same as macOS.
+        // The original plan (2026-09-29, step 8) was a child subreaper plus cgroups:
+        // - prctl(PR_SET_CHILD_SUBREAPER) in `pv monitor:run`, so descendants that
+        //   leave the group (Postgres backends call setsid(), double-forked daemons)
+        //   re-parent to the monitor instead of systemd/init. The monitor would then
+        //   have to reap them and SIGKILL any survivors after the group kill. "No
+        //   children left" (waitpid ECHILD) would prove the whole tree is gone.
+        // - One cgroup v2 leaf per runtime under a delegated subtree: either
+        //   `Delegate=yes` on pv-daemon.service, or one `systemd-run --user --scope`
+        //   per monitor. `cgroup.kill` (kernel >= 5.14) is an atomic force-kill of
+        //   every descendant, and `cgroup.events` `populated 0` proves the tree is
+        //   empty even after the monitor dies. This interacts with
+        //   `KillMode=process` (D18): a delegated subtree under pv-daemon.service
+        //   is still inside the service's cgroup.
+        // Revisit if any of these show up on Linux:
+        // - processes survive `pv daemon:disable` / `pv uninstall`
+        // - Postgres backends or MySQL helpers outlive a reported stop
+        // - a port is still held after a stop reported success
+        // - "cleanup unproven" errors appear
+        // - a logout leaves Postgres monitor records that only a reboot clears (spec O1)
         // The unreaped leader pins the group's id, so the group is still the runtime's.
         self.executor = Some(tokio::spawn(async move {
             stop_process_group(pid, stop.signal, stop.grace(), || Ok(true)).await

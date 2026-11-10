@@ -67,7 +67,7 @@ jobs:
           esac
 
       - name: Check artifact recipe scripts
-        run: shellcheck release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
+        run: shellcheck scripts/linux/*.sh release/artifacts/recipes/common.sh release/artifacts/recipes/php/*.sh release/artifacts/recipes/composer/*.sh release/artifacts/recipes/redis/*.sh release/artifacts/recipes/mysql/*.sh release/artifacts/recipes/postgres/*.sh release/artifacts/recipes/mailpit/*.sh release/artifacts/recipes/rustfs/*.sh
 
   rust:
     name: Rust (${{ matrix.lane.name }})
@@ -167,14 +167,124 @@ jobs:
           )
           sudo -n "$test_binary" --ignored --exact helper::tests::pf_apply_rejects_a_low_port_conflict_as_root
 
+  linux-clippy:
+    name: Linux Clippy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          key: linux-clippy
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - name: Run Clippy including Linux implementations
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+  linux:
+    name: Linux (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: ${{ fromJSON(github.event_name == 'pull_request' && '["ubuntu-22.04","ubuntu-26.04"]' || '["ubuntu-22.04","ubuntu-24.04","ubuntu-26.04","ubuntu-24.04-arm"]') }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          key: ${{ matrix.runner }}
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Install development tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.146
+
+      - name: Run Linux workspace tests
+        id: tests
+        run: |
+          cat > "$RUNNER_TEMP/nextest-user.toml" <<'EOF'
+          [experimental]
+          record = true
+
+          [record]
+          enabled = true
+          EOF
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" --workspace --all-features --locked
+
+      - name: Export test recording
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        run: cargo nextest store export latest --archive-file "$RUNNER_TEMP/nextest-run.zip"
+
+      - name: Upload test recording
+        if: ${{ !cancelled() && steps.tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextest-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/nextest-run.zip
+
+      - name: Prepare native Linux system tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --locked --all-features -p pv -p daemon -p pv-privileged-helper --examples --bins
+          runner_account=$(id -un)
+          runner_uid=$(id -u)
+          sudo -n loginctl enable-linger "$runner_account"
+          sudo -n systemctl start "user@${runner_uid}.service"
+          # The DNS test needs lookups to go through systemd-resolved's stub.
+          sudo -n ln -sf /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+          nextest_state_directory=$(mktemp -d "$RUNNER_TEMP/nextest-system-state.XXXXXX")
+          {
+            printf 'XDG_RUNTIME_DIR=/run/user/%s\n' "$runner_uid"
+            printf 'DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/%s/bus\n' "$runner_uid"
+            printf 'NEXTEST_STATE_DIR=%s\n' "$nextest_state_directory"
+          } >> "$GITHUB_ENV"
+
+      # The system tests share systemd and the helper, so they run one at a time.
+      - name: Run native Linux system tests
+        id: linux_system_tests
+        env:
+          PV_LINUX_SYSTEM_TESTS: "1"
+          PV_LINUX_SYSTEM_PV: ${{ github.workspace }}/target/debug/pv
+          PV_LINUX_SYSTEM_HELPER: ${{ github.workspace }}/target/debug/pv-helper
+        run: |
+          cargo nextest run --profile ci --user-config-file "$RUNNER_TEMP/nextest-user.toml" \
+            --run-ignored only -p cli -p daemon --all-features --locked --test-threads 1 \
+            -E 'test(/^linux_(daemon_registration|helper)_system::/)'
+
+      - name: Export Linux system test recording
+        if: ${{ !cancelled() && steps.linux_system_tests.outcome != 'skipped' }}
+        run: cargo nextest store export latest --archive-file "$RUNNER_TEMP/nextest-system-run.zip"
+
+      - name: Upload Linux system test recording
+        if: ${{ !cancelled() && steps.linux_system_tests.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: nextest-system-run-${{ matrix.runner }}
+          path: ${{ runner.temp }}/nextest-system-run.zip
+
   runtime-portability:
     name: Runtime (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
-            target: linux
           - runner: windows-latest
             target: windows
     runs-on: ${{ matrix.runner }}
@@ -213,14 +323,6 @@ jobs:
           cargo test --locked -p resources --lib target_platform_for
           cargo test --locked -p platform --test unsupported_launch_agent
           cargo test --locked -p daemon --test platform_preflight
-
-      - name: Compile daemon tests on Linux
-        if: matrix.target == 'linux'
-        run: cargo test --locked -p daemon --all-features --tests --no-run
-
-      - name: Test portable runtime health on Linux
-        if: matrix.target == 'linux'
-        run: cargo test --locked -p daemon --all-features --lib health::tests
 
       - name: Smoke portable commands
         shell: bash

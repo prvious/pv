@@ -27,6 +27,7 @@ thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
 wait-timeout = { workspace = true }
+webbrowser = { version = "1.2.4", default-features = false }
 x509-parser = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -38,12 +39,22 @@ security-framework = { workspace = true }
 nix = { workspace = true, features = ["event", "ioctl"] }
 rustix = { workspace = true }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+futures-util = { workspace = true }
+libc = { workspace = true }
+listenfd = "1.0.2"
+nix = { workspace = true }
+procfs = { version = "0.18.0", default-features = false }
+rtnetlink = "0.23.0"
+rustix = { workspace = true, features = ["net", "thread"] }
+zbus = "5.19.0"
+
 [dev-dependencies]
 anyhow = { workspace = true }
 camino-tempfile = { workspace = true }
 insta = { workspace = true }
 platform = { path = ".", features = ["test-support"] }
+pv-fake = { path = "../pv-fake" }
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 portable-pty = { workspace = true }
-pv-fake = { path = "../pv-fake" }

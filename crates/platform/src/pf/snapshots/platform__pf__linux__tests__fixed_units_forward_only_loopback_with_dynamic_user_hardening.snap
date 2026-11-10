@@ -1,0 +1,14 @@
+---
+source: crates/platform/src/pf/linux.rs
+expression: "(HTTP.socket_name(), HTTP.render_socket(), HTTP.service_name(),\nHTTP.render_service(48080), HTTPS.socket_name(), HTTPS.render_socket(),\nHTTPS.service_name(), HTTPS.render_service(48443),)"
+---
+(
+    "pv-http.socket",
+    "# Managed by PV\n[Unit]\nDescription=PV HTTP listener\n\n[Socket]\nListenStream=127.0.0.1:80\n\n[Install]\nWantedBy=sockets.target\n",
+    "pv-http.service",
+    "# Managed by PV\n[Unit]\nDescription=PV HTTP forwarder\nRequires=pv-http.socket\nAfter=pv-http.socket\n\n[Service]\nExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:48080\nDynamicUser=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nNoNewPrivileges=yes\n",
+    "pv-https.socket",
+    "# Managed by PV\n[Unit]\nDescription=PV HTTPS listener\n\n[Socket]\nListenStream=127.0.0.1:443\n\n[Install]\nWantedBy=sockets.target\n",
+    "pv-https.service",
+    "# Managed by PV\n[Unit]\nDescription=PV HTTPS forwarder\nRequires=pv-https.socket\nAfter=pv-https.socket\n\n[Service]\nExecStart=/usr/lib/systemd/systemd-socket-proxyd 127.0.0.1:48443\nDynamicUser=yes\nPrivateTmp=yes\nProtectSystem=strict\nProtectHome=yes\nNoNewPrivileges=yes\n",
+)

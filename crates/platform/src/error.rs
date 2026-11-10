@@ -43,9 +43,6 @@ pub enum PlatformError {
     #[error("could not open URL in the browser: {0}")]
     BrowserOpen(#[source] io::Error),
 
-    #[error("browser open failed with {status}")]
-    BrowserOpenStatus { status: String },
-
     #[error("generated PV local CA files are missing after writing")]
     LocalCaPostWriteMissing,
 
@@ -70,6 +67,37 @@ pub enum PlatformError {
 
     #[error("LaunchAgent command `{command}` exited with {status}")]
     LaunchAgentCommandStatus { command: String, status: String },
+
+    #[error("daemon registration file operation failed: {0}")]
+    DaemonRegistrationFile(#[source] state::StateError),
+
+    #[error("daemon registration file is not PV-owned: {path}")]
+    DaemonRegistrationConflict { path: Utf8PathBuf },
+
+    #[error("daemon registration file could not be read at {path}: {message}")]
+    DaemonRegistrationUnreadable { path: Utf8PathBuf, message: String },
+
+    #[cfg(target_os = "linux")]
+    #[error("could not inspect Linux TCP listeners: {0}")]
+    LowPortProcfs(#[source] Box<procfs::ProcError>),
+
+    #[cfg(target_os = "linux")]
+    #[error("socket proxy D-Bus operation failed: {0}")]
+    PortProxyBus(#[source] Box<zbus::Error>),
+
+    #[cfg(target_os = "linux")]
+    #[error("socket proxy unit I/O failed: {0}")]
+    PortProxyIo(#[source] io::Error),
+
+    #[cfg(target_os = "linux")]
+    #[error(
+        "socket proxy {operation} failed: {source}; port routing may be partial and a queued or in-flight request may still complete; inspect pv-http and pv-https units, their .candidate and .rollback files with an administrator before retrying `pv ports:install` or `pv ports:uninstall`"
+    )]
+    PortProxyMutation {
+        operation: &'static str,
+        #[source]
+        source: Box<PlatformError>,
+    },
 
     #[error("system integration operation failed: {0}")]
     SystemIntegration(String),
@@ -110,10 +138,17 @@ pub enum PlatformError {
     #[error("PV privileged helper authentication failed: {0}")]
     PrivilegedHelperAuthentication(String),
 
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     #[error("could not inspect process identity: {source}")]
     ProcessIdentityInspection {
         #[source]
         source: Box<dyn std::error::Error + Send + Sync>,
     },
+}
+
+#[cfg(target_os = "linux")]
+impl From<zbus::Error> for PlatformError {
+    fn from(error: zbus::Error) -> Self {
+        Self::SystemIntegration(format!("D-Bus call failed: {error}"))
+    }
 }

@@ -2,7 +2,7 @@
 //! supervisor, admin client, and readiness checks. Each contract runs against the `pv-fake` Caddy
 //! and FrankenPHP personas, and against the real artifacts when `PV_E2E_REAL_ARTIFACTS=1`, so the
 //! fakes can't drift from what PV actually depends on.
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::Output;
@@ -29,6 +29,7 @@ use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
     php_adapter,
 };
+use serde_json::Value;
 use state::PvPaths;
 
 #[expect(
@@ -60,7 +61,8 @@ async fn real_caddy_satisfies_the_gateway_contract() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
     let client = resources::UreqResourceHttpClient::new();
     let caddy = commands.install(&caddy_adapter()?, TrackSelector::Latest, &client)?;
     let executable = caddy_adapter()?.executable_path(caddy.current_artifact_path());
@@ -84,7 +86,8 @@ async fn real_frankenphp_satisfies_the_worker_contract() -> Result<()> {
         return Ok(());
     };
     let (_tempdir, paths) = contract_paths()?;
-    let commands = ManagedResourceCommands::new(paths.clone(), manifest_url, target_platform());
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
     let client = resources::UreqResourceHttpClient::new();
     let php = commands.install(&php_adapter()?, TrackSelector::Latest, &client)?;
     let frankenphp = commands.install(
@@ -287,15 +290,19 @@ fn assert_validation_contract(
     let missing_path = paths.config().join("missing.Caddyfile");
     let missing = run_runtime_cli(executable, &command.validate_arguments(&missing_path))?;
     assert_eq!(missing.status.code(), Some(1));
-    assert_eq!(
-        String::from_utf8(missing.stderr)?.lines().last(),
-        Some(
-            format!(
-                "Error: reading config from file: open {missing_path}: no such file or directory"
-            )
-            .as_str()
-        )
-    );
+    let stderr = String::from_utf8(missing.stderr)?;
+    let error = stderr
+        .lines()
+        .last()
+        .context("missing config error was not reported")?;
+    let expected =
+        format!("reading config from file: open {missing_path}: no such file or directory");
+    if let Ok(log) = serde_json::from_str::<Value>(error) {
+        assert_eq!(log["level"], "error");
+        assert_eq!(log["msg"], expected);
+    } else {
+        assert_eq!(error, format!("Error: {expected}"));
+    }
 
     Ok(())
 }
@@ -383,14 +390,6 @@ fn run_runtime_cli(executable: &Utf8Path, arguments: &[String]) -> Result<Output
 fn runtime_log(path: &Utf8Path) -> String {
     let log = state::fs::read_to_string(path).unwrap_or_default();
     format!("runtime log {path}:\n{log}")
-}
-
-fn target_platform() -> TargetPlatform {
-    if cfg!(target_arch = "aarch64") {
-        TargetPlatform::DarwinArm64
-    } else {
-        TargetPlatform::DarwinAmd64
-    }
 }
 
 #[expect(

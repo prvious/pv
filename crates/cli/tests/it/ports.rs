@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;

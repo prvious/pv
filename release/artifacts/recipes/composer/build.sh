@@ -19,7 +19,6 @@ fi
 
 need cargo
 need curl
-need shasum
 need tar
 
 env_file="$OUT_DIR/work/composer.env"

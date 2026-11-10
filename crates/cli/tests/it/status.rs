@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::io;
@@ -13,7 +15,7 @@ use platform::{
     ActivePfRedirectInspection, KeychainCertificate, PfConfReference, PfRedirectConfig,
     ResolverConfig,
 };
-use platform::{KeychainTrustResult, LaunchAgentConfig};
+use platform::{DaemonRegistrationConfig, KeychainTrustResult};
 use state::{
     Database, JobDiagnosticSubject, LinkProjectInput, ManagedResourceTrackInstallInput,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, RuntimeObservedStatus,
@@ -24,7 +26,7 @@ use state::{
 struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
-    launch_agent_path: PathBuf,
+    daemon_registration_path: PathBuf,
     resolver_path: PathBuf,
     pf_anchor_path: PathBuf,
     pf_conf_path: PathBuf,
@@ -37,7 +39,7 @@ impl TestEnvironment {
         Self {
             home: home.as_std_path().to_path_buf(),
             current_dir: home.as_std_path().to_path_buf(),
-            launch_agent_path: home
+            daemon_registration_path: home
                 .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
                 .as_std_path()
                 .to_path_buf(),
@@ -100,8 +102,8 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn launch_agent_path(&self) -> PathBuf {
-        self.launch_agent_path.clone()
+    fn daemon_registration_path(&self) -> PathBuf {
+        self.daemon_registration_path.clone()
     }
 
     fn resolver_test_path(&self) -> PathBuf {
@@ -556,14 +558,14 @@ fn seed_current_local_ca(paths: &PvPaths) -> anyhow::Result<KeychainCertificate>
 }
 
 fn seed_current_launch_agent(paths: &PvPaths, environment: &TestEnvironment) -> anyhow::Result<()> {
-    let launch_agent = LaunchAgentConfig::new(
+    let launch_agent = DaemonRegistrationConfig::new(
         "/bin/pv",
-        paths.launchd_stdout_log(),
-        paths.launchd_stderr_log(),
+        paths.daemon_registration_stdout_log(),
+        paths.daemon_registration_stderr_log(),
     );
-    let path = Utf8Path::from_path(&environment.launch_agent_path)
+    let path = Utf8Path::from_path(&environment.daemon_registration_path)
         .ok_or_else(|| anyhow::anyhow!("launch agent path is not UTF-8"))?;
-    platform::write_launch_agent_file(path, &launch_agent)?;
+    platform::write_daemon_registration_file(path, &launch_agent)?;
 
     Ok(())
 }

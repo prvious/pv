@@ -24,19 +24,41 @@ Per-project versions are supported too — add a pv.yml file with php: "8.4" in 
 
 ## Platform Scope
 
-PV v1 supports macOS 14 and newer. Stabilizing the macOS application remains the immediate product priority.
+PV v1 supports macOS 14 and newer and Linux. Stabilizing the macOS application remains the immediate product priority.
+
+The Linux acceptance run covers these distribution/CPU pairs:
+
+| Linux distribution | CPUs |
+| --- | --- |
+| Ubuntu 22.04 | amd64, arm64 |
+| Ubuntu 24.04 | amd64, arm64 |
+| Ubuntu 26.04 | amd64, arm64 |
+| Debian 12 | amd64, arm64 |
+| Debian 13 | amd64, arm64 |
+| Fedora 43 | amd64, arm64 |
+| Fedora 44 | amd64, arm64 |
+
+PV does not check which distribution it runs on. Any host that meets the
+requirements below can install it, so users on other distributions can try it.
+
+Linux requires glibc 2.35 or newer, systemd with a reachable per-user manager,
+systemd-resolved, sudo and NSS certutil. Setup reports missing prerequisites
+with repair guidance; PV does not install system packages. musl, non-systemd
+hosts, WSL and containers as installed PV hosts are unsupported.
 
 macOS 13 may continue to run PV when the application and Managed Resource binaries remain compatible, but it is untested and unsupported. Dropping support does not by itself require raising binary deployment targets or republishing otherwise compatible Managed Resource artifacts. Before PV deliberately ships an application binary that cannot run on macOS 13, the application update manifest and updater must prevent an incompatible update from being activated there.
 
 The full macOS CI quality and behavior suite covers the available hosted macOS major versions and both supported architectures across a representative matrix rather than every version/architecture combination. The matrix is macOS 15 on Apple Silicon and Intel, macOS 26 on Apple Silicon, and macOS 27 on Apple Silicon. Every push to `main` runs the full matrix; pull requests run only the oldest and newest hosted lanes, macOS 15 on Apple Silicon and macOS 27, so a failure in another lane shows up after merge. macOS 14 remains supported, but is no longer exercised by hosted CI after GitHub retires its macOS 14 images on November 2, 2026. This coverage gap does not raise PV or Managed Resource binary deployment targets. Every use of an undocumented or private macOS interface fails closed: a result that cannot prove it saw other processes is an error, never an empty success. Acceptance tests for OS behavior PV relies on, such as bind conflict rules and process identity, observe a separate process and run in every matrix lane. Behavior that depends on root is tested as root. New supported macOS major versions must be added to the matrix before PV relies on behavior there.
 
-Linux and Windows are committed subsequent platforms. During macOS stabilization, the installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
+Windows is a committed subsequent platform. The installed application and runtime crates compile natively on macOS, Linux, and Windows so new system boundaries do not create unnecessary portability blockers.
 
-Native compile support and explicit unsupported behavior do not make Linux or Windows supported distributions, add them to v1, or authorize publishing Linux or Windows binaries.
+Native Windows compile support and explicit unsupported behavior do not make Windows supported or authorize publishing Windows binaries.
+
+Resource and application manifests recognize `linux-amd64` and `linux-arm64` alongside the two macOS platforms. Before any Linux entries are published, the macOS release that recognizes these platform names must be installed on both maintainer laptops; older clients reject manifests containing unknown platforms.
 
 The design may use macOS-specific primitives where they materially improve the v1 experience, including launch agents for daemon startup and the macOS System keychain for local CA trust.
 
-PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The v1 concrete host platform implementation is macOS-only; unfinished Linux and Windows implementations return explicit unsupported results, and app-facing code should call the `platform` crate for host integration concerns.
+PV uses a host platform boundary in the Rust workspace. Application crates such as `cli`, `daemon`, `state`, `config`, and `resources` should not depend directly on macOS implementation APIs. The concrete host implementations are macOS and Linux; unfinished Windows integrations return explicit unsupported results. App-facing code calls the `platform` crate for host integration concerns. Composite setup and uninstall commands check every required host integration before accessing PV paths or changing installation state.
 
 ## Implementation Language
 
@@ -82,6 +104,8 @@ Initial PV distribution is a standalone install script/direct binary download. H
 
 The install script downloads the PV application and its separate privileged helper artifact, verifies each against its published SHA-256 checksum, and installs both plus the required adjacent `pv-helper.json` release metadata into the user-owned release directory. Setup and update require that metadata rather than relying on a checksum compiled into the application. If either verification fails, installation deletes the bad download and stops before editing shell profiles or running setup. Dogfood helper artifacts use ad-hoc code signing; Developer ID signing, notarization, and a signed package are deferred until public release. No correctness path may depend on the signing identity of PV or of any ancestor process.
 
+Linux app and helper binaries are built on native runners inside the same digest-pinned Ubuntu 22.04 builder used for resource recipes and are not signed. Helper reuse is scoped to the selected platform and helper version, so a first Linux release builds its own helper even when macOS already publishes that version. The app workflow keeps its macOS-only default; Linux platforms must be selected explicitly.
+
 The stable installer URL serves a generated installer script based on PV app release metadata. The bash installer does not need to parse the JSON PV app update manifest. The installer script may embed or otherwise receive the resolved current PV version, platform asset URLs, and SHA-256 checksums from the server-side installer generation flow. The JSON PV app update manifest is used by the Rust self-updater.
 
 The generated installer script installs the current stable PV release only in v1. Installing a specific historical PV version through the installer is out of v1 scope.
@@ -104,7 +128,7 @@ Setup detects the user's shell from `$SHELL`. If `$SHELL` is missing or unsuppor
 
 Shell profile backups created by setup append a timestamp and `.pv.bak`, such as `~/.zprofile.20260522-143012.pv.bak`.
 
-Setup edits only the detected shell's profile file for PATH setup: `~/.zprofile` for zsh, `~/.bash_profile` for bash, and `~/.config/fish/config.fish` for fish. It does not edit multiple shell profile files at once.
+Setup edits only the detected shell's profile file for PATH setup. macOS uses `~/.zprofile` for zsh and `~/.bash_profile` for bash; Linux uses the interactive `~/.zshrc` and `~/.bashrc` files. Both use `~/.config/fish/config.fish` for fish. Setup and uninstall select the file from the platform reported through the CLI environment. They do not edit multiple shell profile files at once.
 
 If the detected shell profile file does not exist, setup may create it with only the `PV ENV` block after confirmation. No backup is needed when creating a new file, but the action is reported.
 
@@ -140,6 +164,8 @@ If `/etc/resolver/test` already exists and is not PV-owned, `pv dns:install` and
 
 PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed by PV`. PV only repairs or removes the resolver file when the ownership marker is present.
 
+On Linux, PV owns `pv-dns.service` and the dummy link `pv0`, marked `Managed by PV`, and routes `~test` through systemd-resolved to PV's high DNS port. PV checks the unit marker, loaded fragment and link ownership before mutations, as macOS checks its resolver file's marker, and refuses another link that claims the `test` domain itself, as macOS refuses a foreign `/etc/resolver/test`. Subdomains such as `corp.test` on other links don't conflict. Removal preserves foreign configuration and keeps the DNS port reserved until full uninstall. Linux listens on `127.0.0.2` because systemd-resolved gives an address-less `pv0` no DNS scope and `127.0.0.1` belongs to `lo`; prepared files carry only the port through the existing localhost format.
+
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 
 The resolver answers all `.test` hostnames with the IPv4 loopback record `127.0.0.1`. AAAA queries return NODATA. The Gateway decides whether a hostname maps to a linked Project.
@@ -164,11 +190,21 @@ The Gateway listens as the user on high loopback ports only. PV prefers uncommon
 
 PV v1 does not expose Projects on the LAN or through tunnels. LAN access or tunnel integrations such as Cloudflare Tunnels may be considered later.
 
-Before installing redirects, `pv setup` and `pv ports:install` ask the privileged helper whether loopback ports `80` and `443` are free, and the helper checks again before applying pf rules. The helper decides with a root bind probe on `127.0.0.1` and `0.0.0.0` that ignores closing connections. If either port is unavailable, PV fails with a clear conflict instead of silently taking over traffic. `lsof` supplies listener names and pids as diagnostic information only: its wildcard address does not distinguish an IPv6-only listener from a dual-stack listener, so it cannot prove which process caused an IPv4 bind failure.
+On macOS, before installing redirects, `pv setup` and `pv ports:install` ask the privileged helper whether loopback ports `80` and `443` are free, and the helper checks again before applying pf rules. The helper decides with a root bind probe on `127.0.0.1` and `0.0.0.0` that ignores closing connections. If either port is unavailable, PV fails with a clear conflict instead of silently taking over traffic. On macOS, `lsof` supplies listener names and pids as diagnostic information only: its wildcard address does not distinguish an IPv6-only listener from a dual-stack listener, so it cannot prove which process caused an IPv4 bind failure. On Linux, PV matches listening TCP socket inodes from `/proc/net/tcp` and `/proc/net/tcp6` to process file descriptors and names through `procfs`. Exited or inaccessible processes may leave diagnostic owners unknown; other inspection errors are reported. Listener diagnostics never change the bind probe's availability decision, and PV reports at most eight owners per port.
+
+Linux repair first verifies ownership of existing PV socket proxies, stops them, then checks that ports 80 and 443 are free before binding the replacement units. An active PV-owned listener is therefore repairable. Linux uses native systemd socket-proxy observations for the same routing states. Inspection reads the fixed HTTP/HTTPS units' loaded `ActiveState`, `Listen`, `ExecStart`, fragment paths, drop-ins and `NeedDaemonReload`. Current-looking files cannot prove a loaded definition is current. For an active forwarder, the loaded command must also describe its running invocation: its execution PID must match `MainPID`, or the pinned process's exact argument vector must corroborate it after a manager reload has lost that execution metadata. An inactive service can remain armed behind its active socket. Unknown or mismatched running targets never prove absence. Native absence and retained-target evidence do not depend on readable installed files.
+
+Systemd's loaded `Listen` describes configuration and can report the expected address after a reload even when the socket has no matching kernel descriptor. Therefore exact native observations and all four current prepared and installed files still require both existing public Gateway identity probes before Linux routing is `active`. Inconclusive probes leave that otherwise current configuration `unknown`, including while the Gateway is stopped. This verifies end-to-end routing at the observation time; it does not claim descriptor ownership or future availability. Native absence remains `inactive`; partial or mismatched native state or files remains `drifted` and cannot be promoted by a successful probe. The daemon uses its existing bounded public readiness and preserves owned runtimes under uncertainty.
+
+Linux prepared socket-proxy copies use `~/.pv/config/ports/`. Current installed copies additionally require root:root ownership, mode 0644 and exactly one link; prepared copies remain ordinary user files. The helper renders the same four fixed unit definitions under `/etc/systemd/system/`, using distinct high loopback backend ports. Mutations hold the helper lifecycle lock and verify PV ownership, selected fragments and overrides before stopping units. Apply stops owned units, repeats the root low-port bind probe, backs up existing files, replaces them atomically, reloads systemd, and enables and restarts the units. Failure attempts to restore the verified previous files, enablement and activity. Rollback cannot stop or reactivate units whose ownership is uncertain, and any restoration error blocks reactivation. Retained candidates or rollback files require administrator inspection before retrying. A lost helper response reports that queued or ongoing work may still complete.
+
+Linux `pv ports:uninstall` skips the helper when all four installed files and native systemd units are absent. Otherwise it waits for the helper to verify removal. It deletes prepared copies after verified absence or removal. Removing the proxies preserves the Gateway's stored backend ports because the Gateway remains desired and may still be running.
+
+Linux `pv ports:install` checks all four installed unit files before preparation. A busy public port permits a repair attempt only when the fixed PV socket and service files and their loaded fragments and overrides establish ownership, and the socket is active. This does not prove which kernel listener holds the port; the helper revalidates ownership and bind availability. Foreground repair reapplies the units rather than skipping based on files or cached loaded properties. PV retains newly selected backend assignments after an uncertain or partial helper apply, so queued work cannot later route to a released port. Known pre-mutation failures release only new assignments. Existing Gateway ports remain unchanged. If reservation cleanup also fails, the CLI reports both causes. Successful Gateway identity probes record healthy readiness; otherwise only low-port-derived degradation becomes pending and reconciliation is requested.
 
 ### PF Health and Recovery
 
-PV reports one canonical low-port routing state across readiness and diagnostics: `active`, `inactive`, `drifted`, or `unknown`. `active` means the expected redirects to the currently assigned Gateway ports were verified. `inactive` means authoritative inspection verified that no loaded redirect targets either assigned Gateway backend port. `drifted` means prepared files, installed system files, or loaded rules differ from the current expected redirect configuration, except when loaded-rule inspection proves the redirects are fully absent and therefore `inactive`. `unknown` is reserved for a current-looking file configuration whose loaded state cannot be inspected and whose behavior cannot be verified end to end. Prepared or installed files alone never prove that redirects are active.
+PV reports one canonical low-port routing state across readiness and diagnostics: `active`, `inactive`, `drifted`, or `unknown`. `active` means the expected redirects to the currently assigned Gateway ports were verified. `inactive` means authoritative inspection verified that no loaded redirect targets either assigned Gateway backend port. `drifted` means prepared files, installed system files, or loaded rules differ from the current expected redirect configuration, except when loaded-rule inspection proves the redirects are fully absent and therefore `inactive`. `unknown` is reserved for a current-looking file configuration whose available native observations and end-to-end probes cannot establish active routing. Prepared or installed files alone never prove that redirects are active.
 
 An unprivileged successful `pfctl` inspection is authoritative for loaded-rule state, with an exhaustive classification order. Confirmed absence of any loaded redirect targeting the assigned Gateway backend ports produces `inactive`, even when prepared or installed files are missing or stale. Otherwise, exact expected rules with current prepared and installed files produce `active`; exact rules with non-current files and all differing or partial loaded-rule configurations produce `drifted`. Therefore stale files plus exact loaded rules are `drifted`, while stale files plus confirmed complete loaded-rule absence are `inactive`. Background and read-only diagnostics do not invoke `sudo`, including noninteractive `sudo`; failure or denial from unprivileged `pfctl` falls back to end-to-end probes instead of being reported as inactive.
 
@@ -180,11 +216,13 @@ macOS updates or restarts may unload active rules while leaving PV-owned prepare
 
 `pv ports:install` remains the only focused repair path. It uses the installed typed helper and never invokes `sudo` or prompts directly; `pv setup` may first use foreground sudo to install or repair the helper lifecycle. It reloads the PV-owned rules, then verifies the exact loaded rules and public HTTP/HTTPS behavior before reporting success. If the running Gateway passes those probes, PV records a fresh healthy Gateway observation. If the Gateway is not running or cannot yet be verified, PV invalidates only stale PF-derived Gateway readiness observations to `pending` and requests reconciliation; it does not clear unrelated Gateway config, process, or TLS failures. `pv setup` may perform the same foreground repair as part of setup.
 
-`pv status`, `pv doctor`, and `pv ports:status` use the same four state values and the same `pv ports:install` repair advice. Their JSON forms expose the stable lowercase `state` value plus evidence (`pfctl`, `probe`, or `unavailable`), expected redirect ports, any readable active ports, and the observation timestamp; they do not infer `active` from file state. Plain output uses the same words. `pv ports:status` exits zero only for `active` and non-zero for `inactive`, `drifted`, or `unknown`. `pv doctor` treats every non-active state as a failed required check after setup. `pv status` treats a non-active state as a failure whenever low-port routing is required, while preserving the intentional-daemon-disabled behavior where installed integrations are reported but not considered broken.
+`pv status`, `pv doctor`, and `pv ports:status` use the same four state values and the same `pv ports:install` repair advice. Their JSON forms expose the stable lowercase `state` value plus evidence (`pfctl` on macOS, `systemd` on Linux, `probe`, or `unavailable`), expected redirect ports, any readable active ports, and the observation timestamp; they do not infer `active` from file state. Plain output uses the same words. `pv ports:status` exits zero only for `active` and non-zero for `inactive`, `drifted`, or `unknown`. `pv doctor` treats every non-active state as a failed required check after setup. `pv status` treats a non-active state as a failure whenever low-port routing is required, while preserving the intentional-daemon-disabled behavior where installed integrations are reported but not considered broken.
 
 A friendly browser page for unknown Project hostnames is useful, but is post-v1 polish rather than required v1 scope.
 
 ## Setup
+
+Linux setup checks sudo, certutil, the user's systemd session and an active systemd-resolved before it changes anything. `pv doctor` warns when `/etc/resolv.conf` doesn't list `nameserver 127.0.0.53` first, because lookups would then bypass systemd-resolved.
 
 `pv setup` performs PV's required macOS bootstrap steps:
 
@@ -235,6 +273,8 @@ PV installs the LaunchAgent plist at `~/Library/LaunchAgents/com.prvious.pv.daem
 
 The LaunchAgent plist sets `StandardOutPath` and `StandardErrorPath` to PV-owned files under `~/.pv/logs/`, such as `launchd.out.log` and `launchd.err.log`, so daemon startup failures are diagnosable before structured daemon logging starts.
 
+On Linux, `pv-daemon.service` lives at `~/.config/systemd/user/pv-daemon.service`. PV ignores a shell profile's `XDG_CONFIG_HOME`, because systemd's user manager never sees it. The unit starts with `default.target`, restarts after crashes, and uses `KillMode=process` so monitors survive daemon restarts; PV does not enable linger. PV manages it through the user's session bus, checks the selected fragment's PV marker, and waits for the exact systemd job result within 10 seconds for stop or 15 seconds for restart.
+
 If a LaunchAgent with PV's expected label already exists but is not PV-owned, `pv daemon:enable` and `pv setup` fail safely and report the conflict instead of overwriting it.
 
 The daemon runs as the logged-in user, owns reconciliation, and manages PV child processes. macOS starts it after login and restarts it after crashes.
@@ -255,6 +295,10 @@ Crash-loop failures are scoped to the affected runtime. A failed Managed Resourc
 Backing Managed Resource failures do not remove Project routes. PV keeps serving the web app in a degraded state when the Gateway and PHP runtime worker are healthy.
 
 PV starts the Gateway, each Project-serving worker, and each Managed Resource track through its own monitor: a hidden `pv` process that starts the runtime, observes its exit without reaping it, and holds the exact exit status until the daemon releases the monitor. Monitors survive daemon restarts and never restart their runtimes; the daemon keeps readiness, reconciliation, and restart policy. Each monitor keeps its control socket and record under `~/.pv/run/m/<subject-hash>/`, beside a reservation lock. The record names the monitor and its runtime by process birth identity and kernel boot session. PV never kills a process based on PID alone.
+
+Linux inspects processes through `procfs`, with birth tokens scoped to the kernel boot UUID. It preserves the kernel's executable path and argument boundaries and reports unreadable process state. A process group is gone only when no live members remain. Linux exit watches use pidfd and non-reaping `waitid`; callers retain the leader until cleanup is proven.
+
+macOS and Linux share the Unix monitor, process-group stop policy, and daemon socket. macOS confirms a runtime's exec through kqueue; Linux confirms it when the runtime's command name replaces the gate's, so a runtime with the gate's name fails to start. Windows keeps explicit unsupported results.
 
 PV writes a small JSON runtime record under `~/.pv/run/` for each runtime with its binary path, arguments, config path, resource name, track, start time, monitor instance, and config proofs. The record supports ownership checks, config proofs, and diagnostics, while `pv.db` remains the source of truth. A runtime is PV's only while its monitor and runtime both still run with their recorded identities and the record names that monitor's instance. Config proofs outlive the runtime, so a staged proof survives a runtime that died.
 
@@ -290,9 +334,9 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 `pv setup` is the friendly first-time bootstrap path and includes daemon registration. `pv daemon:*` commands remain available as lower-level lifecycle and troubleshooting commands.
 
-`pv daemon:enable` registers the LaunchAgent, starts the daemon immediately, waits up to 15 seconds for the Unix socket and daemon health, enqueues reconciliation, and exits non-zero if the daemon does not become healthy. It does not wait for the triggered reconciliation to finish.
+`pv daemon:enable` registers the daemon for the current user, starts it immediately, waits up to 15 seconds for the Unix socket and daemon health, enqueues reconciliation, and exits non-zero if the daemon does not become healthy. It does not wait for the triggered reconciliation to finish.
 
-`pv daemon:disable` unloads the LaunchAgent and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the LaunchAgent file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
+`pv daemon:disable` stops the registered daemon and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the registration file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
 
 `pv daemon:disable` does not remove DNS resolver config, `pf` rules, or CA trust. Those integrations are managed by `pv dns:*`, `pv ports:*`, `pv ca:*`, `pv setup`, and `pv uninstall`.
 
@@ -304,6 +348,8 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trust is installed into the macOS System keychain so browsers trust Project certificates.
 
+On Linux, the helper installs PV's public CA as a fingerprint-named anchor in the distribution's system trust store and runs `update-ca-certificates` or `update-ca-trust`. Inspection verifies that the generated CA bundle contains the certificate. The CLI runs `certutil` as the user to add, inspect, repair trust flags, and remove PV's nickname in each browser NSS database: `~/.pki/nssdb`, existing Chromium databases under `~/.local/share/pki/nssdb` and Snap, and existing Firefox profiles under `$XDG_CONFIG_HOME/mozilla/firefox` (default `~/.config/mozilla/firefox`), `~/.mozilla/firefox` and Snap. Trust creates the primary NSS database when absent; inspection does not create files. Every external trust command uses the existing bounded platform command runner. `pv ca:*`, `pv doctor`, and `pv status` report browser trust per database. Rerunning trust repairs browser entries even when system trust is already current. Untrust removes PV entries from both stores while retaining local CA files and unrelated certificates.
+
 `pv dns:*` commands remain available as lower-level resolver inspection and repair commands even though `pv setup` handles first-time resolver configuration.
 
 `pv dns:install` installs or repairs `/etc/resolver/test` and ensures the PV daemon is running so the resolver can answer `.test` lookups. If the LaunchAgent is not registered, it tells the user to run `pv setup` or `pv daemon:enable`.
@@ -314,9 +360,13 @@ PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trus
 
 `pv ports:install` enables `pf` if needed and installs only PV-owned anchor/rules. `pv ports:uninstall` removes PV-owned rules but does not disable `pf` globally because other software may rely on it.
 
-Privileged repair happens only from foreground commands such as `pv setup`, `pv dns:install`, and `pv ports:install`. PV mutates stored port choices in `pv.db` only after the corresponding privileged system configuration repair succeeds. The daemon may report drift but does not ask the helper to mutate system state.
+Privileged repair happens only from foreground commands such as `pv setup`, `pv dns:install`, and `pv ports:install`. Port reservations and their failure handling follow the DNS and low-port routing rules above. The daemon may report drift but does not ask the helper to mutate system state.
 
 PV uses a separate minimal `pv-helper` executable registered as the system launchd job `com.prvious.pv.helper`. Launchd creates the restricted `/var/run/com.prvious.pv.helper.sock` and activates the helper on demand. Once activated, the helper serves sequential connections until launchd stops it, avoiding launchd restart throttling between related operations. Its LaunchDaemon writes startup and uncaptured child-process diagnostics to `/var/log/com.prvious.pv.helper.err.log`. The daemon, Gateway, DNS resolver, and all Managed Resources remain unprivileged. The helper supports one installing macOS account per machine. Helper removal is restricted to the original installing UID, so that account must remove it before setup by a replacement account; an unavailable owner requires manual administrator recovery.
+
+On Linux, the same protocol 2 helper is socket-activated by `pv-helper.socket` and `pv-helper.service` under `/etc/systemd/system/`. The executable is `/usr/local/libexec/pv/pv-helper` (root:root 0755); `/run/pv-helper.sock` belongs to the installing UID with mode 0600. The helper receives the listening socket through `listenfd`, authenticates every connection with `SO_PEERCRED` before decoding, and serves sequential connections until stopped. Its root-owned metadata is `/var/lib/pv/helper.json` (0600), with a root-only work directory and diagnostics at `/var/log/pv-helper.err.log`. Linux-only implementation changes keep helper version 2.0.0.
+
+Linux install stages a root-owned candidate with sudo, checks its owner, mode and checksum, as macOS checks its staged helper, and runs that candidate's hidden root lifecycle command. The helper holds `/usr/local/libexec/.pv-helper-lifecycle.lock`, installs over system-bus systemd calls, and restores the previous installation on failure, like macOS. The lock stays outside the removable executable directory. After a failed fresh installation restores the prior absence, cleanup removes only empty helper directories; unexpected contents remain for recovery. Once installation has verified the new helper is ready, transaction-file cleanup failures are reported through the successful installation outcome as warnings. Removal works like macOS removal: it checks the socket unit belongs to the account, stops and disables the units with sudo `systemctl`, and deletes every helper file, leftover candidate and rollback files included. Read-only helper operations never invoke sudo.
 
 The helper accepts only versioned typed requests for status, DNS inspection/apply/removal, PF inspection/apply/removal, loopback port 80/443 inspection, and CA trust inspection/apply/removal. Requests cannot provide commands, executable paths, destination paths, raw configuration, environment behavior, or network operations. DNS and PF content is generated internally for fixed system destinations. `CaApply` reads only the installing account's fixed PV CA path, validates PV CA metadata and the requested fingerprint, stages that exact certificate in the fixed root work path, revalidates it, and trusts it. The helper revalidates ownership, conflicts, arguments, and expected state before each mutation. `pv.db` remains the only desired-state source of truth; root-owned helper metadata contains only the installing UID, helper version, and protocol version.
 
@@ -408,7 +458,7 @@ When a matching PV-owned process exists, PV verifies ownership immediately befor
 
 When the client cannot determine whether a `POST /load` is still executing or was accepted, PV does not issue a competing compensating load because the final request ordering cannot be established. PV keeps the promoted desired root and fragments on disk, preserves the owned process, leaves its replacement-required marker and staged fingerprint set, and records the typed unknown-outcome failure without claiming which config is active. A later reconciliation never sends another load to that process: it stops the verified marked process, waits for its process group and pending handlers to exit, then starts a replacement from the latest desired config. The replacement establishes a new process epoch before reconciliation can report success, so an older unresolved load cannot overtake newer desired state.
 
-After a successful load, PV runs the existing runtime readiness checks. Caddy has already started the accepted config by then, so PV never sends the previous config back. If readiness fails, PV keeps the promoted desired files, leaves the replacement marker set and the applied fingerprint absent, and records the readiness failure. The next reconciliation stops that runtime and starts a replacement from the desired files, as it does after an unknown load outcome. If an ownership check immediately after a successful load or after readiness succeeds fails, PV keeps the promoted desired files without a compensating load. Every unproven outcome keeps the replacement marker set and the applied fingerprint absent. A PF `drifted` or `unknown` result handled by the existing `PreserveRuntime` policy is recorded as degraded routing state and keeps the accepted config and process without a replacement.
+After a successful load, PV runs the existing runtime readiness checks. Complete adapter warnings are accepted as a bare array or a single `warnings` array field; an API error following warnings remains a failure. Caddy has already started the accepted config by then, so PV never sends the previous config back. If readiness fails, PV keeps the promoted desired files, leaves the replacement marker set and the applied fingerprint absent, and records the readiness failure. The next reconciliation stops that runtime and starts a replacement from the desired files, as it does after an unknown load outcome. If an ownership check immediately after a successful load or after readiness succeeds fails, PV keeps the promoted desired files without a compensating load. Every unproven outcome keeps the replacement marker set and the applied fingerprint absent. A PF `drifted` or `unknown` result handled by the existing `PreserveRuntime` policy is recorded as degraded routing state and keeps the accepted config and process without a replacement.
 
 When PHP runtime worker config changes, PV uses this admin API contract for the matching worker; it does not fall back to a signal or restart. A worker for a new PHP runtime identity is started as a new process, and an obsolete worker is replaced through normal lifecycle reconciliation.
 
@@ -680,7 +730,7 @@ The v1 PV app update manifest is a single stable-channel release document. It do
 
 `schema_version` must be `2`; other schema versions fail as unsupported rather than being partially interpreted. `channel` must be exactly `stable`; runtime/user-facing channel selection is not part of v1. `version`, `minimum_pv_version`, and helper `version` use PV's simple version identity, `major.minor.patch` with no leading zero components. `minimum_pv_version` is the minimum currently installed PV application version that may apply this release; if the running PV binary is older than that value, self-update manifest parsing fails clearly and tells the user that a newer PV parser is required.
 
-`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes a native PV application binary and separate native helper binary for one exact supported target platform. V1 app update assets support `darwin-arm64` and `darwin-amd64`; `any` is not valid. Helper `protocol_version` is a positive integer versioned independently from the app and helper release versions. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
+`published_at` must be an RFC 3339 timestamp for the PV application release. Each entry in `assets` describes a native PV application binary and separate native helper binary for one exact target platform. App update metadata recognizes `darwin-arm64`, `darwin-amd64`, `linux-amd64`, and `linux-arm64`; `any` is not valid. Helper `protocol_version` is a positive integer versioned independently from the app and helper release versions. Each `url` must be HTTPS, include a host, and include a non-empty final path segment that is not `.` or `..` and does not contain backslashes. Each `sha256` must be a 64-character hexadecimal digest, normalized case-insensitively by the parser. Each `size` must be a positive byte count.
 
 The manifest must contain at least one asset and must not contain duplicate assets for the same platform. Selecting the current platform returns the matching asset for the current target platform. If the current target platform is missing, selection fails clearly instead of falling back to another platform.
 
@@ -951,7 +1001,13 @@ License and notice validation happens in the artifact release pipeline, not in P
 
 Managed Resource artifacts must run from PV's installed resource layout before publishing. Any shebang, rpath, install-name, or embedded path fixes happen in the release pipeline before final signing and checksum generation. User machines do not patch Managed Resource binaries during install.
 
-PV does not rely on whole-archive binary or string scanning as a v1 publication gate. Artifact recipes prove portability through archive layout validation, adapter-required file checks, and target-platform smoke tests. Resource-specific static checks may be added later if a resource's packaging risk justifies them.
+Native recipe metadata requires `darwin-arm64`, `darwin-amd64`, `linux-amd64` and `linux-arm64`. Composer remains platform-independent with `any`. Source archives shared across platforms stay common inputs; recipes that wrap upstream binaries pin a source URL and SHA-256 for each platform.
+
+Linux artifacts are built separately for each CPU architecture in the digest-pinned Ubuntu 22.04 builder from `scripts/linux/builder.Dockerfile`. Its glibc 2.35 baseline is the portability ceiling. Recipe validation checks every ELF file the way it checks Mach-O files: the CPU matches the target, no symbol needs a glibc newer than 2.35, bundled files depend only on bundled libraries, glibc, libgcc and libstdc++, and library search paths are `$ORIGIN`-relative. Archive validation rejects links. Linux binaries are not signed. Linux MySQL 9.7 uses upstream’s bundled static curl 8.14.1 to retain its server and client telemetry modules without external curl dependencies. macOS keeps its system curl selection. This is a narrow dependency-provider exception to shared build flags: Linux telemetry export uses HTTP/1.1 rather than HTTP/2. The artifact carries the bundled curl license, and its smoke test loads both telemetry modules.
+
+Linux acceptance runs on each distribution/CPU pair in Platform Scope: every resource archive passes its smoke hook, then PV installs from the archives the same run built and passes setup, system-trusted Project HTTPS, resource connectivity, daemon restart, logout recovery and complete uninstall.
+
+Artifact recipes prove portability through archive layout validation, adapter-required file checks, the platform-specific Mach-O or ELF checks, and target-platform smoke tests. Binary or string scans are not a substitute for these checks.
 
 For v1, PV ad-hoc signs Managed Resource Mach-O binaries in the release pipeline after any binary path fixes. Paid Developer ID signing and notarization for Managed Resource artifacts are deferred unless macOS Gatekeeper or quarantine behavior requires them for a reliable v1 install experience. Checksums are computed only after final signing and packaging. No correctness path may depend on the signing identity of PV or of any ancestor process.
 
@@ -1035,6 +1091,12 @@ For macOS v1 artifacts, recipes rely on GitHub-hosted macOS runners plus recipe-
 
 Maintainer-local macOS artifact builds also run natively on macOS. Docker is not a supported path for producing or validating macOS Managed Resource artifacts because it cannot exercise native Mach-O linking, signing, rpaths, or runtime behavior.
 
+Linux artifact builds must use the shared builder definition under `scripts/linux/`, based on Ubuntu 22.04 pinned by digest, so glibc 2.35 is the runtime baseline for both `linux-amd64` and `linux-arm64`. Docker is the supported path for local Linux builds and tests. Each architecture builds and runs natively; Apple Silicon development uses ARM64 containers and amd64 validation uses native CI runners.
+
+Linux system integration tests run in disposable systemd containers, separate from the builder.
+
+The Real Artifact E2E workflow runs its Gateway, resource-matrix and runtime-contract suites on a native runner for the selected macOS or Linux architecture, defaulting to `darwin-arm64`. Its optional privileged macOS RC remains a separate macOS workflow.
+
 Strict byte-for-byte reproducible Managed Resource builds are not a v1 requirement. Artifact recipes should still record provenance and pin source/dependency/tool inputs where practical, but v1 does not block publication on deterministic rebuild verification.
 
 The artifact release pipeline must pass adapter-specific smoke tests before publishing a Managed Resource artifact. Redis starts `redis-server`, checks `redis-cli ping` returns `PONG`, and stops cleanly. Postgres runs `initdb`, starts `postgres`, runs `psql SELECT 1`, and stops cleanly. MySQL initializes a temporary data directory, starts the server, connects as admin, runs `SELECT 1`, and stops cleanly. Mailpit starts the server, checks the HTTP UI and SMTP port bind, and stops cleanly. RustFS starts the server, checks S3 API readiness, creates or lists a test bucket, and stops cleanly. FrankenPHP/PHP runs `php -v`, verifies the expected PHP version and required fixed extension set, serves a tiny PHP site through FrankenPHP over loopback, and stops cleanly. PHP extension validation verifies that every PV-required v1 extension is compiled into both standalone PHP and FrankenPHP; extra compiled extensions do not fail publication.
@@ -1098,6 +1160,8 @@ When a backing Managed Resource port changes, PV regenerates PV-managed `.env` b
 PV's PostgreSQL 17 and 18 Managed Resource artifacts supply every extension from PostgreSQL's source tree that builds without the deliberately excluded Perl, Python, UUID, XML, or SELinux dependencies. `uuid-ossp` and `xml2` are therefore outside this contract. Exact per-track catalogs belong in checked-in release and test fixtures rather than hard-coded design counts.
 
 PostgreSQL is built with OpenSSL so supplied extensions such as `pgcrypto` and `sslinfo` are available. The artifacts bundle their required OpenSSL runtime libraries and must not retain Homebrew, staging-prefix, or build-runner runtime dependencies.
+
+The `resources` target platform owns PostgreSQL shared-library naming. Artifact validation and preload checks use `.dylib` on macOS and `.so` on Linux; bundled OpenSSL names are `libcrypto.3.dylib`/`libssl.3.dylib` on macOS and `libcrypto.so.3`/`libssl.so.3` on Linux. Validation uses the selected artifact target, independently of the host running the validator.
 
 PV's tested `pgcrypto` contract covers digest, `gen_salt`, and AES operations. Blowfish and DES require the OpenSSL legacy provider and are not part of PV's tested contract.
 
@@ -1649,6 +1713,8 @@ The serving gate is unchanged. A worktree's route appears once its first reconci
 
 `pv open [hostname]` opens a served Project hostname in the user's browser from desired state. It does not require observed state to confirm that the Project is currently reachable.
 
+Foreground CLI commands use the `webbrowser` crate for browser handoff on macOS and Linux. Errors returned by the handoff propagate to the command's error output.
+
 With a hostname argument, `pv open <hostname>` opens that Project directly. With no argument, it opens the current Project or falls back to the picker.
 
 PV opens the Project's primary hostname.
@@ -1756,6 +1822,8 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 `pv logs --resource` accepts the same aliases as resource command namespaces, such as `pg`, `mail`, and `s3`, and normalizes them internally to canonical names: `postgres`, `mailpit`, and `rustfs`.
 
 `pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, `pf` rules, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, `pv dns:install`, `pv ports:install`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
+
+On Linux, `pv doctor` reports `Linux distribution: <PRETTY_NAME>` from `/etc/os-release` as information outside health checks, so bug reports name the distribution. Its JSON report includes the same name. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status.
 
 `pv jobs` is a read-only diagnostic command that lists recent daemon jobs, including setup, install, update, restart, and reconciliation jobs. It shows status, scope, start/end time, and failure summary. Live progress remains attached to the command that started the job.
 

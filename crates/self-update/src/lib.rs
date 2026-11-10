@@ -64,6 +64,8 @@ pub struct PrivilegedHelperUpdateAsset {
 pub enum AppUpdatePlatform {
     DarwinArm64,
     DarwinAmd64,
+    LinuxAmd64,
+    LinuxArm64,
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -410,6 +412,8 @@ impl AppUpdatePlatform {
         match value {
             "darwin-arm64" => Ok(Self::DarwinArm64),
             "darwin-amd64" => Ok(Self::DarwinAmd64),
+            "linux-amd64" => Ok(Self::LinuxAmd64),
+            "linux-arm64" => Ok(Self::LinuxArm64),
             _ => Err(AppUpdateManifestError::UnsupportedPlatform {
                 platform: value.to_string(),
             }),
@@ -424,6 +428,8 @@ impl AppUpdatePlatform {
         match self {
             Self::DarwinArm64 => "darwin-arm64",
             Self::DarwinAmd64 => "darwin-amd64",
+            Self::LinuxAmd64 => "linux-amd64",
+            Self::LinuxArm64 => "linux-arm64",
         }
     }
 }
@@ -498,20 +504,12 @@ fn invalid_identity<T>(kind: &'static str, value: String) -> Result<T> {
     Err(AppUpdateManifestError::InvalidIdentity { kind, value })
 }
 
-#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn current_platform() -> Result<AppUpdatePlatform> {
-    Ok(AppUpdatePlatform::DarwinArm64)
-}
-
-#[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-fn current_platform() -> Result<AppUpdatePlatform> {
-    Ok(AppUpdatePlatform::DarwinAmd64)
-}
-
-#[cfg(not(any(
-    all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "macos", target_arch = "x86_64")
-)))]
-fn current_platform() -> Result<AppUpdatePlatform> {
-    Err(AppUpdateManifestError::UnsupportedCurrentPlatform)
+    match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => Ok(AppUpdatePlatform::DarwinArm64),
+        ("macos", "x86_64") => Ok(AppUpdatePlatform::DarwinAmd64),
+        ("linux", "x86_64") => Ok(AppUpdatePlatform::LinuxAmd64),
+        ("linux", "aarch64") => Ok(AppUpdatePlatform::LinuxArm64),
+        _ => Err(AppUpdateManifestError::UnsupportedCurrentPlatform),
+    }
 }

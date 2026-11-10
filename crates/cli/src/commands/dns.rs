@@ -24,7 +24,6 @@ pub(crate) fn status(
     output.heading("dns:status", Some("DNS resolver status"))?;
     write_resolver_state(output, "Prepared resolver config", &prepared_state)?;
     write_resolver_state(output, "System resolver config", &system_state)?;
-
     Ok(ExitCode::SUCCESS)
 }
 
@@ -77,12 +76,7 @@ fn install_inner(
         | ResolverFileState::Stale { .. } => {}
         ResolverFileState::Conflict { path } => {
             release_new_dns_port(&mut database, had_dns_assignment)?;
-            super::write_left_in_place(
-                output,
-                "System resolver config is not PV-owned: ",
-                path,
-                None,
-            )?;
+            write_resolver_conflict(output, path)?;
 
             return Ok(ExitCode::FAILURE);
         }
@@ -206,7 +200,7 @@ pub(crate) fn uninstall(
 
             Ok(ExitCode::SUCCESS)
         }
-        ResolverFileState::Unreadable { path, message } => {
+        ResolverFileState::Unreadable { path, message } if !cfg!(target_os = "linux") => {
             super::write_left_in_place(
                 output,
                 "System resolver config could not be inspected: ",
@@ -216,7 +210,15 @@ pub(crate) fn uninstall(
 
             Ok(ExitCode::FAILURE)
         }
-        ResolverFileState::Current { path, .. } | ResolverFileState::Stale { path, .. } => {
+        ResolverFileState::Conflict { path } if !cfg!(target_os = "linux") => {
+            write_resolver_conflict(output, &path)?;
+
+            Ok(ExitCode::FAILURE)
+        }
+        ResolverFileState::Current { path, .. }
+        | ResolverFileState::Stale { path, .. }
+        | ResolverFileState::Conflict { path }
+        | ResolverFileState::Unreadable { path, .. } => {
             environment.remove_resolver_config(&system_path)?;
             if output.surface().decorated() {
                 output.success(".test domain routing removed")?;
@@ -230,17 +232,16 @@ pub(crate) fn uninstall(
 
             Ok(ExitCode::SUCCESS)
         }
-        ResolverFileState::Conflict { path } => {
-            super::write_left_in_place(
-                output,
-                "System resolver config is not PV-owned: ",
-                &path,
-                None,
-            )?;
-
-            Ok(ExitCode::FAILURE)
-        }
     }
+}
+
+fn write_resolver_conflict(output: &mut Output<'_>, path: &Utf8Path) -> io::Result<()> {
+    super::write_left_in_place(
+        output,
+        "System resolver config is not PV-owned: ",
+        path,
+        None,
+    )
 }
 
 fn write_resolver_state(
@@ -252,7 +253,15 @@ fn write_resolver_state(
         ResolverFileState::Missing { path } => (Mark::Idle, "missing", path),
         ResolverFileState::Current { path, .. } => (Mark::Success, "current", path),
         ResolverFileState::Stale { path, .. } => (Mark::Warning, "stale", path),
-        ResolverFileState::Conflict { path } => (Mark::Failure, "not PV-owned", path),
+        ResolverFileState::Conflict { path } => (
+            Mark::Failure,
+            if cfg!(target_os = "linux") {
+                "conflict"
+            } else {
+                "not PV-owned"
+            },
+            path,
+        ),
         ResolverFileState::Unreadable { path, .. } => (Mark::Failure, "unreadable", path),
     };
     output.status(mark, format!("{label}: {status}"))?;

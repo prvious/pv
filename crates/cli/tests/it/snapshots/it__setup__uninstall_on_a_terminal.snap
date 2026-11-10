@@ -4,7 +4,7 @@ expression: uninstall.stdout
 ---
 [pv] uninstall
 
-┌  PV uninstall  ·  macOS integration
+┌  PV uninstall  ·  system integration
 │
 ✓  daemon removal
 │  ✓ PV stopped · automatic startup disabled

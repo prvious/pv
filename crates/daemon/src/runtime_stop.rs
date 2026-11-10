@@ -4,6 +4,8 @@ use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use platform::clock::{self, Deadline, Limit};
+#[cfg(target_os = "linux")]
+use platform::{BootSessionId, current_boot_session_id};
 use serde::{Deserialize, Serialize};
 use state::{PvPaths, fs};
 
@@ -13,7 +15,7 @@ use crate::{DaemonError, ProcessSupervisor, RuntimeReconciliationFailure, monito
 /// How long the previous daemon gets to exit after PV unloads its LaunchAgent.
 pub const DAEMON_EXIT_GRACE: Limit = Limit::new("daemon exit", Duration::from_secs(10));
 /// How long finding a daemon to stop waits to connect to its socket.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 const DAEMON_CONNECT_FOR_STOP_TIMEOUT: Limit =
     Limit::new("daemon connect for stop", Duration::from_secs(3));
 
@@ -22,23 +24,31 @@ const DAEMON_CONNECT_FOR_STOP_TIMEOUT: Limit =
 pub struct DaemonProcess {
     pid: u32,
     start_identity: platform::ProcessStartIdentity,
+    #[cfg(target_os = "linux")]
+    boot_session_id: BootSessionId,
 }
 
 impl DaemonProcess {
     pub fn wait_for_exit(&self) -> Result<(), DaemonError> {
         let deadline = Deadline::after(&DAEMON_EXIT_GRACE);
-        while platform::inspect_process_start_identity(self.pid)? == Some(self.start_identity)
-            && !platform::process_is_zombie(self.pid)?
-        {
+        while self.matches_current_process()? && !platform::process_is_zombie(self.pid)? {
             if deadline.is_expired() {
                 return Err(DaemonError::RuntimeCleanupUnproven {
                     pid: self.pid,
-                    reason: "daemon is still running after LaunchAgent unload".to_owned(),
+                    reason: "daemon is still running after its service stopped".to_owned(),
                 });
             }
             clock::poll_blocking(Duration::from_millis(25));
         }
         Ok(())
+    }
+
+    fn matches_current_process(&self) -> Result<bool, DaemonError> {
+        #[cfg(target_os = "linux")]
+        if self.boot_session_id != current_boot_session_id()? {
+            return Ok(false);
+        }
+        Ok(platform::inspect_process_start_identity(self.pid)? == Some(self.start_identity))
     }
 }
 
@@ -56,6 +66,8 @@ pub(crate) fn record_daemon_process(paths: &PvPaths) -> Result<DaemonProcess, Da
     let record = DaemonProcess {
         pid,
         start_identity,
+        #[cfg(target_os = "linux")]
+        boot_session_id: current_boot_session_id()?,
     };
     fs::write_sensitive_file(
         &paths.daemon_process_record(),
@@ -84,7 +96,7 @@ fn read_daemon_process_record(paths: &PvPaths) -> Result<Option<DaemonProcess>, 
 
 pub(crate) fn require_previous_daemon_exited(paths: &PvPaths) -> Result<(), DaemonError> {
     if let Some(record) = read_daemon_process_record(paths)?
-        && platform::inspect_process_start_identity(record.pid)? == Some(record.start_identity)
+        && record.matches_current_process()?
         && !platform::process_is_zombie(record.pid)?
     {
         return Err(DaemonError::RuntimeCleanupUnproven {
@@ -96,18 +108,18 @@ pub(crate) fn require_previous_daemon_exited(paths: &PvPaths) -> Result<(), Daem
     Ok(())
 }
 
-/// Captures the daemon before bootout, including a daemon whose listener has closed.
+/// Captures the daemon before stopping registration, including one whose listener has closed.
 pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>, DaemonError> {
     platform::require_capability(platform::PlatformCapability::DaemonIpc)?;
     if let Some(record) = read_daemon_process_record(paths)?
-        && platform::inspect_process_start_identity(record.pid)? == Some(record.start_identity)
+        && record.matches_current_process()?
     {
         if verify_daemon_process(paths, record.pid)?.start_identity != record.start_identity {
             return Err(DaemonError::RuntimeProcessIdentityChanged { pid: record.pid });
         }
         return Ok(Some(record));
     }
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     return super::build_runtime()?.block_on(async {
         match clock::timeout(&DAEMON_CONNECT_FOR_STOP_TIMEOUT, crate::ipc::connect(paths)).await {
             Ok(Ok(stream)) => {
@@ -122,6 +134,8 @@ pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>,
                 Ok(Some(DaemonProcess {
                     pid: peer_pid,
                     start_identity: identity.start_identity,
+                    #[cfg(target_os = "linux")]
+                    boot_session_id: current_boot_session_id()?,
                 }))
             }
             Ok(Err(DaemonError::Io(error)))
@@ -136,7 +150,7 @@ pub fn daemon_process_for_stop(paths: &PvPaths) -> Result<Option<DaemonProcess>,
             Err(error) => Err(io::Error::new(io::ErrorKind::TimedOut, error).into()),
         }
     });
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(unix))]
     Ok(None)
 }
 
@@ -146,7 +160,13 @@ fn verify_daemon_process(
 ) -> Result<platform::ProcessIdentity, DaemonError> {
     let identity = platform::inspect_process_identity(pid)?
         .ok_or(DaemonError::RuntimeProcessIdentityChanged { pid })?;
-    if identity.arguments != ["daemon:run"] || !identity.executable.starts_with(paths.bin()) {
+    // procfs reports the resolved executable, with " (deleted)" appended once the release is
+    // replaced, so compare it with the resolved binaries directory.
+    #[cfg(target_os = "linux")]
+    let binaries = fs::canonicalize(paths.bin())?;
+    #[cfg(not(target_os = "linux"))]
+    let binaries = paths.bin();
+    if identity.arguments != ["daemon:run"] || !identity.executable.starts_with(binaries) {
         return Err(DaemonError::RuntimeProcessIdentityChanged { pid });
     }
     Ok(identity)
@@ -258,4 +278,71 @@ fn require_directory(path: &Utf8Path) -> Result<(), DaemonError> {
         });
     }
     Ok(())
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use std::process::Child;
+    use std::time::Duration;
+
+    use platform::clock::{self, real};
+
+    use anyhow::{Result, ensure};
+    use camino_tempfile::tempdir;
+    use pv_fake::{EventKind, Persona, install};
+    use state::{PvPaths, fs};
+
+    use super::verify_daemon_process;
+
+    #[expect(
+        clippy::disallowed_types,
+        reason = "native identity test starts a controlled fake daemon"
+    )]
+    type TestCommand = std::process::Command;
+
+    struct ChildGuard(Child);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            let _kill_result = self.0.kill();
+            let _wait_result = self.0.wait();
+        }
+    }
+
+    #[test]
+    fn daemon_identity_accepts_a_symlinked_home_and_a_replaced_binary() -> Result<()> {
+        let directory = tempdir()?;
+        let home = directory.path().join("actual-home");
+        let linked_home = directory.path().join("linked-home");
+        fs::ensure_user_dir(&home)?;
+        fs::symlink_file(&home, &linked_home)?;
+        let paths = PvPaths::for_home(&linked_home);
+        let fake = install(&paths.bin().join("fake-daemon"), Persona::LongRunning)?;
+        let child = ChildGuard(
+            TestCommand::new(fake.executable())
+                .arg("daemon:run")
+                .spawn()?,
+        );
+        let deadline = real::now() + Duration::from_secs(5);
+        while !fake
+            .events()?
+            .into_iter()
+            .any(|event| matches!(event.kind, EventKind::Started { .. }))
+        {
+            ensure!(real::now() < deadline, "fake daemon never started");
+            clock::poll_blocking(Duration::from_millis(10));
+        }
+
+        let identity = verify_daemon_process(&paths, child.0.id())?;
+        assert_eq!(identity.arguments, ["daemon:run"]);
+
+        fs::delete_file(fake.executable())?;
+        let mut expected_identity = identity;
+        expected_identity.executable = format!("{} (deleted)", expected_identity.executable).into();
+        assert_eq!(
+            verify_daemon_process(&paths, child.0.id())?,
+            expected_identity
+        );
+        Ok(())
+    }
 }

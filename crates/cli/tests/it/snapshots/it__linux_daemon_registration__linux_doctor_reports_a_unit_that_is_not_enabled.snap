@@ -1,0 +1,26 @@
+---
+source: crates/cli/tests/it/linux_daemon_registration.rs
+expression: observed
+---
+[
+    (
+        "enabled",
+        Object {
+            "detail": String("path: <tempdir>/enabled/.config/systemd/user/pv-daemon.service"),
+            "message": String("PV-owned systemd user service is installed"),
+            "name": String("Daemon service"),
+            "repair": Null,
+            "status": String("pass"),
+        },
+    ),
+    (
+        "not enabled",
+        Object {
+            "detail": String("path: <tempdir>/not enabled/.config/systemd/user/pv-daemon.service"),
+            "message": String("systemd user service is installed but not enabled"),
+            "name": String("Daemon service"),
+            "repair": String("pv daemon:enable"),
+            "status": String("fail"),
+        },
+    ),
+]

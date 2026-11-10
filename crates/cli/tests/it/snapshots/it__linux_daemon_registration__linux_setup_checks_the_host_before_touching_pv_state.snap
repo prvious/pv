@@ -1,0 +1,13 @@
+---
+source: crates/cli/tests/it/linux_daemon_registration.rs
+expression: output
+---
+RunOutput {
+    exit_code: ExitCode(
+        unix_exit_status(
+            1,
+        ),
+    ),
+    stdout: "",
+    stderr: "error: system integration operation failed: fixture host has no active systemd-resolved\n",
+}

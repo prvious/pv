@@ -343,7 +343,7 @@ pub(crate) fn is_pv_ca_metadata(metadata: &LocalCaMetadata) -> bool {
         && metadata.can_sign_certificates
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn pem_from_der(label: &str, der: &[u8]) -> String {
     let base64 = data_encoding::BASE64.encode(der);
     let mut pem = format!("-----BEGIN {label}-----\n");
@@ -417,11 +417,13 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::Unsupported { .. }
         | PlatformError::UnsupportedTarget { .. }
         | PlatformError::BrowserOpen(_)
-        | PlatformError::BrowserOpenStatus { .. }
         | PlatformError::Keychain(_)
         | PlatformError::LaunchAgent(_)
         | PlatformError::LaunchAgentCommand { .. }
         | PlatformError::LaunchAgentCommandStatus { .. }
+        | PlatformError::DaemonRegistrationFile(_)
+        | PlatformError::DaemonRegistrationConflict { .. }
+        | PlatformError::DaemonRegistrationUnreadable { .. }
         | PlatformError::SystemIntegration(_)
         | PlatformError::SystemIntegrationCommand { .. }
         | PlatformError::SystemIntegrationCommandStatus { .. }
@@ -433,7 +435,12 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         | PlatformError::PrivilegedHelperProtocol(_)
         | PlatformError::PrivilegedHelperInstallation(_)
         | PlatformError::PrivilegedHelperAuthentication(_) => CaRepairReason::InvalidCaShape,
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         PlatformError::ProcessIdentityInspection { .. } => CaRepairReason::InvalidCaShape,
+        #[cfg(target_os = "linux")]
+        PlatformError::LowPortProcfs(_)
+        | PlatformError::PortProxyBus(_)
+        | PlatformError::PortProxyIo(_)
+        | PlatformError::PortProxyMutation { .. } => CaRepairReason::InvalidCaShape,
     }
 }

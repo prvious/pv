@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::io;
 
+use resources::TargetPlatform;
 use sha2::{Digest, Sha256};
 use state::{EnvContextValues, PostgresPreloadLibrary, PvPaths, ResourceAllocationRecord};
 
@@ -20,11 +21,13 @@ const POSTGRES_PORTS: &[ManagedResourcePortSpec] = &[ManagedResourcePortSpec {
 }];
 
 #[derive(Clone, Debug)]
-pub(crate) struct PostgresRuntimeAdapter;
+pub(crate) struct PostgresRuntimeAdapter {
+    target_platform: TargetPlatform,
+}
 
 impl PostgresRuntimeAdapter {
-    pub(crate) fn new() -> Self {
-        Self
+    pub(crate) fn new(target_platform: TargetPlatform) -> Self {
+        Self { target_platform }
     }
 }
 
@@ -34,7 +37,7 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
     }
 
     fn artifact_adapter(&self) -> Result<resources::RuntimeArtifactAdapter, DaemonError> {
-        resources::postgres_adapter().map_err(Into::into)
+        resources::postgres_adapter(self.target_platform).map_err(Into::into)
     }
 
     fn port_specs(&self) -> &'static [ManagedResourcePortSpec] {
@@ -49,10 +52,11 @@ impl ManagedResourceRuntimeAdapter for PostgresRuntimeAdapter {
         Box::pin(async move {
             let paths = paths.clone();
             let context = context.clone();
+            let target_platform = self.target_platform;
             spawn_postgres_preparation(move || {
                 let port = required_port(&context)?;
                 let config = postgres_config(&context, port)?;
-                validate_preload_library_files(&context)?;
+                validate_preload_library_files(&context, target_platform)?;
                 let admin = admin_context(&context)?;
                 initialize_data_dir_if_missing(&paths, &context, &admin)?;
                 write_postgres_config(&paths, &context, &config)
@@ -315,11 +319,14 @@ fn postgres_config(
 
 fn validate_preload_library_files(
     context: &ManagedResourceRuntimeContext,
+    target_platform: TargetPlatform,
 ) -> Result<(), DaemonError> {
     for library in &context.postgres_preload_libraries {
-        let module_path = context
-            .artifact_path
-            .join(format!("lib/postgresql/{}.dylib", library.as_str()));
+        let module_path = context.artifact_path.join(format!(
+            "lib/postgresql/{}{}",
+            library.as_str(),
+            target_platform.shared_library_suffix()
+        ));
         if !state::fs::path_is_file(&module_path)? {
             return Err(DaemonError::PostgresPreloadLibraryMissing {
                 track: context.track.clone(),

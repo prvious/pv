@@ -1,7 +1,9 @@
-#![cfg(target_os = "macos")]
+#![cfg(unix)]
 
+#[cfg(target_os = "macos")]
 use std::io::Read;
 use std::os::unix::fs::PermissionsExt;
+#[cfg(target_os = "macos")]
 use std::thread;
 use std::time::Duration;
 
@@ -14,6 +16,7 @@ use platform::hooks::{
     CAPTURE_TIMEOUT, HookCommandContext, HookEnvironment, HookError, HookOutput,
     capture_environment, run_commands,
 };
+#[cfg(target_os = "macos")]
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use state::{PvPaths, fs};
 use tokio::sync::watch;
@@ -289,6 +292,7 @@ async fn hook_commands_fail_fast_and_announce_in_order() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 #[expect(
     clippy::disallowed_methods,

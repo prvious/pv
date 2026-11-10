@@ -1,41 +1,41 @@
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::collections::BTreeMap;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::process::ExitStatus;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::process::{Child, Stdio};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
 };
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::thread::{self, JoinHandle};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use std::time::Duration;
 
 use anyhow::Result;
 use assert_cmd::Command;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use config::ProjectConfigFile;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use daemon::{MonitorCleanup, MonitorExit, MonitorStart, MonitorStop, StopSignal};
 use insta::assert_debug_snapshot;
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use platform::clock::{self, real};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use serde_json::{Value, json};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use state::MonitorReservation;
 use state::{
     Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
 };
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use state::{JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode};
 use support::{create_dir, create_laravel_init_fixture, run_pv_in, write_file};
 
@@ -204,7 +204,7 @@ fn hooks_trust_refuses_an_active_update() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn hidden_monitor_commands_run_a_runtime_until_released() -> Result<()> {
     let tempdir = tempdir()?;
@@ -325,7 +325,7 @@ fn project_link_list_and_unlink_use_injected_home() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_runs_prepare_and_warns_about_setup_without_a_daemon() -> Result<()> {
     let directory = tempdir()?;
@@ -351,7 +351,7 @@ fn project_link_runs_prepare_and_warns_about_setup_without_a_daemon() -> Result<
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_prepare_failure_preserves_existing_state_and_skip_hooks_bypasses_execution()
 -> Result<()> {
@@ -384,7 +384,7 @@ fn project_link_prepare_failure_preserves_existing_state_and_skip_hooks_bypasses
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_refuses_queued_daemon_hooks_unless_skipped() -> Result<()> {
     let directory = tempdir()?;
@@ -418,7 +418,7 @@ fn project_link_refuses_queued_daemon_hooks_unless_skipped() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishes() -> Result<()> {
     let directory = tempdir()?;
@@ -562,7 +562,7 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_waits_on_the_accepted_coalesced_job_then_runs_setup() -> Result<()> {
     let directory = tempdir()?;
@@ -591,7 +591,7 @@ fn project_link_waits_on_the_accepted_coalesced_job_then_runs_setup() -> Result<
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_setup_failure_keeps_the_link_and_env_and_records_failure() -> Result<()> {
     let directory = tempdir()?;
@@ -625,7 +625,7 @@ fn project_link_setup_failure_keeps_the_link_and_env_and_records_failure() -> Re
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_skipped_setup_does_not_clear_an_earlier_hook_failure() -> Result<()> {
     let directory = tempdir()?;
@@ -661,7 +661,7 @@ fn project_link_skipped_setup_does_not_clear_an_earlier_hook_failure() -> Result
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_records_ctrl_c_during_prepare_and_reconciliation_retries() -> Result<()> {
     let directory = tempdir()?;
@@ -726,17 +726,17 @@ fn project_link_records_ctrl_c_during_prepare_and_reconciliation_retries() -> Re
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[expect(
     clippy::disallowed_types,
     reason = "hook CLI integration tests own and interrupt a directly spawned child"
 )]
 type HookTestCommand = std::process::Command;
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 struct HookCliProcess(Child);
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl HookCliProcess {
     fn output(&mut self) -> Result<CommandOutput> {
         let deadline = real::now() + Duration::from_secs(10);
@@ -766,7 +766,7 @@ impl HookCliProcess {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 impl Drop for HookCliProcess {
     fn drop(&mut self) {
         let _kill_result = self.0.kill();
@@ -774,7 +774,7 @@ impl Drop for HookCliProcess {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn wait_for_hook_fixture(path: &Utf8Path) -> Result<()> {
     let deadline = real::now() + Duration::from_secs(10);
     while !state::fs::path_entry_exists(path)? {
@@ -784,7 +784,7 @@ fn wait_for_hook_fixture(path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn reject_link_reconciliations(
     paths: &PvPaths,
     ready: &Utf8Path,
@@ -833,7 +833,7 @@ fn reject_link_reconciliations(
     Ok((stop, task))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_runs_setup_after_successful_job_without_fresh_env_observation() -> Result<()> {
     let directory = tempdir()?;
@@ -864,7 +864,7 @@ fn project_link_runs_setup_after_successful_job_without_fresh_env_observation() 
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_without_setup_returns_while_the_accepted_job_is_running() -> Result<()> {
     let directory = tempdir()?;
@@ -890,7 +890,7 @@ fn project_link_without_setup_returns_while_the_accepted_job_is_running() -> Res
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_refuses_a_discovered_project_until_its_first_apply_without_reading_the_queue()
 -> Result<()> {
@@ -936,7 +936,7 @@ fn project_link_refuses_a_discovered_project_until_its_first_apply_without_readi
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_keeps_a_worktree_that_discovery_links_during_prepare() -> Result<()> {
     let directory = tempdir()?;
@@ -980,7 +980,7 @@ fn project_link_keeps_a_worktree_that_discovery_links_during_prepare() -> Result
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_gives_an_adopted_worktree_its_source_path() -> Result<()> {
     let directory = tempdir()?;
@@ -1036,7 +1036,7 @@ fn project_link_gives_an_adopted_worktree_its_source_path() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_shows_hidden_characters_in_unapproved_commands() -> Result<()> {
     let directory = tempdir()?;
@@ -1056,7 +1056,7 @@ fn project_link_shows_hidden_characters_in_unapproved_commands() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_skips_hooks_until_every_command_is_approved() -> Result<()> {
     let directory = tempdir()?;
@@ -1090,7 +1090,7 @@ fn project_link_skips_hooks_until_every_command_is_approved() -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[test]
 fn project_link_skips_setup_after_failed_job_even_with_successful_env_observation() -> Result<()> {
     let directory = tempdir()?;
@@ -1139,7 +1139,7 @@ fn project_link_skips_setup_after_failed_job_even_with_successful_env_observatio
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[tokio::test]
 async fn project_link_skip_hooks_still_runs_discovered_first_setup_in_the_daemon() -> Result<()> {
     let directory = tempdir()?;
@@ -1268,7 +1268,7 @@ async fn project_link_skip_hooks_still_runs_discovered_first_setup_in_the_daemon
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 async fn wait_for_finished_hook_fixture_job(paths: &PvPaths, id: &str) -> Result<JobRecord> {
     real::timeout(Duration::from_secs(20), async {
         loop {
@@ -1284,14 +1284,14 @@ async fn wait_for_finished_hook_fixture_job(paths: &PvPaths, id: &str) -> Result
 }
 
 /// Runs `pv` after approving the Project's hook commands, as `pv link` in a terminal would.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn run_hook_pv(args: &[&str], project: &Utf8Path, home: &Utf8Path) -> Result<CommandOutput> {
     approve_project_hooks(project, home)?;
     run_unapproved_hook_pv(args, project, home)
 }
 
 /// Approves the hook commands in `project`'s config once, as the user would in a terminal.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn approve_project_hooks(project: &Utf8Path, home: &Utf8Path) -> Result<()> {
     if let Ok(config_file) = ProjectConfigFile::read_from_root(project) {
         let hooks = &config_file.config.hooks;
@@ -1307,7 +1307,7 @@ fn approve_project_hooks(project: &Utf8Path, home: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn run_unapproved_hook_pv(
     args: &[&str],
     project: &Utf8Path,
@@ -1327,7 +1327,7 @@ fn run_unapproved_hook_pv(
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn hook_snapshot(directory: &Utf8Path, assert: impl FnOnce()) {
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(directory.as_str(), "<tempdir>");
@@ -1335,7 +1335,7 @@ fn hook_snapshot(directory: &Utf8Path, assert: impl FnOnce()) {
     settings.bind(assert);
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 #[derive(Clone, Copy)]
 enum LinkJobOutcome {
     Succeeded,
@@ -1346,7 +1346,7 @@ enum LinkJobOutcome {
     Running,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn fake_link_reconciliation(
     paths: &PvPaths,
     project: &Utf8Path,

@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, LaunchAgentFileState, LocalCaMetadata, ResolverConfig, ResolverFileState,
-    TrustDomainState,
+    CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
+    ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use serde::Serialize;
 use state::{
@@ -120,7 +120,6 @@ impl StatusSnapshot {
         let has_failure =
             system_failure || projects.iter().any(|project| project.mark == Mark::Failure);
         let overall = if has_failure { "failed" } else { "ok" };
-
         Ok(Self {
             overall,
             system_failure,
@@ -146,7 +145,10 @@ impl StatusSnapshot {
         output.line("PV status")?;
         output.line(&format!("Overall: {}", self.overall))?;
         output.line(&format!("Daemon: {}", self.daemon.state))?;
-        output.line(&format!("  LaunchAgent: {}", self.daemon.launch_agent))?;
+        output.line(&format!(
+            "  {DAEMON_REGISTRATION_NAME}: {}",
+            self.daemon.registration
+        ))?;
         output.line(&format!("  Socket: {}", self.daemon.socket))?;
         output.line("Integrations:")?;
         output.line(&format!("  DNS: {}", self.integrations.dns))?;
@@ -161,6 +163,16 @@ impl StatusSnapshot {
             output.line("    repair: pv ports:install")?;
         }
         output.line(&format!("  CA: {}", self.integrations.ca))?;
+        for report in &self.integrations.browser_ca {
+            output.line(&format!(
+                "  Browser CA: {} · {}",
+                report.database,
+                super::ca::trust_state_text(&report.state).1
+            ))?;
+            if let Some(detail) = report.detail() {
+                output.line(&format!("    {detail}"))?;
+            }
+        }
         output.line(&format!("Logs: {}", self.log_directory))?;
         output.line("Managed Resources:")?;
         if self.managed_resources.is_empty() {
@@ -287,9 +299,12 @@ impl StatusSnapshot {
             output.detail(message)?;
         }
         output.detail(
-            Line::field("LaunchAgent ", self.daemon.launch_agent)
-                .text("  ·  Socket ")
-                .value(self.daemon.socket),
+            Line::field(
+                &format!("{DAEMON_REGISTRATION_NAME} "),
+                self.daemon.registration,
+            )
+            .text("  ·  Socket ")
+            .value(self.daemon.socket),
         )?;
 
         output.section("Integrations")?;
@@ -319,6 +334,23 @@ impl StatusSnapshot {
             self.integrations.ca_mark,
             integration("CA", self.integrations.ca),
         )?;
+
+        for report in &self.integrations.browser_ca {
+            output.status(
+                if report.current() {
+                    Mark::Success
+                } else {
+                    Mark::Failure
+                },
+                Line::field("Browser CA: ", &report.database).text(format!(
+                    " · {}",
+                    super::ca::trust_state_text(&report.state).1
+                )),
+            )?;
+            if let Some(detail) = report.detail() {
+                output.detail(detail)?;
+            }
+        }
 
         output.section("Managed Resources")?;
         if self.managed_resources.is_empty() {
@@ -415,7 +447,7 @@ impl StatusSnapshot {
 #[derive(Serialize)]
 struct DaemonStatus {
     state: &'static str,
-    launch_agent: &'static str,
+    registration: &'static str,
     socket: &'static str,
     failure: bool,
     #[serde(skip)]
@@ -424,10 +456,12 @@ struct DaemonStatus {
 
 impl DaemonStatus {
     fn read(environment: &impl Environment, paths: &PvPaths) -> Result<Self, ExecuteError> {
-        let launch_agent_path = Utf8PathBuf::from_path_buf(environment.launch_agent_path())
-            .map_err(|path| crate::error::CliError::NonUtf8Path { path })?;
-        let launch_agent = platform::inspect_launch_agent_file(&launch_agent_path, None);
-        let launch_agent_status = launch_agent_status(&launch_agent);
+        let daemon_registration_path =
+            Utf8PathBuf::from_path_buf(environment.daemon_registration_path())
+                .map_err(|path| crate::error::CliError::NonUtf8Path { path })?;
+        let registration =
+            platform::inspect_daemon_registration_file(&daemon_registration_path, None);
+        let daemon_registration_file_status = daemon_registration_file_status(&registration);
         let socket_exists = state::fs::path_exists(&paths.daemon_socket());
         let socket = if !socket_exists {
             "missing"
@@ -436,25 +470,26 @@ impl DaemonStatus {
         } else {
             "unhealthy"
         };
-        let (state, mark) = match &launch_agent {
-            LaunchAgentFileState::Missing { .. } if socket == "missing" => ("disabled", Mark::Idle),
-            LaunchAgentFileState::Missing { .. } if socket == "healthy" => {
+        let (state, mark) = match &registration {
+            DaemonRegistrationFileState::Missing { .. } if socket == "missing" => {
+                ("disabled", Mark::Idle)
+            }
+            DaemonRegistrationFileState::Missing { .. } if socket == "healthy" => {
                 ("socket-only", Mark::Warning)
             }
-            LaunchAgentFileState::Missing { .. } => ("socket-stale", Mark::Failure),
-            LaunchAgentFileState::Current { .. } if socket == "healthy" => {
+            DaemonRegistrationFileState::Missing { .. } => ("socket-stale", Mark::Failure),
+            DaemonRegistrationFileState::Current { .. } if socket == "healthy" => {
                 ("running", Mark::Running)
             }
-            LaunchAgentFileState::Current { .. } => ("down", Mark::Failure),
-            LaunchAgentFileState::Stale { .. } | LaunchAgentFileState::Conflict { .. } => {
-                ("repair-required", Mark::Failure)
-            }
-            LaunchAgentFileState::Unreadable { .. } => ("unknown", Mark::Warning),
+            DaemonRegistrationFileState::Current { .. } => ("down", Mark::Failure),
+            DaemonRegistrationFileState::Stale { .. }
+            | DaemonRegistrationFileState::Conflict { .. } => ("repair-required", Mark::Failure),
+            DaemonRegistrationFileState::Unreadable { .. } => ("unknown", Mark::Warning),
         };
 
         Ok(Self {
             state,
-            launch_agent: launch_agent_status,
+            registration: daemon_registration_file_status,
             socket,
             failure: mark == Mark::Failure,
             mark,
@@ -467,6 +502,8 @@ struct IntegrationStatuses {
     dns: &'static str,
     ports: PfRoutingDiagnostic,
     ca: &'static str,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    browser_ca: Vec<super::ca::BrowserCaReport>,
     #[serde(skip)]
     failure: bool,
     #[serde(skip)]
@@ -504,12 +541,18 @@ impl IntegrationStatuses {
             platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
         let local_metadata = metadata_from_local_ca(&local_ca);
         let trust = ca_trust_state(environment, local_metadata.as_ref());
-        let (ca, ca_mark) = ca_status(&local_ca, &trust);
+        let (ca, mut ca_mark) = ca_status(&local_ca, &trust);
+        let browser_ca =
+            super::ca::browser_ca_reports(environment, paths, local_metadata.as_ref())?;
+        if browser_ca.iter().any(|report| !report.current()) {
+            ca_mark = Mark::Failure;
+        }
 
         Ok(Self {
             dns,
             ports,
             ca,
+            browser_ca,
             failure: [dns_mark, ports_mark, ca_mark].contains(&Mark::Failure),
             dns_mark,
             ports_mark,
@@ -726,13 +769,13 @@ fn project_env_warning_message(observed: &state::ProjectEnvObservedStateRecord) 
         .or_else(|| observed.message.clone())
 }
 
-fn launch_agent_status(state: &LaunchAgentFileState) -> &'static str {
+fn daemon_registration_file_status(state: &DaemonRegistrationFileState) -> &'static str {
     match state {
-        LaunchAgentFileState::Missing { .. } => "missing",
-        LaunchAgentFileState::Current { .. } => "current",
-        LaunchAgentFileState::Stale { .. } => "stale",
-        LaunchAgentFileState::Conflict { .. } => "conflict",
-        LaunchAgentFileState::Unreadable { .. } => "unreadable",
+        DaemonRegistrationFileState::Missing { .. } => "missing",
+        DaemonRegistrationFileState::Current { .. } => "current",
+        DaemonRegistrationFileState::Stale { .. } => "stale",
+        DaemonRegistrationFileState::Conflict { .. } => "conflict",
+        DaemonRegistrationFileState::Unreadable { .. } => "unreadable",
     }
 }
 
@@ -869,12 +912,15 @@ mod tests {
 
     #[test]
     fn running_status_shows_gateway_ports_and_project_attention() -> anyhow::Result<()> {
+        let mut settings = insta::Settings::clone_current();
+        settings.add_filter(DAEMON_REGISTRATION_NAME, "LaunchAgent");
+        let _settings = settings.bind_to_scope();
         let mut snapshot = StatusSnapshot {
             overall: "ok",
             system_failure: false,
             daemon: DaemonStatus {
                 state: "running",
-                launch_agent: "current",
+                registration: "current",
                 socket: "healthy",
                 failure: false,
                 mark: Mark::Running,
@@ -891,6 +937,7 @@ mod tests {
                     observed_at: "2026-09-26T12:00:00Z".to_string(),
                 },
                 ca: "trusted",
+                browser_ca: Vec::new(),
                 failure: false,
                 dns_mark: Mark::Success,
                 ports_mark: Mark::Success,

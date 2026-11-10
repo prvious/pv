@@ -1,10 +1,12 @@
+#[cfg(target_os = "linux")]
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use console::Term;
 
 use crate::prompt::{Answer, Prompt};
@@ -70,20 +72,20 @@ pub trait Environment {
         self.exec(program, args)
     }
 
-    fn launch_agent_path(&self) -> PathBuf {
-        self.home_dir()
-            .unwrap_or_default()
-            .join("Library")
-            .join("LaunchAgents")
-            .join(platform::LAUNCH_AGENT_FILE_NAME)
+    fn daemon_registration_path(&self) -> PathBuf {
+        platform::daemon_registration_path(&self.home_dir().unwrap_or_default())
     }
 
-    fn bootstrap_launch_agent(&self, plist_path: &Utf8Path) -> Result<(), platform::PlatformError> {
-        platform::bootstrap_launch_agent(plist_path)
+    fn enable_daemon_registration(&self, path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::enable_daemon_registration(path)
     }
 
-    fn bootout_launch_agent(&self) -> Result<(), platform::PlatformError> {
-        platform::bootout_launch_agent()
+    fn stop_daemon_registration(&self) -> Result<(), platform::PlatformError> {
+        platform::stop_daemon_registration()
+    }
+
+    fn remove_daemon_registration(&self, path: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::remove_daemon_registration(path)
     }
 
     fn daemon_process_for_stop(
@@ -93,12 +95,16 @@ pub trait Environment {
         daemon::daemon_process_for_stop(paths)
     }
 
-    fn kickstart_launch_agent(&self) -> Result<(), platform::PlatformError> {
-        platform::kickstart_launch_agent()
+    fn restart_daemon_registration(&self) -> Result<(), platform::PlatformError> {
+        platform::restart_daemon_registration()
     }
 
     fn resolver_test_path(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
+    }
+
+    fn os_release_path(&self) -> PathBuf {
+        PathBuf::from("/etc/os-release")
     }
 
     fn inspect_resolver_file(
@@ -138,6 +144,57 @@ pub trait Environment {
 
     fn pf_conf_path(&self) -> PathBuf {
         PathBuf::from(platform::SYSTEM_PF_CONF_PATH)
+    }
+
+    fn platform_target(&self) -> Result<platform::PlatformTarget, platform::PlatformError> {
+        platform::PlatformTarget::current()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn check_linux_setup_host(&self) -> Result<(), platform::PlatformError> {
+        platform::check_linux_setup_host()
+    }
+
+    fn check_linux_resolved_stub(&self) -> Result<(), platform::PlatformError> {
+        Ok(())
+    }
+
+    #[cfg(target_os = "linux")]
+    fn socket_proxy_directory(&self) -> PathBuf {
+        PathBuf::from(platform::SYSTEM_SOCKET_PROXY_DIRECTORY)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn socket_proxy_files_current(
+        &self,
+        config: &platform::PfRedirectConfig,
+        prepared_directory: &Utf8Path,
+        installed_directory: &Utf8Path,
+    ) -> bool {
+        platform::socket_proxy_files_current(config, prepared_directory, installed_directory)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn repairable_socket_proxy_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
+        platform::repairable_socket_proxy_ports()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn install_socket_proxy_units(
+        &self,
+        config: &platform::PfRedirectConfig,
+    ) -> Result<(), platform::PlatformError> {
+        platform::PrivilegedHelperClient.apply_pf(config)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn remove_socket_proxy_units(&self) -> Result<(), platform::PlatformError> {
+        platform::PrivilegedHelperClient.remove_pf()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn socket_proxy_units_absent(&self) -> Result<bool, platform::PlatformError> {
+        platform::socket_proxy_units_absent()
     }
 
     fn loopback_tcp_port_available(&self, port: u16) -> bool {
@@ -229,6 +286,33 @@ pub trait Environment {
         platform::remove_privileged_helper()
     }
 
+    fn browser_ca_databases(
+        &self,
+        _home: &Utf8Path,
+    ) -> Result<Vec<Utf8PathBuf>, platform::PlatformError> {
+        Ok(Vec::new())
+    }
+
+    fn inspect_browser_ca_trust(
+        &self,
+        database: &Utf8Path,
+        metadata: Option<&platform::LocalCaMetadata>,
+    ) -> platform::TrustDomainState {
+        platform::inspect_browser_ca_trust(database, metadata)
+    }
+
+    fn trust_browser_ca(
+        &self,
+        database: &Utf8Path,
+        certificate: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
+        platform::trust_browser_ca(database, certificate)
+    }
+
+    fn untrust_browser_ca(&self, database: &Utf8Path) -> Result<(), platform::PlatformError> {
+        platform::untrust_browser_ca(database)
+    }
+
     fn trust_system_ca(&self, certificate_path: &Utf8Path) -> Result<(), platform::PlatformError> {
         platform::trust_system_ca(certificate_path)
     }
@@ -279,6 +363,23 @@ pub(crate) fn app_update_manifest_url(environment: &impl Environment) -> String 
 pub struct ProcessEnvironment;
 
 impl Environment for ProcessEnvironment {
+    #[cfg(target_os = "linux")]
+    fn check_linux_resolved_stub(&self) -> Result<(), platform::PlatformError> {
+        platform::check_linux_resolved_stub()
+    }
+
+    fn browser_ca_databases(
+        &self,
+        home: &Utf8Path,
+    ) -> Result<Vec<Utf8PathBuf>, platform::PlatformError> {
+        let config_home = self
+            .var_os("XDG_CONFIG_HOME")
+            .and_then(|path| Utf8PathBuf::from_path_buf(path.into()).ok())
+            .filter(|path| path.is_absolute())
+            .unwrap_or_else(|| home.join(".config"));
+        platform::browser_ca_databases(home, &config_home)
+    }
+
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
         platform::PrivilegedHelperClient.inspect_low_ports()
     }
@@ -393,6 +494,7 @@ mod tests {
     #[derive(Debug, Default)]
     struct TestEnvironment {
         vars: BTreeMap<String, OsString>,
+        home: Option<PathBuf>,
     }
 
     impl TestEnvironment {
@@ -414,7 +516,7 @@ mod tests {
         }
 
         fn home_dir(&self) -> Option<PathBuf> {
-            None
+            self.home.clone()
         }
 
         fn current_dir(&self) -> io::Result<PathBuf> {

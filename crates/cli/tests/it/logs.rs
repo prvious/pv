@@ -89,14 +89,17 @@ fn logs_defaults_to_daemon_sources() -> anyhow::Result<()> {
     let paths = PvPaths::for_home(home.clone());
     let environment = TestEnvironment::new(&home);
     write_log(&paths.logs().join("daemon.log"), "daemon one\ndaemon two\n")?;
-    write_log(&paths.logs().join("launchd.out.log"), "stdout one\n")?;
-    write_log(&paths.logs().join("launchd.err.log"), "stderr one\n")?;
+    write_log(&paths.daemon_registration_stdout_log(), "stdout one\n")?;
+    write_log(&paths.daemon_registration_stderr_log(), "stderr one\n")?;
 
     let output = run_pv(&["logs", "-n", "1"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(output.stderr.is_empty());
-    assert_debug_snapshot!(output);
+    // Linux labels the same sources after systemd instead of launchd.
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter("systemd:", "launchd:");
+    settings.bind(|| assert_debug_snapshot!(output));
 
     Ok(())
 }

@@ -2,18 +2,26 @@ mod browser;
 mod ca;
 mod capability;
 pub mod clock;
+#[cfg(any(target_os = "macos", target_os = "linux", all(test, unix)))]
 mod command;
+mod daemon_registration;
 mod error;
 mod helper;
 pub mod hooks;
-mod launch_agent;
+#[cfg(target_os = "linux")]
+mod linux_host;
 mod low_port;
 mod pf;
 mod port;
 mod process;
 mod resolver;
+#[cfg(target_os = "linux")]
+mod systemd;
 mod target;
 mod trust;
+
+#[cfg(target_os = "linux")]
+pub use process::inspect_process_comm;
 
 pub use browser::open_url;
 pub use ca::{
@@ -22,24 +30,37 @@ pub use ca::{
     project_certificate_matches,
 };
 pub use capability::{PlatformCapability, require_capability};
+pub use daemon_registration::{
+    DAEMON_REGISTRATION_FILE_NAME, DAEMON_REGISTRATION_LABEL, DAEMON_REGISTRATION_NAME,
+    DaemonRegistrationConfig, DaemonRegistrationFileState, daemon_registration_enabled,
+    daemon_registration_path, enable_daemon_registration, inspect_daemon_registration_file,
+    remove_daemon_registration, restart_daemon_registration, stop_daemon_registration,
+    write_daemon_registration_file,
+};
 pub use error::PlatformError;
+#[cfg(target_os = "linux")]
+pub use helper::run_privileged_helper_lifecycle;
+
 pub use helper::{
     HELPER_EXECUTABLE_PATH, HELPER_LAUNCH_DAEMON_PATH, HELPER_METADATA_PATH,
     HELPER_PROTOCOL_VERSION, HELPER_SOCKET_PATH, PRIVILEGED_HELPER_VERSION, PrivilegedHelperClient,
     PrivilegedHelperInstallOutcome, PrivilegedHelperStatus, install_privileged_helper,
     remove_privileged_helper, serve_privileged_helper,
 };
-pub use launch_agent::{
-    LAUNCH_AGENT_FILE_NAME, LAUNCH_AGENT_LABEL, LaunchAgentConfig, LaunchAgentFileState,
-    bootout_launch_agent, bootstrap_launch_agent, inspect_launch_agent_file,
-    kickstart_launch_agent, launch_agent_path, remove_launch_agent_file, write_launch_agent_file,
-};
+#[cfg(target_os = "linux")]
+pub use linux_host::{check_linux_resolved_stub, check_linux_setup_host};
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
 pub use pf::{
     ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
     SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH, active_pf_redirect_config,
     inspect_active_pf_redirects_unprivileged, inspect_pf_anchor_file, inspect_pf_conf_reference,
     install_pf_redirects, remove_pf_redirects,
+};
+#[cfg(target_os = "linux")]
+pub use pf::{
+    SYSTEM_SOCKET_PROXY_DIRECTORY, inspect_socket_proxy_unit, render_socket_proxy_units,
+    repairable_socket_proxy_ports, socket_proxy_files_current, socket_proxy_unit_names,
+    socket_proxy_units_absent,
 };
 pub use port::loopback_tcp_port_available;
 pub use process::{
@@ -48,13 +69,16 @@ pub use process::{
     inspect_process_start_identity, process_group_has_live_members, process_is_zombie,
 };
 pub use resolver::{
-    ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH, inspect_resolver_file,
-    install_resolver_config, remove_resolver_config,
+    DNS_LISTEN_ADDRESS, ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH,
+    inspect_resolver_file, install_resolver_config, remove_resolver_config,
 };
+#[cfg(target_os = "linux")]
+pub use resolver::{start_resolver_link, stop_resolver_link};
 pub use target::PlatformTarget;
 pub use trust::{
     KeychainCertificate, KeychainTrustResult, NativeSystemTrustInspector, SystemTrustInspector,
-    TrustDomainState, inspect_system_ca_trust, trust_system_ca, trusted_pv_ca_fingerprints,
+    TrustDomainState, browser_ca_databases, inspect_browser_ca_trust, inspect_system_ca_trust,
+    trust_browser_ca, trust_system_ca, trusted_pv_ca_fingerprints, untrust_browser_ca,
     untrust_system_ca,
 };
 

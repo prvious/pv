@@ -115,9 +115,10 @@ warns after 60 seconds, terminates a wedged test after 120 seconds, and allows
 with intentionally longer limits.
 
 CI records each test run and uploads it as a `nextest-run-<runner>` artifact
-holding every test's duration and output. CI pins nextest 0.9.146 because the
-recording format is experimental, so use the same version locally. To see where
-time goes, download a recording and open its trace in
+holding every test's duration and output. Native Linux daemon registration
+tests have a separate `nextest-system-run-<runner>` artifact. CI pins nextest
+0.9.146 because the recording format is experimental, so use the same version
+locally. To see where time goes, download a recording and open its trace in
 [Perfetto](https://ui.perfetto.dev):
 
 ```shell
@@ -223,6 +224,81 @@ fn write_atomically(...) {
 ```
 
 Do not add broad Clippy ignores for convenience.
+
+## Linux development
+
+Build the pinned Ubuntu 22.04 builder on the host's native architecture:
+
+```shell
+docker build -f scripts/linux/builder.Dockerfile -t pv-linux-builder .
+docker run --rm --init --volume "$PWD:/src:ro" \
+  --mount type=volume,src=pv-linux-target,dst=/target \
+  --env CARGO_TARGET_DIR=/target --workdir /src pv-linux-builder \
+  cargo nextest run --profile ci --workspace --all-features --locked
+```
+
+The builder includes Rust, nextest 0.9.146 and native build tools. It runs as
+an ordinary user and provides the glibc 2.35 baseline. Apple Silicon runs ARM64
+locally; amd64 uses native CI.
+
+Use a disposable systemd container for system integration:
+
+```shell
+docker build -f scripts/linux/test.Dockerfile --build-arg BASE=ubuntu:22.04 \
+  -t pv-linux-test:ubuntu-22.04 .
+bash scripts/linux/container.sh up ubuntu-22.04
+bash scripts/linux/container.sh exec ubuntu-22.04 bash -c 'id; systemctl --user status'
+bash scripts/linux/container.sh down ubuntu-22.04
+```
+
+Containers mount the source read-only. Test-only linger applies to their user.
+Run `shellcheck scripts/linux/*.sh` when changing the scripts.
+
+For Linux acceptance, dispatch `artifact-recipes.yml` on the branch with
+`resource=all`, `track=all` and `platform=all-linux`. That run builds every
+Linux resource and Composer, then runs every resource track through install,
+setup and uninstall on Ubuntu 22.04/24.04/26.04, Debian 12/13 and Fedora 43/44
+for both CPUs, uploading each pair's step logs. To re-test acceptance changes
+without rebuilding, dispatch it again with `acceptance_run_id` set to that
+run. These workflows build and test; publishing stays a separate owner action.
+
+To test another distribution/CPU pair, add it to the acceptance matrix, then
+list it in DESIGN.md once acceptance passes on it.
+
+The daemon-registration system test requires a disposable user's real user
+manager and refuses an existing PV home, unit file, or loaded service. Build PV
+and the daemon examples first, then run as that user with its session-bus
+environment intact:
+
+```shell
+cargo build --locked -p pv -p daemon --examples --bins
+PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_PV="$PWD/target/debug/pv" \
+  cargo nextest run --profile ci --locked -p cli -p daemon --run-ignored only \
+  -E 'test(/^linux_daemon_registration_system::/)'
+```
+
+The helper lifecycle test needs a fresh disposable systemd machine and a
+non-root account with passwordless sudo. Build `pv-helper`, then run:
+
+```shell
+PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_HELPER="$PWD/target/debug/pv-helper" \
+  cargo nextest run --profile ci --locked -p cli --run-ignored only -E 'test(/^linux_helper_system::/)'
+```
+
+The socket-proxy system test uses the same bounded service and requires free
+loopback ports 80 and 443. Build the daemon examples with
+`cargo build --locked -p daemon --examples`, then select:
+
+```shell
+-E 'test(=ports_system::systemd_socket_proxies_route_gateway_identity_repair_and_refuse_foreign_units)'
+```
+
+It runs a monitored native fake Caddy with a real test CA, verifies HTTP and HTTPS
+Gateway identity through the proxies, and checks repair, foreign ownership,
+repeated removal, and the limits of loaded socket and command metadata after
+reload. Its independent 140-second timer stops accepted helper work before
+removing only preflight-absent fixture units and files. Nextest serializes all
+tests in this helper-system binary; separate invocations must also remain serial.
 
 ## Crate structure
 

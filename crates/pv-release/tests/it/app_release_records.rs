@@ -114,7 +114,7 @@ fn app_release_records_reject_invalid_record_metadata() -> Result<()> {
                 "invalid-platform.json",
                 PV_APP_ARM64.replace(
                     "\"platform\": \"darwin-arm64\"",
-                    "\"platform\": \"linux-amd64\"",
+                    "\"platform\": \"windows-amd64\"",
                 ),
             )],
         },

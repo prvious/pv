@@ -283,10 +283,12 @@ fn open_without_hostname_uses_current_project_primary_hostname() -> anyhow::Resu
 #[test]
 fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let resource_only = tempdir.path().join("resources");
-    let served = tempdir.path().join("web");
-    let outside = tempdir.path().join("outside");
+    // Linked projects are stored by resolved path, so the current directory must be resolved too.
+    let root = state::fs::canonicalize(tempdir.path())?;
+    let home = root.join("home");
+    let resource_only = root.join("resources");
+    let served = root.join("web");
+    let outside = root.join("outside");
     create_dir(&resource_only)?;
     create_dir(&served)?;
     create_dir(&outside)?;
@@ -310,8 +312,7 @@ fn open_rejects_resource_only_target_and_excludes_it_from_picker() -> anyhow::Re
     assert_eq!(opened_urls, ["https://web.test"]);
     assert!(!picker_open.stdout.contains("resources"));
     let mut settings = insta::Settings::clone_current();
-    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
-    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.add_filter(root.as_str(), "<tempdir>");
     settings.bind(|| {
         assert_debug_snapshot!((
             link_resource_only,

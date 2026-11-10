@@ -98,7 +98,7 @@ jobs:
             fi
 
             case "$trimmed_platform" in
-              darwin-arm64 | darwin-amd64) ;;
+              darwin-arm64 | darwin-amd64 | linux-amd64 | linux-arm64) ;;
               *)
                 printf '%s\n' "unsupported required native platform: $trimmed_platform" >&2
                 exit 1

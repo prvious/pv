@@ -46,14 +46,12 @@ pub(crate) fn require_capability_for(
     capability: PlatformCapability,
 ) -> Result<(), PlatformError> {
     match target {
-        PlatformTarget::Macos => Ok(()),
-        PlatformTarget::Linux | PlatformTarget::Windows => {
-            Err(PlatformError::Unsupported { capability, target })
-        }
+        PlatformTarget::Macos | PlatformTarget::Linux => Ok(()),
+        PlatformTarget::Windows => Err(PlatformError::Unsupported { capability, target }),
     }
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub(crate) fn unsupported(capability: PlatformCapability) -> Result<PlatformError, PlatformError> {
     Ok(PlatformError::Unsupported {
         capability,

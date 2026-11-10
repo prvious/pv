@@ -11,11 +11,25 @@ need() {
 }
 
 sha256_file() (
-  checksum_output=$(shasum -a 256 "$1") || die "failed to calculate SHA-256 for $1"
+  checksum_output=$(
+    if command -v sha256sum >/dev/null 2>&1; then
+      sha256sum "$1"
+    else
+      shasum -a 256 "$1"
+    fi
+  ) || die "failed to calculate SHA-256 for $1"
   checksum=${checksum_output%% *}
   [ -n "$checksum" ] || die "SHA-256 output was empty for $1"
   printf '%s\n' "$checksum"
 )
+
+cpu_count() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+  else
+    sysctl -n hw.ncpu
+  fi
+}
 
 require_sha256() {
   file=$1
@@ -28,6 +42,16 @@ pv_recipe_openssl_configure_target_for_platform() {
   case "$1" in
     darwin-arm64) printf '%s\n' darwin64-arm64-cc ;;
     darwin-amd64) printf '%s\n' darwin64-x86_64-cc ;;
+    linux-amd64) printf '%s\n' linux-x86_64 ;;
+    linux-arm64) printf '%s\n' linux-aarch64 ;;
+    *) die "unsupported OpenSSL artifact platform: $1" ;;
+  esac
+}
+
+pv_recipe_openssl_library_names_for_platform() {
+  case "$1" in
+    darwin-arm64 | darwin-amd64) printf '%s\n' 'libssl.3.dylib libcrypto.3.dylib' ;;
+    linux-amd64 | linux-arm64) printf '%s\n' 'libssl.so.3 libcrypto.so.3' ;;
     *) die "unsupported OpenSSL artifact platform: $1" ;;
   esac
 }
@@ -38,11 +62,21 @@ pv_recipe_validate_openssl_prefix() (
   deployment_target=$3
 
   [ -f "$openssl_prefix/include/openssl/ssl.h" ] || die "OpenSSL headers not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libssl.3.dylib" ] || die "OpenSSL shared SSL library not found under $openssl_prefix"
-  [ -f "$openssl_prefix/lib/libcrypto.3.dylib" ] || die "OpenSSL shared crypto library not found under $openssl_prefix"
+  libraries=$(pv_recipe_openssl_library_names_for_platform "$platform")
+  for library_name in $libraries; do
+    [ -f "$openssl_prefix/lib/$library_name" ] || die "OpenSSL shared library $library_name not found under $openssl_prefix"
+  done
   [ -f "$openssl_prefix/LICENSE.txt" ] || die "OpenSSL license not found under $openssl_prefix"
 
-  for library in "$openssl_prefix/lib/libssl.3.dylib" "$openssl_prefix/lib/libcrypto.3.dylib"; do
+  case "$platform" in
+    linux-amd64 | linux-arm64)
+      pv_recipe_validate_elf_tree "$openssl_prefix/lib" "$platform"
+      return
+      ;;
+  esac
+
+  for library_name in $libraries; do
+    library="$openssl_prefix/lib/$library_name"
     pv_recipe_validate_macho_architecture_and_target "$library" "$platform" "$deployment_target"
     linked_libraries=$(otool -L "$library") || die "failed to inspect OpenSSL linked libraries for $library"
     linked_library_paths=$(awk 'NR > 1 && NF > 0 { print $1 }' <<EOF
@@ -94,29 +128,45 @@ pv_recipe_build_openssl_dependency() (
 
   (
     cd "$openssl_source_dir"
-    MACOSX_DEPLOYMENT_TARGET="$deployment_target" \
-      perl ./Configure "$openssl_configure_target" no-tests \
+    set --
+    case "$platform" in
+      darwin-arm64 | darwin-amd64) export MACOSX_DEPLOYMENT_TARGET="$deployment_target" ;;
+      linux-amd64 | linux-arm64)
+        need patchelf
+        set -- --libdir=lib
+        ;;
+    esac
+    perl ./Configure "$openssl_configure_target" no-tests "$@" \
       --prefix="$openssl_prefix" \
       --openssldir="$openssl_dir"
-    MACOSX_DEPLOYMENT_TARGET="$deployment_target" make -j "$build_jobs"
-    MACOSX_DEPLOYMENT_TARGET="$deployment_target" make install_sw
+    make -j "$build_jobs"
+    make install_sw
   )
 
   cp "$openssl_source_dir/LICENSE.txt" "$openssl_prefix/LICENSE.txt"
+  case "$platform" in
+    linux-amd64 | linux-arm64)
+      libraries=$(pv_recipe_openssl_library_names_for_platform "$platform")
+      for library_name in $libraries; do
+        patchelf --set-rpath "\$ORIGIN" "$openssl_prefix/lib/$library_name"
+      done
+      ;;
+  esac
   pv_recipe_validate_openssl_prefix "$openssl_prefix" "$platform" "$deployment_target"
 )
 
-pv_recipe_macho_loader_prefix() {
+pv_recipe_library_loader_prefix() {
   root_dir=$1
-  macho=$2
+  binary=$2
+  loader_origin=$3
 
-  case "$macho" in
+  case "$binary" in
     "$root_dir"/lib/*)
-      relative=${macho#"$root_dir"/lib/}
+      relative=${binary#"$root_dir"/lib/}
       case "$relative" in
         */*)
           directory=${relative%/*}
-          loader_prefix="@loader_path"
+          loader_prefix=$loader_origin
           # Nested lib modules need enough ".." hops to resolve back to the artifact lib root.
           while :; do
             loader_prefix="$loader_prefix/.."
@@ -127,12 +177,41 @@ pv_recipe_macho_loader_prefix() {
           done
           printf '%s\n' "$loader_prefix"
           ;;
-        *) printf '%s\n' "@loader_path" ;;
+        *) printf '%s\n' "$loader_origin" ;;
       esac
       ;;
-    *) printf '%s\n' "@loader_path/../lib" ;;
+    *) printf '%s\n' "$loader_origin/../lib" ;;
   esac
 }
+
+pv_recipe_normalize_elf_tree() (
+  root_dir=$1
+
+  artifact_files=$(find "$root_dir" -type f) || die "failed to list artifact files"
+  while IFS= read -r binary; do
+    description=$(file -E -b -- "$binary") || die "failed to inspect artifact file $binary"
+    case "$description" in ELF\ *) ;; *) continue ;; esac
+    dynamic=$(readelf --wide --dynamic -- "$binary") || die "failed to inspect artifact ELF $binary"
+    soname=$(printf '%s\n' "$dynamic" | awk '$2 == "(SONAME)" { sub(/^.*\[/, ""); sub(/\].*$/, ""); print }') || die "failed to parse artifact ELF SONAME for $binary"
+    [ -n "$soname" ] || continue
+    case "$soname" in */* | . | ..) die "invalid artifact ELF SONAME for $binary: $soname" ;; esac
+    [ "${binary##*/}" != "$soname" ] || continue
+    soname_file="${binary%/*}/$soname"
+    cmp -s "$binary" "$soname_file" || die "artifact ELF alias does not match its SONAME file: $binary -> $soname_file"
+    rm "$binary"
+  done <<EOF
+$artifact_files
+EOF
+  artifact_files=$(find "$root_dir" -type f) || die "failed to list normalized artifact files"
+  while IFS= read -r binary; do
+    description=$(file -E -b -- "$binary") || die "failed to inspect artifact file $binary"
+    case "$description" in ELF\ *) ;; *) continue ;; esac
+    runpath=$(pv_recipe_library_loader_prefix "$root_dir" "$binary" "\$ORIGIN")
+    patchelf --set-rpath "$runpath" "$binary"
+  done <<EOF
+$artifact_files
+EOF
+)
 
 pv_recipe_is_macho() (
   file_description=$(file -b "$1") || die "failed to inspect file type for $1"
@@ -189,7 +268,7 @@ $1"
     [ -d "$macho_dir" ] || continue
     find "$macho_dir" -type f | while IFS= read -r macho; do
       pv_recipe_is_macho "$macho" || continue
-      loader_prefix=$(pv_recipe_macho_loader_prefix "$root_dir" "$macho")
+      loader_prefix=$(pv_recipe_library_loader_prefix "$root_dir" "$macho" @loader_path)
       otool -L "$macho" | while read -r linked _; do
         for install_root in "$@"; do
           case "$linked" in
@@ -230,7 +309,8 @@ pv_recipe_ad_hoc_sign_macho_tree() {
 expected_arch_for_platform() {
   case "$1" in
     darwin-arm64) printf '%s\n' arm64 ;;
-    darwin-amd64) printf '%s\n' x86_64 ;;
+    darwin-amd64 | linux-amd64) printf '%s\n' x86_64 ;;
+    linux-arm64) printf '%s\n' aarch64 ;;
     *) die "unsupported native artifact platform: $1" ;;
   esac
 }
@@ -394,6 +474,108 @@ sign_macho_binary() {
 pv_recipe_validate_macho_binary() {
   validate_macho_binary "$@"
 }
+
+pv_recipe_validate_elf_tree() (
+  root_dir=$1
+  platform=$2
+  export LC_ALL=C
+
+  case "$platform" in
+    linux-amd64 | linux-arm64) ;;
+    *) die "unsupported ELF artifact platform: $platform" ;;
+  esac
+  expected_arch=$(expected_arch_for_platform "$platform")
+  need find
+  need file
+  need readelf
+  need awk
+  [ -d "$root_dir" ] || die "ELF artifact directory not found: $root_dir"
+  artifact_files=$(find "$root_dir" -type f) || die "failed to list ELF artifact files under $root_dir"
+  [ -n "$artifact_files" ] || return 0
+
+  while IFS= read -r binary; do
+    description=$(file -E -b -- "$binary") || die "failed to inspect file type for $binary"
+    case "$description" in
+      ELF\ *) ;;
+      *) continue ;;
+    esac
+    headers=$(readelf --wide --file-header -- "$binary") || die "failed to inspect ELF header for $binary"
+    machine=$(awk '$1 == "Machine:" { sub(/^.*Machine:[[:space:]]*/, ""); print }' <<EOF
+$headers
+EOF
+    ) || die "failed to parse ELF architecture for $binary"
+    case "$machine" in
+      "Advanced Micro Devices X86-64") actual_arch=x86_64 ;;
+      AArch64) actual_arch=aarch64 ;;
+      *) actual_arch=$machine ;;
+    esac
+    [ "$actual_arch" = "$expected_arch" ] || die "$binary ELF architecture $actual_arch does not match expected $expected_arch for $platform"
+
+    versions=$(readelf --wide --version-info -- "$binary") || die "failed to inspect ELF symbol versions for $binary"
+    glibc_versions=$(awk '{ for (field_index = 1; field_index <= NF; field_index++) if ($field_index ~ /^GLIBC_[0-9]+(\.[0-9]+)*$/ || $field_index == "GLIBC_ABI_DT_RELR") print $field_index }' <<EOF
+$versions
+EOF
+    ) || die "failed to parse ELF symbol versions for $binary"
+    if [ -n "$glibc_versions" ]; then
+      while IFS= read -r glibc_version; do
+        [ "$glibc_version" != GLIBC_ABI_DT_RELR ] || die "$binary ELF symbol version $glibc_version requires glibc 2.36"
+        version_lte "${glibc_version#GLIBC_}" 2.35 || die "$binary ELF symbol version $glibc_version is newer than GLIBC_2.35"
+      done <<EOF
+$glibc_versions
+EOF
+    fi
+
+    dynamic=$(readelf --wide --dynamic -- "$binary") || die "failed to inspect ELF dynamic section for $binary"
+    dynamic_entries=$(awk '
+      $2 == "(NEEDED)" || $2 == "(RPATH)" || $2 == "(RUNPATH)" {
+        value = substr($0, index($0, "[") + 1)
+        sub(/\]$/, "", value)
+        print $2 ":" value
+      }
+    ' <<EOF
+$dynamic
+EOF
+    ) || die "failed to parse ELF dynamic section for $binary"
+    [ -n "$dynamic_entries" ] || continue
+    while IFS= read -r dynamic_entry; do
+      value=${dynamic_entry#*:}
+      case "$dynamic_entry" in
+        '(NEEDED):'*)
+          case "$value" in
+            libc.so.6 | libm.so.6 | libpthread.so.0 | libdl.so.2 | librt.so.1 | libresolv.so.2 | ld-linux-x86-64.so.2 | ld-linux-aarch64.so.1 | libgcc_s.so.1 | libstdc++.so.6) continue ;;
+          esac
+          bundled=false
+          while IFS= read -r artifact_file; do
+            if [ "${artifact_file##*/}" = "$value" ]; then
+              bundled=true
+              break
+            fi
+          done <<EOF
+$artifact_files
+EOF
+          [ "$bundled" = true ] || die "$binary ELF dependency is not a system library or bundled file: $value"
+          ;;
+        '(RPATH):'* | '(RUNPATH):'*)
+          while :; do
+            search_path=${value%%:*}
+            case "$search_path" in
+              "\$ORIGIN" | "\$ORIGIN/"* | "\${ORIGIN}" | "\${ORIGIN}/"*) ;;
+              *) die "$binary ELF library search path is not ORIGIN-relative: $search_path" ;;
+            esac
+            case "$value" in
+              *:*) value=${value#*:} ;;
+              *) break ;;
+            esac
+          done
+          ;;
+      esac
+    done <<EOF
+$dynamic_entries
+EOF
+  done <<EOF
+$artifact_files
+EOF
+)
 
 artifact_basename() {
   resource=$1

@@ -51,7 +51,7 @@ fn backing_recipe_metadata_rejects_invalid_shapes() -> Result<()> {
     let wrong_resource =
         VALID_REDIS_TOML.replace("resources = [\"redis\"]", "resources = [\"mysql\"]");
     let missing_platform = VALID_REDIS_TOML.replace(
-        "platforms = [\"darwin-arm64\", \"darwin-amd64\"]",
+        "platforms = [\"darwin-arm64\", \"darwin-amd64\", \"linux-amd64\", \"linux-arm64\"]",
         "platforms = [\"darwin-arm64\"]",
     );
     let missing_default_track =
@@ -388,7 +388,7 @@ const VALID_PHP_TOML: &str = r#"
 [recipe]
 resources = ["php", "frankenphp"]
 default_track = "8.4"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv2"
 license_files = ["LICENSE"]
@@ -442,7 +442,7 @@ const VALID_REDIS_TOML: &str = r#"
 [recipe]
 resources = ["redis"]
 default_track = "8.2"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]
@@ -462,7 +462,7 @@ const VALID_MAILPIT_TOML: &str = r#"
 [recipe]
 resources = ["mailpit"]
 default_track = "1"
-platforms = ["darwin-arm64", "darwin-amd64"]
+platforms = ["darwin-arm64", "darwin-amd64", "linux-amd64", "linux-arm64"]
 minimum_pv_version = "0.1.0"
 pv_build_revision = "pv1"
 license_files = ["LICENSE"]
@@ -484,4 +484,14 @@ source_sha256 = "1cce392a19a6093fcc859aeb87d9999671fed9a0a7a1c227a7f7df6307741be
 platform = "darwin-amd64"
 source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-darwin-amd64.tar.gz"
 source_sha256 = "a2d7df1b34967e51604b42136260789b75a45233a03c9dc773b98024e1390974"
+
+[[tracks.sources]]
+platform = "linux-amd64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-amd64.tar.gz"
+source_sha256 = "0c7f96daad083977ee49a41ada6376799b998c82f98840ef8962b95fb2230955"
+
+[[tracks.sources]]
+platform = "linux-arm64"
+source_url = "https://github.com/axllent/mailpit/releases/download/v1.30.1/mailpit-linux-arm64.tar.gz"
+source_sha256 = "fdc4b97a9047f4eed875e8b1902db0074916d66d51a27856655c1f9f7f40f150"
 "#;

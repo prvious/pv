@@ -105,7 +105,7 @@ expression: errors
     InvalidManifestSnapshot {
         name: "unsupported_platform",
         error: UnsupportedPlatform {
-            platform: "linux-amd64",
+            platform: "windows-amd64",
         },
     },
     InvalidManifestSnapshot {

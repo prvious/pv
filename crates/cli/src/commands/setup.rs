@@ -87,12 +87,14 @@ pub(crate) fn setup(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
+    let linux = cfg!(target_os = "linux");
     let paths = pv_paths(environment)?;
     state::fs::ensure_layout(&paths)?;
+    let authentication = if linux { "sudo" } else { "macOS" };
 
     streams
         .out
-        .flow_start("setup", "PV setup", Some("macOS integration"))?;
+        .flow_start("setup", "PV setup", Some("system integration"))?;
     streams.out.flow_step(
         Mark::Done,
         Line::field("Ensured PV state layout: ", paths.root()),
@@ -112,7 +114,9 @@ pub(crate) fn setup(
             environment,
             streams,
             CliError::HelperConfirmationRequired,
-            "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. macOS will ask for your password.",
+            &format!(
+                "Allow PV to configure local HTTPS and .test domains?\nInstalls PV's administrator helper. {authentication} will ask for your password."
+            ),
             true,
         )?
     {
@@ -139,7 +143,11 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step(
-        "port redirect setup",
+        if linux {
+            "socket proxy setup"
+        } else {
+            "port redirect setup"
+        },
         streams,
         &mut replay_error,
         |streams| ports::install(environment, streams),
@@ -171,7 +179,11 @@ pub(crate) fn setup(
             Mark::Success,
             "Local HTTPS, .test domains and startup configured",
         )?;
-        output.detail("DNS resolver · port redirect · CA trust · daemon registration")?;
+        output.detail(if linux {
+            "DNS resolver · socket proxy · CA trust · daemon registration"
+        } else {
+            "DNS resolver · port redirect · CA trust · daemon registration"
+        })?;
     }
 
     let summary = Line::from("System reconciliation completed: ")
@@ -377,7 +389,7 @@ pub(crate) fn uninstall(
     let subtitle = if args.prune {
         "--prune"
     } else {
-        "macOS integration"
+        "system integration"
     };
     streams
         .out
@@ -402,7 +414,11 @@ pub(crate) fn uninstall(
     // listens on it. The daemon is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
     if !run_required_step(
-        "port redirect removal",
+        if cfg!(target_os = "linux") {
+            "socket proxy removal"
+        } else {
+            "port redirect removal"
+        },
         streams,
         &mut replay_error,
         |streams| ports::uninstall(environment, streams),
@@ -462,7 +478,7 @@ fn run_required_step(
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
     let active_label = match label {
-        "port redirect setup" => "Configuring local HTTP and HTTPS",
+        "port redirect setup" | "socket proxy setup" => "Configuring local HTTP and HTTPS",
         "CA trust setup" => "Trust local HTTPS certificates",
         "daemon registration" => "Start PV at login",
         _ => label,
@@ -494,7 +510,7 @@ fn run_required_step(
     let displayed_label = if succeeded {
         match label {
             "DNS resolver setup" => ".test domains configured",
-            "port redirect setup" => "Local HTTP and HTTPS configured",
+            "port redirect setup" | "socket proxy setup" => "Local HTTP and HTTPS configured",
             "CA trust setup" => "Local HTTPS certificates trusted",
             "daemon registration" => "PV starts at login",
             _ => label,
@@ -881,21 +897,24 @@ fn untrust_ca_for_uninstall(
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
 
     if matches!(local_state, CaFileState::Missing { .. }) {
+        let system_store = ca::SYSTEM_STORE_LABEL;
         let fingerprints = trusted_pv_ca_fingerprints(environment)?;
         let output = &mut streams.out;
         if fingerprints.is_empty() {
-            output
-                .note("PV local CA files are absent; System keychain trust is already absent.")?;
-
-            return Ok(ExitCode::SUCCESS);
+            output.note(format!(
+                "PV local CA files are absent; {system_store} trust is already absent."
+            ))?;
         }
-
         for fingerprint in fingerprints {
             environment.untrust_system_ca(&fingerprint)?;
             output.success(Line::field(
-                "Removed stale PV local CA trust from the System keychain: ",
+                &format!("Removed stale PV local CA trust from the {system_store}: "),
                 &fingerprint,
             ))?;
+        }
+        for database in environment.browser_ca_databases(paths.home())? {
+            environment.untrust_browser_ca(&database)?;
+            output.success(Line::field("Removed PV browser CA trust: ", &database))?;
         }
 
         return Ok(ExitCode::SUCCESS);
@@ -968,6 +987,8 @@ fn delete_optional_dir(path: &Utf8Path) -> Result<bool, ExecuteError> {
 
 fn shell_profile_path(home: &Utf8Path, shell: Shell) -> Utf8PathBuf {
     match shell {
+        Shell::Bash if cfg!(target_os = "linux") => home.join(".bashrc"),
+        Shell::Zsh if cfg!(target_os = "linux") => home.join(".zshrc"),
         Shell::Bash => home.join(".bash_profile"),
         Shell::Fish => home.join(".config/fish/config.fish"),
         Shell::Zsh => home.join(".zprofile"),

@@ -4,7 +4,7 @@ expression: output.stdout
 ---
 [pv] setup
 
-┌  PV setup  ·  macOS integration
+┌  PV setup  ·  system integration
 │
 ◇  Ensured PV state layout: <tempdir>/home/.pv
 │

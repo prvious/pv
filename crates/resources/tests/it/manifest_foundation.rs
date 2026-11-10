@@ -65,8 +65,14 @@ fn platform_matching_prefers_exact_matches_over_any() -> Result<()> {
     assert!(ArtifactPlatform::new("darwin-arm64")?.matches(target));
     assert!(ArtifactPlatform::new("any")?.matches(target));
     assert!(!ArtifactPlatform::new("darwin-amd64")?.matches(target));
-    assert!(ArtifactPlatform::new("linux-amd64").is_err());
-    assert!(TargetPlatform::new("linux-amd64").is_err());
+    for platform in ["linux-amd64", "linux-arm64"] {
+        let linux = TargetPlatform::new(platform)?;
+        assert!(ArtifactPlatform::new(platform)?.matches(linux));
+        assert!(ArtifactPlatform::Any.matches(linux));
+        assert!(!ArtifactPlatform::new(platform)?.matches(target));
+    }
+    assert!(ArtifactPlatform::new("windows-amd64").is_err());
+    assert!(TargetPlatform::new("windows-amd64").is_err());
 
     Ok(())
 }
@@ -380,7 +386,7 @@ fn manifest_rejects_invalid_manifests() -> Result<()> {
             "unsupported_platform",
             VALID_MANIFEST.replacen(
                 "\"platform\": \"darwin-arm64\"",
-                "\"platform\": \"linux-amd64\"",
+                "\"platform\": \"windows-amd64\"",
                 1,
             ),
         ),

@@ -21,6 +21,7 @@ mod doctor;
 mod env;
 mod init;
 mod jobs;
+mod linux_distribution;
 mod logs;
 mod mailpit;
 mod mysql;
@@ -54,8 +55,21 @@ where
     CapabilityCheck: FnOnce(&Command) -> Result<(), ExecuteError>,
 {
     capability_check(&cli.command)?;
+    #[cfg(target_os = "linux")]
+    if matches!(cli.command, Command::Setup(_)) {
+        environment.check_linux_setup_host()?;
+    }
     let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
+    #[cfg(target_os = "linux")]
+    let _helper_lifecycle_lock =
+        if matches!(cli.command, Command::PortsInstall | Command::PortsUninstall) {
+            Some(state::HelperLifecycleLock::acquire(&pv_paths(
+                environment,
+            )?)?)
+        } else {
+            None
+        };
 
     match cli.command {
         Command::Env(args) => env::run(args, environment, streams),
@@ -151,7 +165,7 @@ fn acquire_runtime_lifecycle(
 ) -> Result<Option<state::RuntimeLifecycleLock>, ExecuteError> {
     // A monitor and its runtime outlive any command, so holding admission for their whole life
     // would block `daemon:disable`; their controller holds it while starting them.
-    if !cfg!(target_os = "macos")
+    if !cfg!(unix)
         || matches!(
             command,
             Command::DaemonRun

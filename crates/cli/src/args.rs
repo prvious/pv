@@ -104,7 +104,10 @@ pub(crate) enum Command {
     #[command(name = "ca:status", about = "Show PV local CA trust status")]
     CaStatus,
 
-    #[command(name = "ca:trust", about = "Trust PV local CA in the System keychain")]
+    #[command(
+        name = "ca:trust",
+        about = "Trust PV local CA in the system trust store"
+    )]
     CaTrust,
 
     #[command(name = "ca:untrust", about = "Remove PV local CA trust")]

@@ -36,7 +36,8 @@ pub enum CliError {
     InitRequiresTerminal,
 
     #[error(
-        "pv setup --non-interactive requires macOS authentication to install or replace the privileged helper.\nRun `pv setup` interactively, then rerun with `--non-interactive`."
+        "pv setup --non-interactive requires {} authentication to install or replace the privileged helper.\nRun `pv setup` interactively, then rerun with `--non-interactive`.",
+        if cfg!(target_os = "linux") { "sudo" } else { "macOS" }
     )]
     SetupHelperRequiresAuthentication,
 
@@ -159,15 +160,22 @@ pub enum CliError {
     },
 
     #[error(
-        "PV application update requires the PV LaunchAgent at {path}; run `pv setup` or `pv daemon:enable`"
+        "PV application update requires the PV {} at {path}; run `pv setup` or `pv daemon:enable`",
+        platform::DAEMON_REGISTRATION_NAME
     )]
-    AppUpdateLaunchAgentMissing { path: String },
+    AppUpdateDaemonRegistrationMissing { path: String },
 
-    #[error("PV LaunchAgent file is not PV-owned; leaving it unchanged at {path}")]
-    AppUpdateLaunchAgentConflict { path: String },
+    #[error(
+        "PV {} file is not PV-owned; leaving it unchanged at {path}",
+        platform::DAEMON_REGISTRATION_NAME
+    )]
+    AppUpdateDaemonRegistrationConflict { path: String },
 
-    #[error("PV LaunchAgent file is unreadable; leaving it unchanged: {message}")]
-    AppUpdateLaunchAgentUnreadable { message: String },
+    #[error(
+        "PV {} file is unreadable; leaving it unchanged: {message}",
+        platform::DAEMON_REGISTRATION_NAME
+    )]
+    AppUpdateDaemonRegistrationUnreadable { message: String },
 
     #[error("PV app download size mismatch for `{url}`: expected {expected}, got {actual}")]
     AppUpdateSizeMismatch {
@@ -233,6 +241,14 @@ pub(crate) enum ExecuteError {
         phase: &'static str,
         #[source]
         source: platform::hooks::HookError,
+    },
+
+    #[cfg(target_os = "linux")]
+    #[error("{original}; could not release newly selected Gateway ports: {cleanup}")]
+    PortPreparationCleanup {
+        #[source]
+        original: Box<Self>,
+        cleanup: Box<Self>,
     },
 
     #[error(transparent)]

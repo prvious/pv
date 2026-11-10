@@ -1,5 +1,5 @@
 use anyhow::Result;
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use data_encoding::HEXLOWER;
 use flate2::Compression;
@@ -8,6 +8,7 @@ use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::clock;
 use pv_release::ReleaseError;
 use pv_release::smoke::{SMOKE_HOOK_TIMEOUT, run_smoke_hook};
+use resources::TargetPlatform;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -1200,6 +1201,184 @@ fn rustfs_build_recipe_rejects_newer_macho_minimum_os() -> Result<()> {
 }
 
 #[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn common_recipe_helper_validates_linux_openssl_prefix() -> Result<()> {
+    let tempdir = tempdir()?;
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+    let build = tempdir.path().join("build.sh");
+    write_executable(
+        &build,
+        r#"#!/bin/sh
+set -eu
+cd "$PV_TEST_ROOT"
+mkdir -p valid/include/openssl valid/lib
+printf '%s\n' 'fixture header' > valid/include/openssl/ssl.h
+printf '%s\n' 'fixture license' > valid/LICENSE.txt
+printf '%s\n' 'int crypto(void) { return 1; }' > crypto.c
+printf '%s\n' 'int crypto(void); int ssl(void) { return crypto(); }' > ssl.c
+cc -shared -fPIC crypto.c -Wl,-soname,libcrypto.so.3 -o valid/lib/libcrypto.so.3
+cc -shared -fPIC ssl.c -Lvalid/lib -l:libcrypto.so.3 -Wl,-soname,libssl.so.3 '-Wl,-rpath,$ORIGIN' -o valid/lib/libssl.so.3
+cp -R valid missing-library
+rm missing-library/lib/libssl.so.3
+cp -R valid invalid-rpath
+patchelf --set-rpath /tmp/build/lib invalid-rpath/lib/libssl.so.3
+"#,
+    )?;
+    let output = StdCommand::new(&build)
+        .env("PV_TEST_ROOT", tempdir.path())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "OpenSSL ELF fixture compilation failed: {}",
+        command_output_debug(&output)
+    );
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-amd64"
+    };
+    let mut results = Vec::new();
+    for (scenario, expected_success) in [
+        ("valid", true),
+        ("missing-library", false),
+        ("invalid-rpath", false),
+    ] {
+        let output = StdCommand::new("/bin/sh")
+            .args([
+                "-ec",
+                r#". "$PV_TEST_COMMON_SH"
+pv_recipe_validate_openssl_prefix "$PV_TEST_PREFIX" "$PV_TEST_PLATFORM" ''
+"#,
+            ])
+            .env("PV_TEST_COMMON_SH", &common)
+            .env("PV_TEST_PREFIX", tempdir.path().join(scenario))
+            .env("PV_TEST_PLATFORM", platform)
+            .output()?;
+        assert_eq!(
+            output.status.success(),
+            expected_success,
+            "{scenario}: {}",
+            command_output_debug(&output)
+        );
+        assert!(output.stdout.is_empty());
+        results.push((
+            scenario,
+            expected_success,
+            String::from_utf8(output.stderr)?.replace(tempdir.path().as_str(), "<tmp>"),
+        ));
+    }
+    assert_debug_snapshot!(results);
+    Ok(())
+}
+
+#[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn common_recipe_helper_validates_real_elf_portability() -> Result<()> {
+    let tempdir = tempdir()?;
+    let common =
+        Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../../release/artifacts/recipes/common.sh");
+    let build = tempdir.path().join("build.sh");
+    write_executable(
+        &build,
+        r#"#!/bin/sh
+set -eu
+cd "$PV_TEST_ROOT"
+printf '%s\n' 'int fixture(void) { return 0; }' > library.c
+printf '%s\n' '#include <stdio.h>' 'int fixture(void);' 'int main(void) { puts("fixture"); return fixture(); }' > main.c
+printf '%s\n' 'GLIBC_2.35 { global: fixture; local: *; };' > baseline.map
+printf '%s\n' 'GLIBC_2.36 { global: fixture; local: *; };' > newer.map
+printf '%s\n' 'GLIBC_ABI_DT_RELR { global: fixture; local: *; };' > newer-abi.map
+mkdir -p valid/bin valid/lib
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=baseline.map -o valid/lib/libfixture.so.1
+cc main.c -Lvalid/lib -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib:${ORIGIN}/../lib' -o valid/bin/tool
+printf '%s\n' 'ordinary non-ELF content' > valid/README
+
+for scenario in legacy-rpath absolute-rpath missing-library; do
+    cp -R valid "$scenario"
+done
+patchelf --force-rpath --set-rpath '$ORIGIN/../lib' legacy-rpath/bin/tool
+patchelf --set-rpath /tmp/build/lib absolute-rpath/bin/tool
+rm missing-library/lib/libfixture.so.1
+
+mkdir -p newer-definition/share/nested newer-requirement/bin newer-requirement/lib static/bin
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=newer.map -o newer-definition/share/nested/libfixture.so.1
+cc main.c -Lnewer-definition/share/nested -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib' -o newer-requirement/bin/tool
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -o newer-requirement/lib/libfixture.so.1
+mkdir -p abi-link newer-abi/bin newer-abi/lib
+cc -shared -fPIC library.c -Wl,-soname,libfixture.so.1 -Wl,--version-script=newer-abi.map -o abi-link/libfixture.so.1
+cc main.c -Labi-link -l:libfixture.so.1 '-Wl,-rpath,$ORIGIN/../lib' -o newer-abi/bin/tool
+cp newer-requirement/lib/libfixture.so.1 newer-abi/lib/
+printf '%s\n' 'int main(void) { return 0; }' > static.c
+cc -static static.c -o static/bin/tool
+"#,
+    )?;
+    let output = StdCommand::new(&build)
+        .env("PV_TEST_ROOT", tempdir.path())
+        .output()?;
+    assert!(
+        output.status.success(),
+        "ELF fixture compilation failed: {}",
+        command_output_debug(&output)
+    );
+
+    let (native_platform, other_platform, native_arch, other_arch) =
+        if cfg!(target_arch = "aarch64") {
+            ("linux-arm64", "linux-amd64", "aarch64", "x86_64")
+        } else {
+            ("linux-amd64", "linux-arm64", "x86_64", "aarch64")
+        };
+    let mut results = Vec::new();
+    for (scenario, platform, expected_success) in [
+        ("valid", native_platform, true),
+        ("legacy-rpath", native_platform, true),
+        ("static", native_platform, true),
+        ("static", other_platform, false),
+        ("absolute-rpath", native_platform, false),
+        ("missing-library", native_platform, false),
+        ("newer-definition", native_platform, false),
+        ("newer-requirement", native_platform, false),
+        ("newer-abi", native_platform, false),
+    ] {
+        let root = tempdir.path().join(scenario);
+        let mut command = StdCommand::new("/bin/sh");
+        command
+            .args([
+                "-ec",
+                r#". "$PV_TEST_COMMON_SH"
+pv_recipe_validate_elf_tree "$PV_TEST_ARTIFACT_ROOT" "$PV_TEST_PLATFORM"
+"#,
+            ])
+            .env("PV_TEST_COMMON_SH", &common)
+            .env("PV_TEST_ARTIFACT_ROOT", &root)
+            .env("PV_TEST_PLATFORM", platform);
+        let output = command.output()?;
+        assert_eq!(
+            output.status.success(),
+            expected_success,
+            "{scenario} ({platform}): {}",
+            command_output_debug(&output)
+        );
+        assert!(output.stdout.is_empty());
+        let error = String::from_utf8(output.stderr)?
+            .replace(tempdir.path().as_str(), "<tmp>")
+            .replace(native_platform, "<native-platform>")
+            .replace(other_platform, "<other-platform>")
+            .replace(native_arch, "<native-arch>")
+            .replace(other_arch, "<other-arch>");
+        results.push((scenario, expected_success, error));
+    }
+    assert_debug_snapshot!(results);
+    Ok(())
+}
+
+#[test]
 fn common_recipe_helper_ad_hoc_signs_macho_files() -> Result<()> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
@@ -1248,7 +1427,12 @@ pv_recipe_ad_hoc_sign_macho_tree "$PV_TEST_ARTIFACT_ROOT"
         "signing helper failed: {}",
         command_output_debug(&output)
     );
-    assert_debug_snapshot!(read_file(&sign_log)?.replace(tempdir.path().as_str(), "<tmp>"));
+    let mut signed_files = read_file(&sign_log)?
+        .lines()
+        .map(|line| line.replace(tempdir.path().as_str(), "<tmp>"))
+        .collect::<Vec<_>>();
+    signed_files.sort();
+    assert_debug_snapshot!(signed_files);
 
     Ok(())
 }
@@ -1536,6 +1720,11 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
     write_fake_uname(&fake_bin.join("uname"))?;
     write_fake_xcrun(&fake_bin.join("xcrun"))?;
     write_fake_xcodebuild(&fake_bin.join("xcodebuild"))?;
+    write_fake_codesign(&fake_bin.join("codesign"))?;
+    write_fake_macho_file(&fake_bin.join("file"))?;
+    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+    write_fake_lipo(&fake_bin.join("lipo"))?;
+    write_fake_otool(&fake_bin.join("otool"))?;
 
     let run_describe = |track: &str,
                         platform: &str,
@@ -1547,7 +1736,9 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
             .arg("describe")
             .env("CC", &compiler)
             .env("CFLAGS", cflags)
+            .env_remove("CPPFLAGS")
             .env_remove("LDFLAGS")
+            .env_remove("SDKROOT")
             .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
             .env("PV_BUILD_JOBS", "2")
             .env("PV_POSTGRES_DEPENDENCY_WORK_DIR", work_dir)
@@ -1657,76 +1848,108 @@ fn postgres_dependency_cache_contract_is_exact_and_track_independent() -> Result
 }
 
 #[test]
-fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()> {
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn postgres_linux_dependency_contract_uses_native_toolchain() -> Result<()> {
     let tempdir = tempdir()?;
-    let artifact_root = tempdir.path().join("artifact");
-    let artifact_bin = artifact_root.join("bin");
-    let artifact_postgresql = artifact_root.join("lib/postgresql");
-    let command_bin = tempdir.path().join("commands");
-    let codesign_log = tempdir.path().join("codesign.log");
-    let initdb_log = tempdir.path().join("initdb.log");
-    let pg_ctl_log = tempdir.path().join("pg-ctl.log");
-    let psql_log = tempdir.path().join("psql.log");
     let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let extension_catalog =
-        workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt");
+    let dependencies = workspace_root.join("release/artifacts/recipes/postgres/dependencies.sh");
+    let (platform, other_platform, architecture) = if cfg!(target_arch = "aarch64") {
+        ("linux-arm64", "linux-amd64", "aarch64")
+    } else {
+        ("linux-amd64", "linux-arm64", "x86_64")
+    };
+    let describe = |track: &str, target: &str, cflags: &str, directory: &str| {
+        StdCommand::new(&dependencies)
+            .arg("describe")
+            .env("CC", "cc")
+            .env("CFLAGS", cflags)
+            .env_remove("CPPFLAGS")
+            .env_remove("LDFLAGS")
+            .env_remove("SDKROOT")
+            .env_remove("MACOSX_DEPLOYMENT_TARGET")
+            .env("PV_RECIPE_PLATFORM", target)
+            .env("PV_RECIPE_TRACK", track)
+            .env("PV_BUILD_JOBS", "2")
+            .env(
+                "PV_POSTGRES_DEPENDENCY_WORK_DIR",
+                tempdir.path().join(directory),
+            )
+            .output()
+    };
+    let first = describe("17", platform, "", "first")?;
+    assert!(
+        first.status.success(),
+        "native dependency description failed: {}",
+        command_output_debug(&first)
+    );
+    let next_track = describe("18", platform, "", "next-track")?;
+    assert!(next_track.status.success());
+    assert_eq!(first.stdout, next_track.stdout);
+    let changed_flags = describe("17", platform, "-O2", "changed-flags")?;
+    assert!(changed_flags.status.success());
+    assert_ne!(first.stdout, changed_flags.stdout);
+    let wrong_cpu = describe("17", other_platform, "", "wrong-cpu")?;
+    assert!(!wrong_cpu.status.success());
+    assert!(!path_exists(
+        &tempdir.path().join("wrong-cpu/openssl-contract.txt")
+    ));
+
+    let contract_path = tempdir.path().join("first/openssl-contract.txt");
+    let contract = read_file(&contract_path)?;
+    let description = String::from_utf8(first.stdout)?;
+    let expected_cache_key = format!(
+        "cache_key=postgres-openssl-v1-{platform}-{}",
+        file_sha256(&contract_path)?
+    );
+    assert_eq!(
+        description.lines().next(),
+        Some(expected_cache_key.as_str())
+    );
+    let mut normalized = Vec::new();
+    for line in contract.lines() {
+        if let Some((key, value)) = line.split_once('=')
+            && matches!(key, "compiler_path" | "compiler_version" | "libc_version")
+        {
+            assert!(!value.is_empty(), "missing native toolchain value: {key}");
+            normalized.push(format!("{key}=<{key}>"));
+        } else if line.starts_with("common_script_sha256=") {
+            assert_eq!(
+                line,
+                format!(
+                    "common_script_sha256={}",
+                    file_sha256(&workspace_root.join("release/artifacts/recipes/common.sh"))?
+                )
+            );
+            normalized.push("common_script_sha256=<common-script>".to_string());
+        } else if line.starts_with("dependencies_script_sha256=") {
+            assert_eq!(
+                line,
+                format!("dependencies_script_sha256={}", file_sha256(&dependencies)?)
+            );
+            normalized.push("dependencies_script_sha256=<dependencies-script>".to_string());
+        } else {
+            normalized.push(
+                line.replace(platform, "<native-platform>")
+                    .replace(architecture, "<native-arch>"),
+            );
+        }
+    }
+    assert_snapshot!(normalized.join("\n"));
+    Ok(())
+}
+
+#[test]
+fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()> {
+    let (initdb_log, pg_ctl_log, psql_log, _) = run_postgres_smoke_fixture("darwin-arm64", false)?;
+    let extension_catalog = Utf8Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../release/artifacts/recipes/postgres/catalogs/17.txt");
     let expected_extension_creates = read_file(&extension_catalog)?
         .lines()
         .filter(|extension| !extension.is_empty() && *extension != "plpgsql")
         .count();
-
-    create_dir_all(&artifact_bin)?;
-    create_dir_all(&artifact_postgresql)?;
-    create_dir_all(&command_bin)?;
-    write_executable(&artifact_bin.join("postgres"), "#!/bin/sh\nexit 0\n")?;
-    write_fake_postgres_initdb(&artifact_bin.join("initdb"))?;
-    write_fake_postgres_pg_ctl(&artifact_bin.join("pg_ctl"))?;
-    write_fake_postgres_psql(&artifact_bin.join("psql"))?;
-    for relative_path in [
-        "lib/libcrypto.3.dylib",
-        "lib/libssl.3.dylib",
-        "lib/postgresql/pg_trgm.dylib",
-        "lib/postgresql/pgcrypto.dylib",
-        "lib/postgresql/sslinfo.dylib",
-    ] {
-        write_file(&artifact_root.join(relative_path), "mach-o fixture\n")?;
-    }
-    write_fake_codesign(&command_bin.join("codesign"))?;
-    write_fake_lipo(&command_bin.join("lipo"))?;
-    write_fake_otool(&command_bin.join("otool"))?;
-    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
-    write_file(&codesign_log, "")?;
-    write_file(&initdb_log, "")?;
-    write_file(&pg_ctl_log, "")?;
-    write_file(&psql_log, "")?;
-
-    let output = StdCommand::new(postgres_smoke_hook())
-        .arg(&artifact_root)
-        .env(
-            "PATH",
-            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
-        )
-        .env("PV_POSTGRES_EXTENSION_CATALOG", &extension_catalog)
-        .env("PV_POSTGRES_PLATFORM", "darwin-arm64")
-        .env("PV_POSTGRES_DEPLOYMENT_TARGET", "13.0")
-        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
-        .env("PV_TEST_LIPO_ARCHS", "arm64")
-        .env("PV_TEST_MACHO_LIBRARIES", "")
-        .env("PV_TEST_MACHO_MINOS", "13.0")
-        .env("PV_TEST_MACHO_RPATHS", "@loader_path/../lib")
-        .env("PV_TEST_POSTGRES_INITDB_LOG", &initdb_log)
-        .env("PV_TEST_POSTGRES_PG_CTL_LOG", &pg_ctl_log)
-        .env("PV_TEST_POSTGRES_PSQL_LOG", &psql_log)
-        .output()?;
-
-    assert!(
-        output.status.success(),
-        "Postgres supplied-extension smoke failed: {}",
-        command_output_debug(&output)
-    );
-    let initdb_log = read_file(&initdb_log)?;
-    let pg_ctl_log = read_file(&pg_ctl_log)?;
-    let psql_log = read_file(&psql_log)?;
     let extension_creates = psql_log
         .lines()
         .filter(|line| line.starts_with("CREATE EXTENSION"))
@@ -1755,6 +1978,37 @@ fn postgres_smoke_uses_pv_auth_and_validates_supplied_extensions() -> Result<()>
 }
 
 #[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn postgres_linux_smoke_validates_elf_before_initializing_database() -> Result<()> {
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-amd64"
+    };
+    let mut results = Vec::new();
+    for invalid_elf in [false, true] {
+        let (initdb, pg_ctl, psql, error) = run_postgres_smoke_fixture(platform, invalid_elf)?;
+        assert_eq!(initdb.is_empty(), invalid_elf);
+        assert_eq!(pg_ctl.is_empty(), invalid_elf);
+        assert_eq!(psql.is_empty(), invalid_elf);
+        results.push((
+            invalid_elf,
+            pg_ctl.matches("action=start").count(),
+            pg_ctl.matches("action=stop").count(),
+            psql.lines()
+                .filter(|line| line.starts_with("CREATE EXTENSION"))
+                .count(),
+            error,
+        ));
+    }
+    assert_debug_snapshot!(results);
+    Ok(())
+}
+
+#[test]
 fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
     let run = run_postgres_build_recipe_smoke(false)?;
 
@@ -1763,7 +2017,11 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
         "Postgres build recipe failed: {}",
         command_output_debug(&run.output)
     );
-    assert!(run.archive_exists);
+    assert!(
+        run.archive_exists,
+        "Postgres archive missing under {}",
+        run.out_dir
+    );
     assert_eq!(
         run.validate_log,
         "archive=postgres-17.10-pv2-darwin-arm64.tar.gz record=postgres-17.10-pv2-darwin-arm64.json smoke=smoke.sh\n"
@@ -1816,6 +2074,54 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
     )?;
     assert_debug_snapshot!(record["provenance"]["source_inputs"]);
 
+    Ok(())
+}
+
+#[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn postgres_linux_build_packages_relocatable_elf_and_rejects_newer_glibc() -> Result<()> {
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-amd64"
+    };
+    let mut results = Vec::new();
+    for invalid_elf in [false, true] {
+        let run = run_postgres_build_recipe_smoke_with_options(PostgresBuildRecipeOptions {
+            platform,
+            invalid_elf,
+            ..PostgresBuildRecipeOptions::default()
+        })?;
+        assert_eq!(
+            run.output.status.success(),
+            !invalid_elf,
+            "invalid_elf={invalid_elf}: {}",
+            command_output_debug(&run.output)
+        );
+        assert_eq!(run.archive_exists, !invalid_elf);
+        assert_eq!(run.record_json.is_some(), !invalid_elf);
+        assert_eq!(run.validate_log.is_empty(), invalid_elf);
+        assert!(run.codesign_log.is_empty());
+        let mut libraries = run
+            .archive_entries
+            .iter()
+            .filter(|entry| entry.contains("/lib/") && !entry.ends_with('/'))
+            .map(|entry| entry.replace(platform, "<native-platform>"))
+            .collect::<Vec<_>>();
+        libraries.sort();
+        results.push((
+            invalid_elf,
+            run.validate_log.replace(platform, "<native-platform>"),
+            libraries,
+            String::from_utf8(run.output.stderr)?
+                .replace(&run.out_dir, "<out>")
+                .replace(platform, "<native-platform>"),
+        ));
+    }
+    assert_debug_snapshot!(results);
     Ok(())
 }
 
@@ -2060,7 +2366,7 @@ fn mysql_build_recipe_rejects_unknown_broken_symlinks() -> Result<()> {
 fn backing_build_recipes_ad_hoc_sign_macho_payloads() -> Result<()> {
     let mut summaries = Vec::new();
     for recipe in BackingBuildRecipe::all() {
-        let run = run_backing_build_recipe_signing_smoke(recipe)?;
+        let run = run_backing_build_recipe_payload_smoke(recipe, false)?;
         assert!(
             run.output.status.success(),
             "{} build recipe failed: {}",
@@ -2100,6 +2406,48 @@ fn backing_build_recipes_ad_hoc_sign_macho_payloads() -> Result<()> {
 }
 
 #[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn linux_build_recipes_validate_elf_before_final_outputs() -> Result<()> {
+    let mut summaries = Vec::new();
+    for mut recipe in BackingBuildRecipe::all() {
+        recipe.platform = if cfg!(target_arch = "aarch64") {
+            "linux-arm64"
+        } else {
+            "linux-amd64"
+        };
+        for invalid_rpath in [false, true] {
+            let run = run_backing_build_recipe_payload_smoke(recipe, invalid_rpath)?;
+            assert_eq!(
+                run.output.status.success(),
+                !invalid_rpath,
+                "{} invalid_rpath={invalid_rpath}: {}",
+                recipe.resource,
+                command_output_debug(&run.output)
+            );
+            assert_eq!(run.archive_exists, !invalid_rpath);
+            assert_eq!(run.record_json.is_some(), !invalid_rpath);
+            assert!(run.signed_files.is_empty());
+            assert_eq!(run.validate_log.is_empty(), invalid_rpath);
+            summaries.push((
+                recipe.resource,
+                invalid_rpath,
+                run.validate_log
+                    .replace(&run.out_dir, "<out>")
+                    .replace(recipe.platform, "<native-platform>"),
+                String::from_utf8(run.output.stderr)?
+                    .replace(&run.out_dir, "<out>")
+                    .replace(recipe.platform, "<native-platform>"),
+            ));
+        }
+    }
+    assert_debug_snapshot!(summaries);
+    Ok(())
+}
+
+#[test]
 fn php_build_smoke_rejects_unexpected_macho_architecture() -> Result<()> {
     let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
         lipo_archs: "x86_64",
@@ -2131,6 +2479,60 @@ fn php_pair_build_smoke_passes_per_resource_metadata_to_archive_validation() -> 
 archive=frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.tar.gz record=frankenphp-8.4.20-frankenphp1.12.3-pv1-darwin-arm64.json upstream=8.4.20-frankenphp1.12.3 php=8.4.20 expected=json deployment=13.0\n"
     );
 
+    Ok(())
+}
+
+#[test]
+#[cfg(all(
+    target_os = "linux",
+    any(target_arch = "aarch64", target_arch = "x86_64")
+))]
+fn php_linux_pair_exports_symbols_for_relocated_modules_and_rejects_newer_glibc() -> Result<()> {
+    let platform = if cfg!(target_arch = "aarch64") {
+        "linux-arm64"
+    } else {
+        "linux-amd64"
+    };
+    let mut results = Vec::new();
+    for invalid_elf in [false, true] {
+        let run = run_php_build_recipe_smoke_with_options(BuildRecipeOptions {
+            platform,
+            invalid_elf,
+            ..default_build_recipe_options()
+        })?;
+        assert_eq!(
+            run.output.status.success(),
+            !invalid_elf,
+            "invalid_elf={invalid_elf}: {}",
+            command_output_debug(&run.output)
+        );
+        assert_eq!(run.php_archive_exists, !invalid_elf);
+        assert_eq!(run.frankenphp_archive_exists, !invalid_elf);
+        assert_eq!(run.php_record_json.is_some(), !invalid_elf);
+        assert_eq!(run.frankenphp_record_json.is_some(), !invalid_elf);
+        assert_eq!(run.validate_log.is_empty(), invalid_elf);
+        assert!(run.deleted_rpath_log.is_empty());
+        let mut modules = Vec::new();
+        for record in [&run.php_record_json, &run.frankenphp_record_json]
+            .into_iter()
+            .flatten()
+        {
+            let record: Value = serde_json::from_str(record)?;
+            modules.push(record["php_extensions"].clone());
+        }
+        results.push((
+            invalid_elf,
+            modules,
+            run.spc_log
+                .replace(&run.out_dir, "<out>")
+                .replace(platform, "<native-platform>"),
+            run.validate_log.replace(platform, "<native-platform>"),
+            String::from_utf8(run.output.stderr)?
+                .replace(&run.out_dir, "<out>")
+                .replace(platform, "<native-platform>"),
+        ));
+    }
+    assert_debug_snapshot!(results);
     Ok(())
 }
 
@@ -2439,6 +2841,7 @@ struct MysqlBuildRecipeRun {
 }
 
 struct PostgresBuildRecipeRun {
+    out_dir: String,
     output: Output,
     dependency_output: Option<Output>,
     record_json: Option<String>,
@@ -2453,8 +2856,9 @@ struct PostgresBuildRecipeRun {
     archive_exists: bool,
 }
 
-#[derive(Default)]
 struct PostgresBuildRecipeOptions {
+    platform: &'static str,
+    invalid_elf: bool,
     corrupt_openssl_bundle: bool,
     corrupt_postgres_source_cache: bool,
     corrupt_producer_contract: bool,
@@ -2462,6 +2866,22 @@ struct PostgresBuildRecipeOptions {
     mismatch_openssl_contract: bool,
     reuse_openssl_bundle: bool,
     use_producer_contract: bool,
+}
+
+impl Default for PostgresBuildRecipeOptions {
+    fn default() -> Self {
+        Self {
+            platform: "darwin-arm64",
+            invalid_elf: false,
+            corrupt_openssl_bundle: false,
+            corrupt_postgres_source_cache: false,
+            corrupt_producer_contract: false,
+            install_mismatched_catalog: false,
+            mismatch_openssl_contract: false,
+            reuse_openssl_bundle: false,
+            use_producer_contract: false,
+        }
+    }
 }
 
 struct MysqlBuildRecipeOptions {
@@ -2510,6 +2930,8 @@ struct BackingBuildRecipeRun {
 }
 
 struct BuildRecipeOptions<'a> {
+    platform: &'a str,
+    invalid_elf: bool,
     recipe_track: &'a str,
     php_version: &'a str,
     frankenphp_version: &'a str,
@@ -2710,6 +3132,7 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     write_redis_source_archive_with_options(
         &source_archive,
         options.include_fast_float_legal_header,
+        false,
     )?;
     write_fake_redis_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
@@ -2718,7 +3141,7 @@ fn run_redis_build_recipe_smoke(options: RedisBuildRecipeOptions) -> Result<Redi
     write_fake_macho_file(&fake_bin.join("file"))?;
     write_fake_make(&fake_bin.join("make"))?;
     write_fake_codesign(&fake_bin.join("codesign"))?;
-    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_cpu_tools(&fake_bin)?;
     write_fake_uname(&fake_bin.join("uname"))?;
     write_file(&curl_log, "")?;
     write_file(&validate_log, "")?;
@@ -2783,6 +3206,124 @@ fn run_mysql_build_recipe_smoke() -> Result<MysqlBuildRecipeRun> {
     run_mysql_build_recipe_smoke_with_options(MysqlBuildRecipeOptions::default())
 }
 
+fn run_postgres_smoke_fixture(
+    platform: &str,
+    invalid_elf: bool,
+) -> Result<(String, String, String, String)> {
+    let tempdir = tempdir()?;
+    let artifact_root = tempdir.path().join("artifact");
+    let artifact_bin = artifact_root.join("bin");
+    let artifact_postgresql = artifact_root.join("lib/postgresql");
+    let command_bin = tempdir.path().join("commands");
+    let codesign_log = tempdir.path().join("codesign.log");
+    let initdb_log = tempdir.path().join("initdb.log");
+    let pg_ctl_log = tempdir.path().join("pg-ctl.log");
+    let psql_log = tempdir.path().join("psql.log");
+    let workspace_root = Utf8Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let extension_catalog =
+        workspace_root.join("release/artifacts/recipes/postgres/catalogs/17.txt");
+
+    create_dir_all(&artifact_bin)?;
+    create_dir_all(&artifact_postgresql)?;
+    create_dir_all(&command_bin)?;
+    write_executable(&artifact_bin.join("postgres"), "#!/bin/sh\nexit 0\n")?;
+    write_fake_postgres_initdb(&artifact_bin.join("initdb"))?;
+    write_fake_postgres_pg_ctl(&artifact_bin.join("pg_ctl"))?;
+    write_fake_postgres_psql(&artifact_bin.join("psql"))?;
+    let target = TargetPlatform::new(platform)?;
+    for library in target.openssl_library_names() {
+        write_file(
+            &artifact_root.join("lib").join(library),
+            "library fixture\n",
+        )?;
+    }
+    for module in ["pg_trgm", "pgcrypto", "sslinfo"] {
+        write_file(
+            &artifact_postgresql.join(format!("{module}{}", target.shared_library_suffix())),
+            "module fixture\n",
+        )?;
+    }
+    if platform.starts_with("linux-") {
+        let source = tempdir.path().join("module.c");
+        write_file(&source, "int fixture(void) { return 1; }\n")?;
+        let output = StdCommand::new("cc")
+            .args(["-shared", "-fPIC"])
+            .arg(&source)
+            .arg(if invalid_elf {
+                "-Wl,-rpath,/tmp/pv/build/lib"
+            } else {
+                "-Wl,-rpath,$ORIGIN/.."
+            })
+            .arg("-o")
+            .arg(artifact_postgresql.join("pg_trgm.so"))
+            .output()?;
+        assert!(
+            output.status.success(),
+            "smoke ELF compilation failed: {}",
+            command_output_debug(&output)
+        );
+    } else {
+        write_fake_codesign(&command_bin.join("codesign"))?;
+        write_fake_macho_file(&command_bin.join("file"))?;
+        write_fake_lipo(&command_bin.join("lipo"))?;
+        write_fake_otool(&command_bin.join("otool"))?;
+    }
+    write_executable(&command_bin.join("sleep"), "#!/bin/sh\nexit 0\n")?;
+    write_file(&codesign_log, "")?;
+    write_file(&initdb_log, "")?;
+    write_file(&pg_ctl_log, "")?;
+    write_file(&psql_log, "")?;
+
+    let output = StdCommand::new(postgres_smoke_hook())
+        .arg(&artifact_root)
+        .env(
+            "PATH",
+            format!("{command_bin}:/usr/bin:/bin:/usr/sbin:/sbin"),
+        )
+        .env("TMPDIR", tempdir.path())
+        .env("PV_POSTGRES_EXTENSION_CATALOG", &extension_catalog)
+        .env("PV_POSTGRES_PLATFORM", platform)
+        .env(
+            "PV_POSTGRES_DEPLOYMENT_TARGET",
+            if platform.starts_with("linux-") {
+                ""
+            } else {
+                "13.0"
+            },
+        )
+        .env("PV_TEST_CODESIGN_LOG", &codesign_log)
+        .env("PV_TEST_LIPO_ARCHS", "arm64")
+        .env("PV_TEST_MACHO_LIBRARIES", "")
+        .env("PV_TEST_MACHO_MINOS", "13.0")
+        .env("PV_TEST_MACHO_RPATHS", "@loader_path/../lib")
+        .env("PV_TEST_POSTGRES_INITDB_LOG", &initdb_log)
+        .env("PV_TEST_POSTGRES_PG_CTL_LOG", &pg_ctl_log)
+        .env("PV_TEST_POSTGRES_PSQL_LOG", &psql_log)
+        .output()?;
+
+    assert_eq!(
+        output.status.success(),
+        !invalid_elf,
+        "Postgres smoke failed for {platform}, invalid_elf={invalid_elf}: {}",
+        command_output_debug(&output)
+    );
+    let error = String::from_utf8(output.stderr)?;
+    let error = if let Some(path) = error
+        .lines()
+        .find_map(|line| line.strip_prefix("Postgres smoke files retained at "))
+    {
+        error.replace(path, "<retained-smoke-files>")
+    } else {
+        error
+    };
+    Ok((
+        read_file(&initdb_log)?,
+        read_file(&pg_ctl_log)?,
+        read_file(&psql_log)?,
+        error.replace(artifact_root.as_str(), "<artifact>"),
+    ))
+}
+
 fn run_postgres_build_recipe_smoke(
     install_mismatched_catalog: bool,
 ) -> Result<PostgresBuildRecipeRun> {
@@ -2801,12 +3342,16 @@ fn run_postgres_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("postgres-source.tar.gz");
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
-    let artifact_basename = "postgres-17.10-pv2-darwin-arm64";
+    let artifact_basename = format!("postgres-17.10-pv2-{}", options.platform);
     let dependency_bundle = tempdir.path().join("postgres-openssl-bundle.tar.gz");
     let dependency_prefix = tempdir.path().join("openssl-dependency");
     let dependency_work_dir = tempdir.path().join("dependency-work");
     let source_cache_dir = out_dir.join("sources");
-    let compiler = fake_bin.join("clang");
+    let compiler = if options.platform.starts_with("linux-") {
+        Utf8PathBuf::from("/usr/bin/cc")
+    } else {
+        fake_bin.join("clang")
+    };
     let curl_log = tempdir.path().join("curl.log");
     let configure_log = tempdir.path().join("configure.log");
     let make_log = tempdir.path().join("make.log");
@@ -2826,18 +3371,24 @@ fn run_postgres_build_recipe_smoke_with_options(
     write_openssl_source_archive(&openssl_source_archive)?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
-    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
-    write_fake_lipo(&fake_bin.join("lipo"))?;
-    write_fake_otool(&fake_bin.join("otool"))?;
-    write_fake_macho_file(&fake_bin.join("file"))?;
-    write_fake_codesign(&fake_bin.join("codesign"))?;
+    if !options.platform.starts_with("linux-") {
+        write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+        write_fake_lipo(&fake_bin.join("lipo"))?;
+        write_fake_otool(&fake_bin.join("otool"))?;
+        write_fake_macho_file(&fake_bin.join("file"))?;
+        write_fake_codesign(&fake_bin.join("codesign"))?;
+        write_fake_compiler(&compiler)?;
+        write_fake_uname(&fake_bin.join("uname"))?;
+        write_fake_xcrun(&fake_bin.join("xcrun"))?;
+        write_fake_xcodebuild(&fake_bin.join("xcodebuild"))?;
+    }
     write_fake_postgres_make(&fake_bin.join("make"))?;
     write_fake_openssl_perl(&fake_bin.join("perl"))?;
     write_fake_postgres_shasum(&fake_bin.join("shasum"))?;
-    write_fake_compiler(&compiler)?;
-    write_fake_uname(&fake_bin.join("uname"))?;
-    write_fake_xcrun(&fake_bin.join("xcrun"))?;
-    write_fake_xcodebuild(&fake_bin.join("xcodebuild"))?;
+    write_executable(
+        &fake_bin.join("sha256sum"),
+        "#!/bin/sh\nexec \"${0%/*}/shasum\" -a 256 \"$@\"\n",
+    )?;
     for log in [
         &curl_log,
         &configure_log,
@@ -2866,7 +3417,7 @@ fn run_postgres_build_recipe_smoke_with_options(
                 .env("PV_BUILD_JOBS", "1")
                 .env("PV_POSTGRES_DEPENDENCY_WORK_DIR", &dependency_work_dir)
                 .env("PV_POSTGRES_SOURCE_CACHE_DIR", &source_cache_dir)
-                .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+                .env("PV_RECIPE_PLATFORM", options.platform)
                 .env("PV_TEST_COMPILER_PATH", &compiler)
                 .env("PV_TEST_CURL_LOG", &curl_log)
                 .env("PV_TEST_LIPO_ARCHS", "arm64")
@@ -2907,7 +3458,8 @@ fn run_postgres_build_recipe_smoke_with_options(
                      extension_catalog: &Utf8Path,
                      install_mismatched_catalog: bool|
      -> Result<Output> {
-        let build_artifact_basename = format!("postgres-{upstream_version}-pv2-darwin-arm64");
+        let build_artifact_basename =
+            format!("postgres-{upstream_version}-pv2-{}", options.platform);
         let openssl_prefix = out_dir
             .join("work")
             .join(format!("postgres-{track}-{build_artifact_basename}"))
@@ -2922,7 +3474,7 @@ fn run_postgres_build_recipe_smoke_with_options(
             .env("PV_BUILD_RUN_ID", "local-test")
             .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
             .env("PV_POSTGRES_SOURCE_CACHE_DIR", &source_cache_dir)
-            .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+            .env("PV_RECIPE_PLATFORM", options.platform)
             .env("PV_RECIPE_TRACK", track)
             .env("PV_TEST_CODESIGN_LOG", &codesign_log)
             .env("PV_TEST_CODESIGN_REQUIRES_INSTALL_NAME", "1")
@@ -2950,6 +3502,10 @@ fn run_postgres_build_recipe_smoke_with_options(
             .env("PV_TEST_PV_BUILD_REVISION", "pv2")
             .env("PV_TEST_RECORD_ARGUMENTS_LOG", &record_arguments_log)
             .env("PV_TEST_REMOVED_RPATHS_LOG", &removed_rpaths_log)
+            .env(
+                "PV_TEST_POSTGRES_INVALID_ELF",
+                if options.invalid_elf { "1" } else { "" },
+            )
             .env("PV_TEST_RESOURCE", "postgres")
             .env("PV_TEST_SOURCE_ARCHIVE", &source_archive)
             .env("PV_TEST_SOURCE_SHA256", file_sha256(&source_archive)?)
@@ -2989,7 +3545,7 @@ fn run_postgres_build_recipe_smoke_with_options(
         .join("postgres")
         .join("17")
         .join("17.10-pv2")
-        .join("darwin-arm64")
+        .join(options.platform)
         .join(format!("{artifact_basename}.json"));
     let archive_exists = path_exists(&archive);
     let archive_entries = if archive_exists {
@@ -2998,7 +3554,47 @@ fn run_postgres_build_recipe_smoke_with_options(
         Vec::new()
     };
 
+    if options.platform.starts_with("linux-") && archive_exists {
+        let relocated = tempdir.path().join("relocated");
+        create_dir_all(&relocated)?;
+        let output = StdCommand::new("tar")
+            .arg("-xzf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(&relocated)
+            .output()?;
+        assert!(
+            output.status.success(),
+            "fixture extraction failed: {}",
+            command_output_debug(&output)
+        );
+        let output = StdCommand::new("mv")
+            .arg(out_dir.join("work"))
+            .arg(tempdir.path().join("hidden-build"))
+            .output()?;
+        assert!(
+            output.status.success(),
+            "hiding build prefix failed: {}",
+            command_output_debug(&output)
+        );
+        for relative in [
+            "bin/postgres",
+            "lib/postgresql/pgxs/src/test/regress/pg_regress",
+        ] {
+            let output = StdCommand::new(relocated.join(&artifact_basename).join(relative))
+                .env_remove("LD_LIBRARY_PATH")
+                .env_remove("LD_PRELOAD")
+                .output()?;
+            assert!(
+                output.status.success(),
+                "relocated {relative} failed: {}",
+                command_output_debug(&output)
+            );
+        }
+    }
+
     Ok(PostgresBuildRecipeRun {
+        out_dir: out_dir.to_string(),
         output,
         dependency_output,
         record_json: read_optional_file(&record)?,
@@ -3060,7 +3656,8 @@ fn run_mysql_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("mysql-source.tar.gz");
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
-    let boost_source_archive = tempdir.path().join("boost-source.tar.gz");
+    let boost_source_gzip = tempdir.path().join("boost-source.tar.gz");
+    let boost_source_archive = tempdir.path().join("boost-source.tar.bz2");
     let artifact_basename = format!("mysql-{}-pv1-darwin-arm64", options.upstream_version);
     let openssl_prefix = out_dir
         .join("work")
@@ -3077,7 +3674,23 @@ fn run_mysql_build_recipe_smoke_with_options(
     create_dir_all(&fake_bin)?;
     write_source_archive(&source_archive, "mysql-source")?;
     write_openssl_source_archive(&openssl_source_archive)?;
-    write_source_archive(&boost_source_archive, "boost-source")?;
+    write_source_archive(&boost_source_gzip, "boost-source")?;
+    let compressed = StdCommand::new("bash")
+        .args([
+            "-o",
+            "pipefail",
+            "-c",
+            r#"gzip -dc "$1" | bzip2 > "$2""#,
+            "boost-fixture",
+        ])
+        .arg(&boost_source_gzip)
+        .arg(&boost_source_archive)
+        .output()?;
+    assert!(
+        compressed.status.success(),
+        "Boost fixture compression failed: {}",
+        command_output_debug(&compressed)
+    );
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
     write_fake_brew(&fake_bin.join("brew"))?;
     write_fake_mysql_cmake(&fake_bin.join("cmake"))?;
@@ -3089,7 +3702,7 @@ fn run_mysql_build_recipe_smoke_with_options(
     write_fake_codesign(&fake_bin.join("codesign"))?;
     write_fake_mysql_make(&fake_bin.join("make"))?;
     write_fake_openssl_perl(&fake_bin.join("perl"))?;
-    write_fake_sysctl(&fake_bin.join("sysctl"))?;
+    write_fake_cpu_tools(&fake_bin)?;
     write_file(&curl_log, "")?;
     write_file(&cmake_log, "")?;
     write_file(&openssl_build_log, "")?;
@@ -3142,7 +3755,7 @@ fn run_mysql_build_recipe_smoke_with_options(
         )
         .env(
             "PV_MYSQL_BOOST_SOURCE_URL",
-            "https://sources.example.test/boost.tar.gz",
+            "https://sources.example.test/boost.tar.bz2",
         )
         .env(
             "PV_MYSQL_BOOST_SOURCE_SHA256",
@@ -3334,8 +3947,9 @@ fn run_composer_build_recipe_smoke() -> Result<ComposerBuildRecipeRun> {
     })
 }
 
-fn run_backing_build_recipe_signing_smoke(
+fn run_backing_build_recipe_payload_smoke(
     recipe: BackingBuildRecipe,
+    invalid_elf_rpath: bool,
 ) -> Result<BackingBuildRecipeRun> {
     let tempdir = tempdir()?;
     let fake_bin = tempdir.path().join("bin");
@@ -3347,17 +3961,19 @@ fn run_backing_build_recipe_signing_smoke(
     let validate_log = tempdir.path().join("validate.log");
 
     create_dir_all(&fake_bin)?;
-    write_backing_source_archive(&source_archive, recipe)?;
+    write_backing_source_archive(&source_archive, recipe, invalid_elf_rpath)?;
     write_fake_backing_cargo(&fake_bin.join("cargo"))?;
-    write_fake_codesign(&fake_bin.join("codesign"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
-    write_fake_lipo(&fake_bin.join("lipo"))?;
-    write_fake_make(&fake_bin.join("make"))?;
-    write_fake_otool(&fake_bin.join("otool"))?;
-    write_fake_macho_file(&fake_bin.join("file"))?;
-    write_fake_sysctl(&fake_bin.join("sysctl"))?;
-    write_fake_uname(&fake_bin.join("uname"))?;
-    write_fake_unzip(&fake_bin.join("unzip"))?;
+    write_fake_cpu_tools(&fake_bin)?;
+    if !recipe.platform.starts_with("linux-") {
+        write_fake_make(&fake_bin.join("make"))?;
+        write_fake_codesign(&fake_bin.join("codesign"))?;
+        write_fake_lipo(&fake_bin.join("lipo"))?;
+        write_fake_otool(&fake_bin.join("otool"))?;
+        write_fake_macho_file(&fake_bin.join("file"))?;
+        write_fake_uname(&fake_bin.join("uname"))?;
+        write_fake_unzip(&fake_bin.join("unzip"))?;
+    }
     write_file(&curl_log, "")?;
     write_file(&sign_log, "")?;
     write_file(&validate_log, "")?;
@@ -3409,6 +4025,8 @@ fn run_backing_build_recipe_signing_smoke(
 
 fn default_build_recipe_options() -> BuildRecipeOptions<'static> {
     BuildRecipeOptions {
+        platform: "darwin-arm64",
+        invalid_elf: false,
         recipe_track: "8.4",
         php_version: "8.4.20",
         frankenphp_version: "1.12.3",
@@ -3444,7 +4062,15 @@ fn run_php_build_recipe_smoke_with_options(
     let removed_rpaths_log = tempdir.path().join("removed-rpaths.log");
 
     create_dir_all(&fake_bin)?;
-    write_source_archive(&source_archive, "frankenphp-source")?;
+    if options.platform.starts_with("linux-") {
+        write_single_file_archive(
+            &source_archive,
+            "frankenphp-source/types.h",
+            b"void __hash_update_string__(void);\n",
+        )?;
+    } else {
+        write_source_archive(&source_archive, "frankenphp-source")?;
+    }
     if options.require_staticphp_php83_frankenphp_patch_context {
         write_php_source_archive(&php_source_archive)?;
     } else {
@@ -3453,11 +4079,13 @@ fn run_php_build_recipe_smoke_with_options(
     write_rar_source_archive(&rar_source_archive)?;
     write_fake_cargo(&fake_bin.join("cargo"))?;
     write_fake_curl(&fake_bin.join("curl"))?;
-    write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
-    write_fake_lipo(&fake_bin.join("lipo"))?;
-    write_fake_otool(&fake_bin.join("otool"))?;
-    write_fake_macho_file(&fake_bin.join("file"))?;
-    write_fake_pkg_config(&fake_bin.join("pkg-config"))?;
+    if !options.platform.starts_with("linux-") {
+        write_fake_install_name_tool(&fake_bin.join("install_name_tool"))?;
+        write_fake_lipo(&fake_bin.join("lipo"))?;
+        write_fake_otool(&fake_bin.join("otool"))?;
+        write_fake_macho_file(&fake_bin.join("file"))?;
+        write_fake_pkg_config(&fake_bin.join("pkg-config"))?;
+    }
     write_fake_spc(&fake_bin.join("spc"))?;
     write_file(&curl_log, "")?;
     write_file(&deleted_rpath_log, "")?;
@@ -3475,7 +4103,12 @@ fn run_php_build_recipe_smoke_with_options(
         .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
         .env("PV_BUILD_RUN_ID", "local-test")
         .env("PV_COMMIT", "0123456789abcdef0123456789abcdef01234567")
-        .env("PV_RECIPE_PLATFORM", "darwin-arm64")
+        .env("PV_RECIPE_PLATFORM", options.platform)
+        .env(
+            "PV_TEST_PHP_INVALID_ELF",
+            if options.invalid_elf { "1" } else { "" },
+        )
+        .env("PV_BUILD_JOBS", "2")
         .env("PV_RECIPE_TRACK", options.recipe_track)
         .env("PV_TEST_FRANKENPHP_VERSION", options.frankenphp_version)
         .env(
@@ -3502,7 +4135,10 @@ fn run_php_build_recipe_smoke_with_options(
             "PV_TEST_STATICPHP_BUILDROOT_LIB",
             out_dir
                 .join("work")
-                .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
+                .join(format!(
+                    "php-pair-{}-{}",
+                    options.recipe_track, options.platform
+                ))
                 .join("staticphp")
                 .join("buildroot")
                 .join("lib"),
@@ -3546,46 +4182,103 @@ fn run_php_build_recipe_smoke_with_options(
         )
         .env("PV_TEST_VALIDATE_LOG", &validate_log)
         .env("PV_TEST_SPC_LOG", &spc_log);
+    if options.platform.starts_with("linux-") {
+        command
+            .env("SPC_LIBC", "musl")
+            .env("SPC_TARGET", "native-native-musl");
+    }
     let output = command.output()?;
 
     let php_artifact_version = format!("{}-pv1", options.php_version);
-    let php_artifact_basename = format!("php-{php_artifact_version}-darwin-arm64");
+    let php_artifact_basename = format!("php-{php_artifact_version}-{}", options.platform);
     let php_archive = out_dir.join(format!("{php_artifact_basename}.tar.gz"));
     let php_record = record_dir
         .join("php")
         .join(options.recipe_track)
         .join(&php_artifact_version)
-        .join("darwin-arm64")
+        .join(options.platform)
         .join(format!("{php_artifact_basename}.json"));
     let php_notice = out_dir
         .join("work")
-        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
-        .join(php_artifact_basename)
+        .join(format!(
+            "php-pair-{}-{}",
+            options.recipe_track, options.platform
+        ))
+        .join(&php_artifact_basename)
         .join("NOTICE");
 
     let frankenphp_artifact_version = format!(
         "{}-frankenphp{}-pv1",
         options.php_version, options.frankenphp_version
     );
-    let frankenphp_artifact_basename =
-        format!("frankenphp-{frankenphp_artifact_version}-darwin-arm64");
+    let frankenphp_artifact_basename = format!(
+        "frankenphp-{frankenphp_artifact_version}-{}",
+        options.platform
+    );
     let frankenphp_archive = out_dir.join(format!("{frankenphp_artifact_basename}.tar.gz"));
     let frankenphp_record = record_dir
         .join("frankenphp")
         .join(options.recipe_track)
         .join(&frankenphp_artifact_version)
-        .join("darwin-arm64")
+        .join(options.platform)
         .join(format!("{frankenphp_artifact_basename}.json"));
     let frankenphp_notice = out_dir
         .join("work")
-        .join(format!("php-pair-{}-darwin-arm64", options.recipe_track))
-        .join(frankenphp_artifact_basename)
+        .join(format!(
+            "php-pair-{}-{}",
+            options.recipe_track, options.platform
+        ))
+        .join(&frankenphp_artifact_basename)
         .join("NOTICE");
 
     let php_record_json = read_optional_file(&php_record)?;
     let frankenphp_record_json = read_optional_file(&frankenphp_record)?;
     let php_notice = read_optional_file(&php_notice)?;
     let frankenphp_notice = read_optional_file(&frankenphp_notice)?;
+
+    if options.platform.starts_with("linux-") && output.status.success() {
+        let relocated = tempdir.path().join("relocated");
+        create_dir_all(&relocated)?;
+        for archive in [&php_archive, &frankenphp_archive] {
+            let extraction = StdCommand::new("tar")
+                .arg("-xzf")
+                .arg(archive)
+                .arg("-C")
+                .arg(&relocated)
+                .output()?;
+            assert!(
+                extraction.status.success(),
+                "{}",
+                command_output_debug(&extraction)
+            );
+        }
+        let hidden = StdCommand::new("mv")
+            .arg(out_dir.join("work"))
+            .arg(tempdir.path().join("hidden-build"))
+            .output()?;
+        assert!(hidden.status.success(), "{}", command_output_debug(&hidden));
+        for (artifact, binary) in [
+            (&php_artifact_basename, "php"),
+            (&frankenphp_artifact_basename, "frankenphp"),
+        ] {
+            let root = relocated.join(artifact);
+            for extension in ["redis", "xdebug"] {
+                let loaded = StdCommand::new(root.join("bin").join(binary))
+                    .arg(
+                        root.join("lib/php/extensions")
+                            .join(format!("{extension}.so")),
+                    )
+                    .env_remove("LD_LIBRARY_PATH")
+                    .env_remove("LD_PRELOAD")
+                    .output()?;
+                assert!(
+                    loaded.status.success(),
+                    "{binary} could not load {extension}: {}",
+                    command_output_debug(&loaded)
+                );
+            }
+        }
+    }
 
     Ok(BuildRecipeRun {
         out_dir: out_dir.to_string(),
@@ -4310,7 +5003,7 @@ case "$url" in
   https://github.com/openssl/openssl/releases/download/openssl-3.5.8/openssl-3.5.8.tar.gz)
     cp "$PV_TEST_OPENSSL_SOURCE_ARCHIVE" "$output"
     ;;
-  https://sources.example.test/boost.tar.gz)
+  https://sources.example.test/boost.tar.bz2)
     cp "$PV_TEST_BOOST_SOURCE_ARCHIVE" "$output"
     ;;
   *)
@@ -4805,8 +5498,18 @@ if [ -f .pv-openssl-prefix ]; then
       openssl_prefix=$(cat .pv-openssl-prefix)
       mkdir -p "$openssl_prefix/include/openssl" "$openssl_prefix/lib"
       printf '%s\n' 'openssl fixture' >"$openssl_prefix/include/openssl/ssl.h"
-      printf '%s\n' 'libssl fixture' >"$openssl_prefix/lib/libssl.3.dylib"
-      printf '%s\n' 'libcrypto fixture' >"$openssl_prefix/lib/libcrypto.3.dylib"
+      case "$PV_RECIPE_PLATFORM" in
+        linux-*)
+          printf '%s\n' 'int crypto_fixture(void) { return 2; }' > crypto.c
+          printf '%s\n' 'int crypto_fixture(void); int ssl_fixture(void) { return crypto_fixture() + 1; }' > ssl.c
+          cc -shared -fPIC crypto.c -Wl,-soname,libcrypto.so.3 -o "$openssl_prefix/lib/libcrypto.so.3"
+          cc -shared -fPIC ssl.c -L"$openssl_prefix/lib" -l:libcrypto.so.3 -Wl,-soname,libssl.so.3 -o "$openssl_prefix/lib/libssl.so.3"
+          ;;
+        *)
+          printf '%s\n' 'libssl fixture' >"$openssl_prefix/lib/libssl.3.dylib"
+          printf '%s\n' 'libcrypto fixture' >"$openssl_prefix/lib/libcrypto.3.dylib"
+          ;;
+      esac
       ;;
     -j)
       [ -n "${2:-}" ] || exit 78
@@ -4850,6 +5553,28 @@ case "${1:-}" in
     for extension in pg_trgm pgcrypto sslinfo; do
       printf '%s fixture\n' "$extension" >"$install_prefix/lib/postgresql/$extension.dylib"
     done
+    case "$PV_RECIPE_PLATFORM" in
+      linux-*)
+        openssl_prefix=$PV_TEST_OPENSSL_BUILD_PREFIX
+        printf '%s\n' 'int ssl_fixture(void); int pq_fixture(void) { return ssl_fixture(); }' > pq.c
+        cc -shared -fPIC pq.c -L"$openssl_prefix/lib" -l:libssl.so.3 -Wl,-soname,libpq.so.5 -Wl,-rpath,/tmp/pv/build/lib -o "$install_prefix/lib/libpq.so.5.17"
+        ln -s libpq.so.5.17 "$install_prefix/lib/libpq.so.5"
+        ln -s libpq.so.5 "$install_prefix/lib/libpq.so"
+        printf '%s\n' 'int pq_fixture(void); int main(void) { return pq_fixture() != 3; }' > main.c
+        for relative in bin/postgres bin/initdb bin/pg_ctl bin/psql bin/pg_config lib/postgresql/pgxs/src/test/regress/pg_regress; do
+          cc main.c -L"$install_prefix/lib" -l:libpq.so.5 -L"$openssl_prefix/lib" -l:libssl.so.3 -l:libcrypto.so.3 -Wl,-rpath,/tmp/pv/build/lib -o "$install_prefix/$relative"
+        done
+        rm "$install_prefix/lib/postgresql/"*.dylib
+        printf '%s\n' 'int pg_fixture(void) { return 1; }' > module.c
+        for extension in pg_trgm pgcrypto sslinfo; do
+          cc -shared -fPIC module.c -o "$install_prefix/lib/postgresql/$extension.so"
+        done
+        if [ -n "${PV_TEST_POSTGRES_INVALID_ELF:-}" ]; then
+          printf '%s\n' 'GLIBC_2.36 { global: pg_fixture; local: *; };' > newer.map
+          cc -shared -fPIC module.c -Wl,--version-script=newer.map -o "$install_prefix/lib/postgresql/pg_trgm.so"
+        fi
+        ;;
+    esac
     while IFS= read -r extension; do
       if [ -n "${PV_TEST_POSTGRES_INSTALL_MISMATCHED_CATALOG:-}" ] && [ "$extension" = unaccent ]; then
         continue
@@ -4919,11 +5644,17 @@ done
 [ -n "$configure_target" ] || exit 78
 [ -n "$prefix" ] || exit 78
 [ -n "$openssl_dir" ] || exit 78
-[ "$MACOSX_DEPLOYMENT_TARGET" = "13.0" ] || exit 79
+case "$PV_RECIPE_PLATFORM" in
+  linux-*)
+    [ -z "${MACOSX_DEPLOYMENT_TARGET:-}" ] || exit 79
+    case " $* " in *' --libdir=lib '*) ;; *) exit 79 ;; esac
+    ;;
+  *) [ "$MACOSX_DEPLOYMENT_TARGET" = "13.0" ] || exit 79 ;;
+esac
 
 printf 'configure-target=%s deployment=%s prefix=%s openssldir=%s ldflags=%s\n' \
   "$configure_target" \
-  "$MACOSX_DEPLOYMENT_TARGET" \
+  "${MACOSX_DEPLOYMENT_TARGET:-}" \
   "$prefix" \
   "$openssl_dir" \
   "${LDFLAGS:-}" >>"$PV_TEST_OPENSSL_BUILD_LOG"
@@ -5137,9 +5868,13 @@ esac
     )
 }
 
-fn write_fake_sysctl(path: &Utf8Path) -> Result<()> {
+fn write_fake_cpu_tools(directory: &Utf8Path) -> Result<()> {
     write_executable(
-        path,
+        &directory.join("nproc"),
+        "#!/bin/sh\n[ \"$#\" -eq 0 ] || exit 78\nprintf '%s\\n' 1\n",
+    )?;
+    write_executable(
+        &directory.join("sysctl"),
         r#"#!/bin/sh
 set -eu
 
@@ -5470,6 +6205,54 @@ for arg in "$@"; do
       ;;
   esac
 done
+
+case "$PV_RECIPE_PLATFORM" in
+  linux-*)
+    printf 'spc-libc=%s\nspc-target=%s\nspc-concurrency=%s\n' \
+      "${SPC_LIBC:-}" "${SPC_TARGET:-}" "${SPC_CONCURRENCY:-}" >>"$PV_TEST_SPC_LOG"
+    [ "${SPC_LIBC:-}" = glibc ] || exit 91
+    [ -z "${SPC_TARGET:-}" ] || exit 92
+    [ "${SPC_CONCURRENCY:-}" = 2 ] || exit 93
+    [ -z "${MACOSX_DEPLOYMENT_TARGET:-}" ] || exit 94
+    mkdir -p buildroot/include/webp
+    printf '%s\n' '/* libwebp has no FrankenPHP helper declarations. */' >buildroot/include/webp/types.h
+    printf '%s\n' '#include "types.h"' 'void *helper = (void *)__hash_update_string__;' | \
+      cc ${frankenphp_CFLAGS:-} -I"$PWD/buildroot/include/webp" -Werror -x c -fsyntax-only -
+    cat >sapi.c <<'C'
+#include <dlfcn.h>
+#include <stdio.h>
+int pv_fixture_api(void) { return 42; }
+int main(int argc, char **argv) {
+    if (argc != 2) return 1;
+    void *module = dlopen(argv[1], RTLD_NOW);
+    if (!module) { fprintf(stderr, "%s\n", dlerror()); return 2; }
+    int (*entry)(void) = dlsym(module, "module_entry");
+    int result = entry && entry() == 42 ? 0 : 3;
+    dlclose(module);
+    return result;
+}
+C
+    for binary in php frankenphp; do
+      [ -f "buildroot/bin/$binary" ] || continue
+      case "$binary" in
+        php) linker_flags=$SPC_CMD_VAR_PHP_MAKE_EXTRA_LDFLAGS ;;
+        frankenphp) linker_flags=$frankenphp_LDFLAGS ;;
+      esac
+      cc sapi.c $linker_flags -ldl -o "buildroot/bin/$binary"
+    done
+    printf '%s\n' 'extern int pv_fixture_api(void);' \
+      'int module_entry(void) { return pv_fixture_api(); }' >module.c
+    for module in buildroot/lib/php/extensions/*.so; do
+      [ -f "$module" ] || continue
+      if [ "${PV_TEST_PHP_INVALID_ELF:-}" = 1 ] && [ "${module##*/}" = redis.so ]; then
+        printf '%s\n' 'GLIBC_2.36 { global: module_entry; local: *; };' >newer.map
+        cc -shared -fPIC module.c -Wl,--version-script=newer.map -o "$module"
+      else
+        cc -shared -fPIC module.c -Wl,-rpath,"$PWD/buildroot/lib" -o "$module"
+      fi
+    done
+    ;;
+esac
 "#,
     )
 }
@@ -5600,6 +6383,7 @@ prefix=
 with_ssl=false
 with_includes=false
 with_libraries=false
+disable_rpath=false
 for argument in "$@"; do
   printf '[%s]' "$argument" >>"$PV_TEST_CONFIGURE_LOG"
   case "$argument" in
@@ -5607,6 +6391,7 @@ for argument in "$@"; do
     --with-ssl=openssl) with_ssl=true ;;
     --with-includes=*) with_includes=true ;;
     --with-libraries=*) with_libraries=true ;;
+    --disable-rpath) disable_rpath=true ;;
   esac
 done
 printf '\n' >>"$PV_TEST_CONFIGURE_LOG"
@@ -5615,6 +6400,12 @@ printf '\n' >>"$PV_TEST_CONFIGURE_LOG"
 [ "$with_ssl" = true ] || exit 78
 [ "$with_includes" = true ] || exit 78
 [ "$with_libraries" = true ] || exit 78
+case "$PV_RECIPE_PLATFORM" in
+  linux-*)
+    [ "$disable_rpath" = true ] || exit 79
+    case "${CFLAGS:-} ${LDFLAGS:-}" in *-mmacosx*) exit 79 ;; esac
+    ;;
+esac
 printf '%s\n' "$prefix" >.pv-postgres-prefix
 "#,
     )?;
@@ -5649,13 +6440,52 @@ fn write_openssl_source_archive(path: &Utf8Path) -> Result<()> {
     Ok(())
 }
 
-fn write_backing_source_archive(path: &Utf8Path, recipe: BackingBuildRecipe) -> Result<()> {
-    match recipe.source_kind {
-        BackingSourceKind::Redis => write_redis_source_archive(path),
-        BackingSourceKind::TarGzBinary => {
-            write_single_file_archive(path, recipe.resource, b"binary fixture")
+fn write_backing_source_archive(
+    path: &Utf8Path,
+    recipe: BackingBuildRecipe,
+    invalid_elf_rpath: bool,
+) -> Result<()> {
+    if matches!(recipe.source_kind, BackingSourceKind::Redis) {
+        return write_redis_source_archive_with_options(path, true, invalid_elf_rpath);
+    }
+    if recipe.platform.starts_with("linux-") {
+        let source = path.with_extension("c");
+        let binary = path.with_extension("elf");
+        write_file(&source, "int main(void) { return 0; }\n")?;
+        let mut command = StdCommand::new("cc");
+        command.arg(&source).arg("-o").arg(&binary);
+        if invalid_elf_rpath {
+            command.arg("-Wl,-rpath,/tmp/build/lib");
         }
-        BackingSourceKind::ZipBinary => write_file(path, "zip fixture\n"),
+        let output = command.output()?;
+        assert!(
+            output.status.success(),
+            "ELF compilation failed: {}",
+            command_output_debug(&output)
+        );
+        if matches!(recipe.source_kind, BackingSourceKind::ZipBinary) {
+            let output = StdCommand::new("python3")
+                .args([
+                    "-c",
+                    "import sys, zipfile\nwith zipfile.ZipFile(sys.argv[1], 'w') as archive:\n    archive.write(sys.argv[2], sys.argv[3])",
+                ])
+                .arg(path)
+                .arg(&binary)
+                .arg(recipe.resource)
+                .output()?;
+            assert!(
+                output.status.success(),
+                "ZIP creation failed: {}",
+                command_output_debug(&output)
+            );
+            return Ok(());
+        }
+        return write_single_file_archive(path, recipe.resource, &read_bytes(&binary)?);
+    }
+    if matches!(recipe.source_kind, BackingSourceKind::ZipBinary) {
+        write_file(path, "zip fixture\n")
+    } else {
+        write_single_file_archive(path, recipe.resource, b"binary fixture")
     }
 }
 
@@ -5694,10 +6524,6 @@ fn write_single_binary_source_archive(path: &Utf8Path, binary_name: &str) -> Res
     Ok(())
 }
 
-fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
-    write_redis_source_archive_with_options(path, true)
-}
-
 #[expect(
     clippy::disallowed_types,
     reason = "release tooling tests create source tarball fixtures directly"
@@ -5705,10 +6531,26 @@ fn write_redis_source_archive(path: &Utf8Path) -> Result<()> {
 fn write_redis_source_archive_with_options(
     path: &Utf8Path,
     include_fast_float_legal_header: bool,
+    invalid_elf_rpath: bool,
 ) -> Result<()> {
     let file = std::fs::File::create(path)?;
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = Builder::new(encoder);
+
+    append_archive_file(
+        &mut builder,
+        "redis-source/src/fixture.c",
+        b"int main(void) { return 0; }\n",
+    )?;
+    let linker_flags = if invalid_elf_rpath {
+        "-Wl,-rpath,/tmp/build/lib"
+    } else {
+        ""
+    };
+    let makefile = format!(
+        "all:\n\ttest \"$(BUILD_TLS)\" = no\n\t$(CC) src/fixture.c -o src/redis-server {linker_flags}\n\t$(CC) src/fixture.c -o src/redis-cli\n"
+    );
+    append_archive_file(&mut builder, "redis-source/Makefile", makefile.as_bytes())?;
 
     append_archive_file(
         &mut builder,
@@ -5824,10 +6666,14 @@ fn archive_entries(path: &Utf8Path) -> Result<Vec<String>> {
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "release tooling tests read local source archive fixtures to seed matching checksums"
+    reason = "release tooling tests read local source archives and compiled fixture payloads"
 )]
+fn read_bytes(path: &Utf8Path) -> Result<Vec<u8>> {
+    Ok(std::fs::read(path)?)
+}
+
 fn file_sha256(path: &Utf8Path) -> Result<String> {
-    let bytes = std::fs::read(path)?;
+    let bytes = read_bytes(path)?;
     let mut hasher = Sha256::new();
     hasher.update(&bytes);
 

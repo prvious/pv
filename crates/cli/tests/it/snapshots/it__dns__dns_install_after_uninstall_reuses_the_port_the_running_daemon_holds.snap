@@ -21,7 +21,7 @@ expression: "(uninstall, reinstall, system_resolver_config,\nenvironment.operati
         stdout: "Prepared PV DNS resolver config\n  path: <tempdir>/home/.pv/config/resolver/test\n  DNS resolver port: <dns-port>\nPV daemon is running.\nInstalled system resolver config: <tempdir>/etc/resolver/test\n",
         stderr: "",
     },
-    "# Managed by PV\n# Source: PV prepared resolver config for /etc/resolver/test\nnameserver 127.0.0.1\nport <dns-port>\n",
+    "# Managed by PV\n# Source: PV prepared resolver configuration\nnameserver 127.0.0.1\nport <dns-port>\n",
     [
         "install resolver <tempdir>/home/.pv/config/resolver/test -> <tempdir>/etc/resolver/test",
         "remove resolver <tempdir>/etc/resolver/test",

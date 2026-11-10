@@ -1,7 +1,9 @@
-use std::io::{self, Read};
-#[cfg(target_os = "macos")]
+use std::io;
+use std::io::Read;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::ExitStatus;
-use std::process::{Child, Output, Stdio};
+use std::process::Output;
+use std::process::{Child, Stdio};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
 
@@ -9,7 +11,7 @@ use wait_timeout::ChildExt;
 
 use crate::PlatformError;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn run_system_command(program: &str, args: &[&str]) -> Result<(), PlatformError> {
     let command = format!("{program} {}", args.join(" "));
     let status = command_status(program, args).map_err(|source| {
@@ -96,7 +98,7 @@ fn command_failure_status(output: &Output) -> String {
 )]
 type StdCommand = std::process::Command;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn command_status(program: &str, args: &[&str]) -> io::Result<ExitStatus> {
     StdCommand::new(program).args(args).status()
 }

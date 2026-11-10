@@ -372,14 +372,14 @@ mod tests {
     use std::{future, io, time::Duration};
 
     use camino_tempfile::tempdir;
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use insta::assert_debug_snapshot;
     use platform::clock::{self, real};
     use platform::{PlatformCapability, PlatformError, PlatformTarget};
     use state::PvPaths;
     use tokio::sync::oneshot;
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     use super::publish_started_daemon;
 
     use super::{
@@ -395,17 +395,17 @@ mod tests {
         let started = build_runtime()?
             .block_on(RunningDaemon::start_for_target(
                 paths.clone(),
-                PlatformTarget::Linux,
+                PlatformTarget::Windows,
             ))
             .map(|_daemon| ());
-        let ran = run_blocking_for_target(paths.clone(), PlatformTarget::Linux);
+        let ran = run_blocking_for_target(paths.clone(), PlatformTarget::Windows);
 
         for result in [started, ran] {
             assert!(matches!(
                 result,
                 Err(DaemonError::Platform(PlatformError::Unsupported {
                     capability: PlatformCapability::DaemonIpc,
-                    target: PlatformTarget::Linux,
+                    target: PlatformTarget::Windows,
                 }))
             ));
         }
@@ -449,14 +449,17 @@ mod tests {
                     }
                 )
         ));
+        let address = platform::DNS_LISTEN_ADDRESS;
         assert!(
-            message.starts_with("DNS resolver failed to bind UDP on 127.0.0.1:5353"),
+            message.starts_with(&format!(
+                "DNS resolver failed to bind UDP on {address}:5353"
+            )),
             "{message}"
         );
         assert!(message.contains("socket cleanup failed"), "{message}");
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn daemon_publication_failure_records_startup_and_cleanup_errors() -> anyhow::Result<()> {
         for cleanup_fails in [false, true] {
@@ -512,7 +515,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     #[tokio::test]
     async fn startup_records_invalid_previous_daemon_record() -> anyhow::Result<()> {
         let tempdir = tempdir()?;

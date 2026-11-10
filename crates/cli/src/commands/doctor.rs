@@ -2,8 +2,8 @@ use std::process::ExitCode;
 
 use camino::Utf8PathBuf;
 use platform::{
-    CaFileState, LaunchAgentFileState, LocalCaMetadata, ResolverConfig, ResolverFileState,
-    TrustDomainState,
+    CaFileState, DAEMON_REGISTRATION_NAME, DaemonRegistrationFileState, LocalCaMetadata,
+    ResolverConfig, ResolverFileState, TrustDomainState,
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
@@ -16,6 +16,7 @@ use crate::error::ExecuteError;
 use crate::helper_release::HelperReleaseMetadata;
 use crate::output::{Line, Mark, Output, Streams, Tone};
 
+use super::linux_distribution::LinuxDistribution;
 use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
@@ -39,9 +40,11 @@ pub(crate) fn run(
     Ok(exit_code)
 }
 
-/// The checks grouped for every output surface.
+/// Read-only diagnostics shared by every output surface.
 #[derive(Serialize)]
 struct DoctorReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    linux_distribution: Option<LinuxDistribution>,
     sections: [DoctorSection; 3],
 }
 
@@ -55,9 +58,10 @@ impl DoctorReport {
     fn read(environment: &impl Environment) -> Result<Self, ExecuteError> {
         let paths = pv_paths(environment)?;
         let database = Database::open_read_only(&paths)?;
-        let launch_agent_path = launch_agent_path(environment)?;
-        let launch_agent = platform::inspect_launch_agent_file(&launch_agent_path, None);
-        let sections = [
+        let daemon_registration_path = daemon_registration_path(environment)?;
+        let registration =
+            platform::inspect_daemon_registration_file(&daemon_registration_path, None);
+        let mut sections = [
             DoctorSection {
                 title: "System",
                 checks: vec![
@@ -77,8 +81,8 @@ impl DoctorReport {
             DoctorSection {
                 title: "Daemon & jobs",
                 checks: vec![
-                    launch_agent_check(&launch_agent),
-                    daemon_socket_check(&paths, &launch_agent),
+                    daemon_registration_check(&registration),
+                    daemon_socket_check(&paths, &registration),
                     recent_jobs_check(database.as_ref())?,
                     runtime_states_check(database.as_ref())?,
                     manifest_cache_check(&paths),
@@ -86,7 +90,40 @@ impl DoctorReport {
             },
         ];
 
-        Ok(Self { sections })
+        let local =
+            platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
+        let metadata = metadata_from_local_ca(&local);
+        match super::ca::browser_ca_reports(environment, &paths, metadata.as_ref()) {
+            Ok(reports) => {
+                for report in reports {
+                    let mut detail = format!(
+                        "{}: {}",
+                        report.database,
+                        super::ca::trust_state_text(&report.state).1
+                    );
+                    if let Some(message) = report.detail() {
+                        detail.push_str(": ");
+                        detail.push_str(message);
+                    }
+                    sections[1].checks.push(if report.current() {
+                        DoctorCheck::pass("Browser CA trust", detail)
+                    } else {
+                        DoctorCheck::fail("Browser CA trust", detail, "pv ca:trust")
+                    });
+                }
+            }
+            Err(error) => sections[1].checks.push(DoctorCheck::fail(
+                "Browser CA trust",
+                error.to_string(),
+                "pv ca:trust",
+            )),
+        }
+
+        Ok(Self {
+            linux_distribution: cfg!(target_os = "linux")
+                .then(|| LinuxDistribution::read(environment)),
+            sections,
+        })
     }
 
     fn checks(&self) -> impl Iterator<Item = &DoctorCheck> {
@@ -111,6 +148,9 @@ impl DoctorReport {
             .max()
             .unwrap_or(0);
         output.report_heading("doctor", Some("PV doctor"))?;
+        if let Some(distribution) = &self.linux_distribution {
+            distribution.write(output)?;
+        }
         for section in &self.sections {
             if decorated {
                 output.section(section.title)?;
@@ -220,7 +260,7 @@ fn privileged_helper_check(environment: &impl Environment, paths: &PvPaths) -> D
         Err(platform::PlatformError::PrivilegedHelperAuthentication(message)) => {
             DoctorCheck::fail(
                 "Privileged helper",
-                "helper belongs to a different macOS account",
+                "helper belongs to a different account",
                 "use the original installing account to run pv uninstall; otherwise perform manual administrator recovery",
             )
             .with_detail(message)
@@ -359,42 +399,58 @@ fn database_check(paths: &PvPaths, database: Option<&Database>) -> DoctorCheck {
     }
 }
 
-fn launch_agent_check(state: &LaunchAgentFileState) -> DoctorCheck {
+fn daemon_registration_check(state: &DaemonRegistrationFileState) -> DoctorCheck {
+    let name = if cfg!(target_os = "linux") {
+        "Daemon service"
+    } else {
+        "Daemon LaunchAgent"
+    };
     match state {
-        LaunchAgentFileState::Current { path, .. } => {
-            DoctorCheck::pass("Daemon LaunchAgent", "PV-owned LaunchAgent is installed")
-                .with_detail(format!("path: {path}"))
+        DaemonRegistrationFileState::Current { path, .. }
+            if !platform::daemon_registration_enabled(path) =>
+        {
+            DoctorCheck::fail(
+                name,
+                format!("{DAEMON_REGISTRATION_NAME} is installed but not enabled"),
+                "pv daemon:enable",
+            )
+            .with_detail(format!("path: {path}"))
         }
-        LaunchAgentFileState::Missing { path } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent is missing",
+        DaemonRegistrationFileState::Current { path, .. } => DoctorCheck::pass(
+            name,
+            format!("PV-owned {DAEMON_REGISTRATION_NAME} is installed"),
+        )
+        .with_detail(format!("path: {path}")),
+        DaemonRegistrationFileState::Missing { path } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} is missing"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
-        LaunchAgentFileState::Stale { path, .. } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent is PV-owned but stale",
+        DaemonRegistrationFileState::Stale { path, .. } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} is PV-owned but stale"),
             "pv daemon:restart",
         )
         .with_detail(format!("path: {path}")),
-        LaunchAgentFileState::Conflict { path } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent file is not PV-owned",
+        DaemonRegistrationFileState::Conflict { path } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} file is not PV-owned"),
             "pv daemon:enable",
         )
         .with_detail(format!("path: {path}")),
-        LaunchAgentFileState::Unreadable { path, message } => DoctorCheck::fail(
-            "Daemon LaunchAgent",
-            "LaunchAgent file could not be inspected",
+        DaemonRegistrationFileState::Unreadable { path, message } => DoctorCheck::fail(
+            name,
+            format!("{DAEMON_REGISTRATION_NAME} file could not be inspected"),
             "pv daemon:enable",
         )
         .with_detail(format!("{path}: {message}")),
     }
 }
 
-fn daemon_socket_check(paths: &PvPaths, launch_agent: &LaunchAgentFileState) -> DoctorCheck {
-    let repair = match launch_agent {
-        LaunchAgentFileState::Current { .. } => "pv daemon:restart",
+fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileState) -> DoctorCheck {
+    let repair = match registration {
+        DaemonRegistrationFileState::Current { .. } => "pv daemon:restart",
         _ => "pv daemon:enable",
     };
 
@@ -483,6 +539,13 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
         .with_detail(format!("{path}: {message}")),
     };
 
+    // PV's own routing can be right while the host still bypasses systemd-resolved.
+    if matches!(check.status, CheckStatus::Pass)
+        && cfg!(target_os = "linux")
+        && let Err(error) = environment.check_linux_resolved_stub()
+    {
+        return Ok(DoctorCheck::warn("DNS config", error.to_string(), None));
+    }
     Ok(check)
 }
 
@@ -521,6 +584,7 @@ fn display_port(port: Option<u16>) -> String {
 }
 
 fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
+    let store = super::ca::SYSTEM_STORE_LABEL;
     let local_ca =
         platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
     let local_metadata = metadata_from_local_ca(&local_ca);
@@ -536,7 +600,7 @@ fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
         (CaFileState::Current { .. }, TrustDomainState::NotTrusted { fingerprint }) => {
             DoctorCheck::fail(
                 "Local CA trust",
-                "local CA is not trusted in the System keychain",
+                format!("local CA is not trusted in the {store}"),
                 "pv ca:trust",
             )
             .with_detail(format!("fingerprint: {fingerprint}"))
@@ -548,28 +612,28 @@ fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
             },
         ) => DoctorCheck::fail(
             "Local CA trust",
-            "System keychain has stale PV CA trust",
+            format!("{store} has stale PV CA trust"),
             "pv ca:trust",
         )
         .with_detail(format!("actual fingerprint: {actual_fingerprint}")),
         (CaFileState::Current { .. }, TrustDomainState::Denied { fingerprint }) => {
             DoctorCheck::fail(
                 "Local CA trust",
-                "System keychain denies PV CA trust",
+                format!("{store} denies PV CA trust"),
                 "pv ca:trust",
             )
             .with_detail(format!("fingerprint: {fingerprint}"))
         }
         (CaFileState::Current { .. }, TrustDomainState::Unknown { reason }) => DoctorCheck::fail(
             "Local CA trust",
-            "System keychain trust could not be determined",
+            format!("{store} trust could not be determined"),
             "pv ca:trust",
         )
         .with_detail(reason.clone()),
         (CaFileState::Current { .. }, TrustDomainState::Unreadable { message }) => {
             DoctorCheck::fail(
                 "Local CA trust",
-                "System keychain trust could not be inspected",
+                format!("{store} trust could not be inspected"),
                 "pv ca:trust",
             )
             .with_detail(message.clone())
@@ -790,8 +854,8 @@ fn ca_trust_state(
     platform::inspect_system_ca_trust(metadata, &inspector)
 }
 
-fn launch_agent_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.launch_agent_path())
+fn daemon_registration_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+    Utf8PathBuf::from_path_buf(environment.daemon_registration_path())
         .map_err(|path| CliError::NonUtf8Path { path }.into())
 }
 

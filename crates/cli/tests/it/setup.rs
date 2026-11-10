@@ -1,3 +1,5 @@
+#![cfg(target_os = "macos")]
+
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::io::{self, BufRead, BufReader, Write};
@@ -16,9 +18,10 @@ use cli::{Environment, run_with_environment};
 use insta::{assert_debug_snapshot, assert_snapshot};
 use platform::clock::{self, real};
 use platform::{
-    HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult, LAUNCH_AGENT_LABEL,
-    LaunchAgentConfig, LocalCaMetadata, LowPortInspection, LowPortState, PRIVILEGED_HELPER_VERSION,
-    PfConfReference, PfRedirectConfig, PrivilegedHelperStatus, ResolverConfig, generate_local_ca,
+    DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION,
+    KeychainCertificate, KeychainTrustResult, LocalCaMetadata, LowPortInspection, LowPortState,
+    PRIVILEGED_HELPER_VERSION, PfConfReference, PfRedirectConfig, PrivilegedHelperStatus,
+    ResolverConfig, generate_local_ca,
 };
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use serde_json::json;
@@ -78,7 +81,7 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     current_exe: PathBuf,
-    launch_agent_path: PathBuf,
+    daemon_registration_path: PathBuf,
     resolver_path: PathBuf,
     pf_anchor_path: PathBuf,
     pf_conf_path: PathBuf,
@@ -106,7 +109,7 @@ impl TestEnvironment {
             home: paths.home.as_std_path().to_path_buf(),
             current_dir: paths.current_dir.as_std_path().to_path_buf(),
             current_exe: paths.current_exe.as_std_path().to_path_buf(),
-            launch_agent_path: paths.launch_agent_path.as_std_path().to_path_buf(),
+            daemon_registration_path: paths.daemon_registration_path.as_std_path().to_path_buf(),
             resolver_path: paths.resolver_path.as_std_path().to_path_buf(),
             pf_anchor_path: paths.pf_anchor_path.as_std_path().to_path_buf(),
             pf_conf_path: paths.pf_conf_path.as_std_path().to_path_buf(),
@@ -216,7 +219,7 @@ struct TestEnvironmentPaths<'path> {
     home: &'path Utf8Path,
     current_dir: &'path Utf8Path,
     current_exe: &'path Utf8Path,
-    launch_agent_path: &'path Utf8Path,
+    daemon_registration_path: &'path Utf8Path,
     resolver_path: &'path Utf8Path,
     pf_anchor_path: &'path Utf8Path,
     pf_conf_path: &'path Utf8Path,
@@ -269,24 +272,27 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn launch_agent_path(&self) -> PathBuf {
-        self.launch_agent_path.clone()
+    fn daemon_registration_path(&self) -> PathBuf {
+        self.daemon_registration_path.clone()
     }
 
-    fn bootstrap_launch_agent(&self, plist_path: &Utf8Path) -> Result<(), platform::PlatformError> {
+    fn enable_daemon_registration(
+        &self,
+        plist_path: &Utf8Path,
+    ) -> Result<(), platform::PlatformError> {
         lock(&self.operations).push(format!("bootstrap {plist_path}"));
 
         Ok(())
     }
 
-    fn bootout_launch_agent(&self) -> Result<(), platform::PlatformError> {
-        lock(&self.operations).push(format!("bootout {LAUNCH_AGENT_LABEL}"));
+    fn stop_daemon_registration(&self) -> Result<(), platform::PlatformError> {
+        lock(&self.operations).push(format!("bootout {DAEMON_REGISTRATION_LABEL}"));
 
         Ok(())
     }
 
-    fn kickstart_launch_agent(&self) -> Result<(), platform::PlatformError> {
-        lock(&self.operations).push(format!("kickstart {LAUNCH_AGENT_LABEL}"));
+    fn restart_daemon_registration(&self) -> Result<(), platform::PlatformError> {
+        lock(&self.operations).push(format!("kickstart {DAEMON_REGISTRATION_LABEL}"));
 
         Ok(())
     }
@@ -505,9 +511,9 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
     let prepared_anchor = read_required_file(&fixture.paths.pf_anchor_config())?;
     let system_anchor = read_required_file(&fixture.system_anchor_path)?;
     let system_pf_conf = read_required_file(&fixture.system_pf_conf_path)?;
-    let launch_agent = read_required_file(&fixture.launch_agent_path)?;
+    let launch_agent = read_required_file(&fixture.daemon_registration_path)?;
     let parsed_resolver = ResolverConfig::parse(&prepared_resolver);
-    let parsed_launch_agent = LaunchAgentConfig::parse(&launch_agent);
+    let parsed_launch_agent = DaemonRegistrationConfig::parse(&launch_agent);
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(!output.stderr.contains("error:"));
@@ -925,7 +931,7 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
     assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
-    assert!(read_optional_file(&fixture.launch_agent_path)?.is_none());
+    assert!(read_optional_file(&fixture.daemon_registration_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
     assert!(path_exists(fixture.paths.root()));
     assert!(path_exists(fixture.paths.db()));
@@ -1097,7 +1103,7 @@ fn uninstall_prune_force_removes_all_pv_state() -> anyhow::Result<()> {
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
     assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
     assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
-    assert!(read_optional_file(&fixture.launch_agent_path)?.is_none());
+    assert!(read_optional_file(&fixture.daemon_registration_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
 
     with_normalized_tempdir(tempdir.path(), || {
@@ -1228,7 +1234,7 @@ fn setup_stops_at_a_failed_required_step_on_both_surfaces() -> anyhow::Result<()
 #[derive(Debug)]
 struct Fixture {
     paths: PvPaths,
-    launch_agent_path: camino::Utf8PathBuf,
+    daemon_registration_path: camino::Utf8PathBuf,
     system_resolver_path: camino::Utf8PathBuf,
     system_anchor_path: camino::Utf8PathBuf,
     system_pf_conf_path: camino::Utf8PathBuf,
@@ -1257,7 +1263,8 @@ impl Fixture {
         let current_dir = root.join("work");
         let current_exe = root.join("bin/pv");
         let paths = PvPaths::for_home(&home);
-        let launch_agent_path = root.join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
+        let daemon_registration_path =
+            root.join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
         let system_resolver_path = root.join("etc/resolver/test");
         let system_anchor_path = root.join("etc/pf.anchors/com.prvious.pv");
         let system_pf_conf_path = root.join("etc/pf.conf");
@@ -1266,7 +1273,7 @@ impl Fixture {
                 home: &home,
                 current_dir: &current_dir,
                 current_exe: &current_exe,
-                launch_agent_path: &launch_agent_path,
+                daemon_registration_path: &daemon_registration_path,
                 resolver_path: &system_resolver_path,
                 pf_anchor_path: &system_anchor_path,
                 pf_conf_path: &system_pf_conf_path,
@@ -1277,7 +1284,7 @@ impl Fixture {
 
         Self {
             paths,
-            launch_agent_path,
+            daemon_registration_path,
             system_resolver_path,
             system_anchor_path,
             system_pf_conf_path,

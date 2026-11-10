@@ -7,7 +7,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use futures_util::{Stream, StreamExt, stream};
 use platform::PlatformCapability;
 use platform::clock::{self, Deadline, Limit};
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 use rustix::process::{Pid, Signal, WaitOptions, kill_process_group, waitpid};
 use rustls::pki_types::ServerName;
 use serde::{Deserialize, Serialize};
@@ -27,11 +27,11 @@ pub const READINESS_PROBE_TIMEOUT: Limit = Limit::new("readiness probe", Duratio
 /// group check, with room to spare.
 const MONITOR_STOP_MARGIN: Duration = Duration::from_secs(5);
 /// How long a process group gets to exit after SIGKILL.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 const PROCESS_GROUP_KILL_TIMEOUT: Limit = Limit::new("process group kill", Duration::from_secs(1));
 const PRIVATE_ENVIRONMENT_REDACTION: &str = "<redacted>";
 const PRIVATE_ENVIRONMENT_FINGERPRINT_PREFIX: &str = "sha256:v1:";
-const POSTGRES_RECOVERY: &str = "Restart your Mac, then run this command again.";
+const POSTGRES_RECOVERY: &str = "Restart your computer, then run this command again.";
 pub(crate) const RUNTIME_READINESS_CONCURRENCY_LIMIT: usize = 4;
 
 /// The signal that asks a runtime to shut down gracefully, before the grace period ends in SIGKILL.
@@ -48,7 +48,7 @@ pub enum StopSignal {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ProcessSignal {
-    #[cfg(target_os = "macos")]
+    #[cfg(unix)]
     Stop(StopSignal),
     Kill,
 }
@@ -1011,7 +1011,7 @@ fn require_process_containment() -> Result<(), DaemonError> {
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     let raw_pid =
         i32::try_from(pid).map_err(|source| io::Error::new(io::ErrorKind::InvalidInput, source))?;
@@ -1024,7 +1024,7 @@ fn process_group_pid(pid: u32) -> Result<Pid, DaemonError> {
     })
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonError> {
     let process_group = process_group_pid(pid)?;
     let signal = match signal {
@@ -1034,22 +1034,15 @@ fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<(), DaemonErr
     };
 
     match kill_process_group(process_group, signal) {
-        Ok(()) => Ok(()),
-        Err(source) => {
-            let error = io::Error::from(source);
-            // macOS answers EPERM, not ESRCH, when no member can take a signal: each is an
-            // unreaped zombie or already exiting, as a killed runtime's children briefly are.
-            // Every caller then waits for the group to end, which decides the stop.
-            if process_not_found(&error) || error.kind() == io::ErrorKind::PermissionDenied {
-                return Ok(());
-            }
-
-            Err(error.into())
-        }
+        // macOS answers EPERM, not ESRCH, when no member can take a signal: each is an
+        // unreaped zombie or already exiting, as a killed runtime's children briefly are.
+        // Every caller then waits for the group to end, which decides the stop.
+        Ok(()) | Err(rustix::io::Errno::SRCH | rustix::io::Errno::PERM) => Ok(()),
+        Err(error) => Err(io::Error::from(error).into()),
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonError> {
     require_process_containment()
 }
@@ -1057,7 +1050,7 @@ fn signal_process_group(_pid: u32, _signal: ProcessSignal) -> Result<(), DaemonE
 /// Signals `pid`'s process group with `signal`, then SIGKILL once `grace_period` passes, and
 /// waits until no live member remains. Escalates only while `leader_still_owned` proves the
 /// group still belongs to the runtime.
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(crate) async fn stop_process_group(
     pid: u32,
     signal: StopSignal,
@@ -1090,7 +1083,7 @@ pub(crate) async fn stop_process_group(
     .into())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(crate) async fn wait_for_process_group_exit(
     pid: u32,
     limit: &Limit,
@@ -1293,12 +1286,12 @@ fn read_optional_file(path: &Utf8Path) -> Result<Option<String>, DaemonError> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 fn process_group_has_exited(pid: u32) -> Result<bool, DaemonError> {
     Ok(!platform::process_group_has_live_members(pid)?)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(unix)]
 pub(crate) fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
     let process = process_group_pid(pid)?;
     match waitpid(Some(process), WaitOptions::NOHANG) {
@@ -1307,16 +1300,11 @@ pub(crate) fn reap_process_if_child(pid: u32) -> Result<(), DaemonError> {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(not(unix))]
 fn process_group_has_exited(_pid: u32) -> Result<bool, DaemonError> {
     require_process_containment()?;
 
     Ok(true)
-}
-
-#[cfg(target_os = "macos")]
-fn process_not_found(error: &io::Error) -> bool {
-    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(3)
 }
 
 impl RuntimeMetadata {
@@ -1458,7 +1446,7 @@ mod bounded_readiness_tests {
     }
 }
 
-#[cfg(all(test, target_os = "macos"))]
+#[cfg(all(test, unix))]
 mod tests {
     use std::time::Duration;
 
