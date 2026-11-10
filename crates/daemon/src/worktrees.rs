@@ -51,8 +51,9 @@ pub(crate) enum WorktreeChange {
 
 pub(crate) struct WorktreePlan {
     pub(crate) changes: Vec<WorktreeChange>,
-    /// Sources whose worktrees couldn't all be read. Discovery changes nothing for them, so
-    /// nothing unreadable ever counts as removed.
+    /// Each source whose `.git/worktrees/` couldn't be read, and each entry discovery skipped,
+    /// by source Project ID. Discovery removes nothing for these sources, so nothing unreadable
+    /// ever counts as removed.
     pub(crate) skipped: Vec<(String, DaemonError)>,
 }
 
@@ -62,6 +63,12 @@ struct Worktree {
     worktree_id: Option<String>,
     worktree_name: String,
     path: Utf8PathBuf,
+}
+
+/// The worktrees of a source's readable entries, and why each other entry was skipped.
+struct SourceWorktrees {
+    worktrees: Vec<Worktree>,
+    skipped: Vec<DaemonError>,
 }
 
 /// Reads every source Project's worktrees and returns the changes discovery would make, without
@@ -82,8 +89,8 @@ pub(crate) fn plan_worktree_changes(database: &Database) -> Result<WorktreePlan,
         if discovered_ids.contains(source.id.as_str()) {
             continue;
         }
-        let worktrees = match source_worktrees(&source.path) {
-            Ok(Some(worktrees)) => worktrees,
+        let SourceWorktrees { worktrees, skipped } = match source_worktrees(&source.path) {
+            Ok(Some(source_worktrees)) => source_worktrees,
             Ok(None) => continue,
             Err(error) => {
                 plan.skipped.push((source.id, error));
@@ -103,10 +110,13 @@ pub(crate) fn plan_worktree_changes(database: &Database) -> Result<WorktreePlan,
             database,
             &source,
             &worktrees,
+            skipped.is_empty(),
             &children,
             &opted_out,
             &mut plan.changes,
         )?;
+        plan.skipped
+            .extend(skipped.into_iter().map(|error| (source.id.clone(), error)));
     }
 
     Ok(plan)
@@ -159,22 +169,33 @@ pub(crate) fn registered_worktree_path(
     worktree_id: &str,
 ) -> Result<Option<Utf8PathBuf>, DaemonError> {
     // An unavailable source is not evidence of removal, and discovery leaves it alone too.
-    let Some(worktrees) = source_worktrees(source)? else {
+    let Some(SourceWorktrees { worktrees, skipped }) = source_worktrees(source)? else {
         return Ok(Some(path.to_owned()));
     };
-    Ok(worktrees
+    let registered = worktrees
         .into_iter()
         .find(|worktree| {
             worktree.worktree_id.as_deref() == Some(worktree_id)
                 || (worktree.worktree_id.is_none() && worktree.path == path)
         })
-        .map(|worktree| worktree.path))
+        .map(|worktree| worktree.path);
+    // A skipped entry may be this worktree's, and discovery doesn't remove it either.
+    if registered.is_none()
+        && let Some(error) = skipped.into_iter().next()
+    {
+        return Err(error);
+    }
+
+    Ok(registered)
 }
 
+/// Plans the changes for one source. `all_entries_read` is false when discovery skipped an entry,
+/// which may be the one a discovered Project or an opt-out belongs to, so nothing is removed.
 fn plan_source_changes(
     database: &Database,
     source: &ProjectRecord,
     worktrees: &[Worktree],
+    all_entries_read: bool,
     children: &[&DiscoveredProjectRecord],
     opted_out: &BTreeSet<&str>,
     changes: &mut Vec<WorktreeChange>,
@@ -222,19 +243,21 @@ fn plan_source_changes(
         }
     }
 
-    for child in children {
-        if !registered.contains(&child.worktree_id) {
-            changes.push(WorktreeChange::Remove {
-                project_id: child.project_id.clone(),
-            });
+    if all_entries_read {
+        for child in children {
+            if !registered.contains(&child.worktree_id) {
+                changes.push(WorktreeChange::Remove {
+                    project_id: child.project_id.clone(),
+                });
+            }
         }
-    }
-    for worktree_id in opted_out {
-        if !registered.contains(*worktree_id) {
-            changes.push(WorktreeChange::ForgetOptOut {
-                source_project_id: source.id.clone(),
-                worktree_id: (*worktree_id).to_string(),
-            });
+        for worktree_id in opted_out {
+            if !registered.contains(*worktree_id) {
+                changes.push(WorktreeChange::ForgetOptOut {
+                    source_project_id: source.id.clone(),
+                    worktree_id: (*worktree_id).to_string(),
+                });
+            }
         }
     }
     changes.append(&mut worktree_changes);
@@ -249,7 +272,7 @@ fn path_is_free(database: &Database, path: &Utf8Path) -> Result<bool, DaemonErro
 
 /// The worktrees of the repository whose main checkout holds `source_path`, or `None` when it
 /// isn't a source: a missing directory, or one outside a main checkout.
-fn source_worktrees(source_path: &Utf8Path) -> Result<Option<Vec<Worktree>>, DaemonError> {
+fn source_worktrees(source_path: &Utf8Path) -> Result<Option<SourceWorktrees>, DaemonError> {
     // A missing source changes nothing: its disk might just not be mounted.
     if !state::fs::path_is_directory(source_path)? {
         return Ok(None);
@@ -258,56 +281,78 @@ fn source_worktrees(source_path: &Utf8Path) -> Result<Option<Vec<Worktree>>, Dae
         return Ok(None);
     };
     let mut worktrees = Vec::new();
-    let mut worktree_ids = BTreeSet::new();
+    let mut skipped = Vec::new();
 
     // Git deletes `worktrees/` with its last worktree, so a missing directory means none.
     for entry_dir in state::fs::read_dir_paths(&main_checkout.join(".git/worktrees"))? {
-        if !state::fs::path_is_directory(&entry_dir)? {
-            continue;
+        match read_entry(entry_dir, &relative_path) {
+            Ok(Some(worktree)) => worktrees.push(worktree),
+            Ok(None) => {}
+            Err(error) => skipped.push(error),
         }
-        let gitdir = state::fs::read_to_string(&entry_dir.join("gitdir"))?;
-        // `gitdir` names the checkout's `.git` file, relative to the entry directory when Git's
-        // `worktree.useRelativePaths` is on. Git truncates the file before rewriting it, so an
-        // empty or partly written path is uncertain rather than a move.
-        let checkout_git_file = normalize(&entry_dir.join(gitdir.trim()));
-        if checkout_git_file.file_name() != Some(".git") {
-            return Err(invalid_entry(
-                &entry_dir,
-                "its gitdir doesn't name a checkout's .git file",
-            ));
-        }
-        let Some(checkout) = checkout_git_file.parent() else {
-            return Err(invalid_entry(&entry_dir, "its gitdir names no checkout"));
-        };
-        let Some(worktree_name) = checkout.file_name() else {
-            return Err(invalid_entry(&entry_dir, "its checkout has no name"));
-        };
-        let path = checkout.join(&relative_path);
-        let path = if state::fs::path_is_directory(&path)? {
-            state::fs::canonicalize(&path)?
-        } else {
-            path
-        };
-        let worktree_id = read_worktree_id(&entry_dir)?;
-        // Two entries with one ID, such as a copied `pv-id`, would both claim one Project.
-        if let Some(worktree_id) = &worktree_id
-            && !worktree_ids.insert(worktree_id.clone())
-        {
-            return Err(invalid_entry(
-                &entry_dir,
-                "its pv-id repeats another entry's",
-            ));
-        }
-
-        worktrees.push(Worktree {
-            worktree_id,
-            worktree_name: worktree_name.to_string(),
-            entry_dir,
-            path,
-        });
     }
 
-    Ok(Some(worktrees))
+    // Two entries with one ID, such as a copied `pv-id`, would both claim one Project, and
+    // nothing tells which one owns it.
+    let mut worktree_ids = BTreeSet::new();
+    let repeated_ids = worktrees
+        .iter()
+        .filter_map(|worktree| worktree.worktree_id.clone())
+        .filter(|worktree_id| !worktree_ids.insert(worktree_id.clone()))
+        .collect::<BTreeSet<_>>();
+    let (repeated, worktrees): (Vec<_>, Vec<_>) = worktrees.into_iter().partition(|worktree| {
+        worktree
+            .worktree_id
+            .as_ref()
+            .is_some_and(|worktree_id| repeated_ids.contains(worktree_id))
+    });
+    skipped.extend(
+        repeated.iter().map(|worktree| {
+            invalid_entry(&worktree.entry_dir, "its pv-id repeats another entry's")
+        }),
+    );
+
+    Ok(Some(SourceWorktrees { worktrees, skipped }))
+}
+
+/// Reads one entry of `.git/worktrees/`, or `None` when it isn't a directory.
+fn read_entry(
+    entry_dir: Utf8PathBuf,
+    relative_path: &Utf8Path,
+) -> Result<Option<Worktree>, DaemonError> {
+    if !state::fs::path_is_directory(&entry_dir)? {
+        return Ok(None);
+    }
+    let gitdir = state::fs::read_to_string(&entry_dir.join("gitdir"))?;
+    // `gitdir` names the checkout's `.git` file, relative to the entry directory when Git's
+    // `worktree.useRelativePaths` is on. Git truncates the file before rewriting it, so an
+    // empty or partly written path is uncertain rather than a move.
+    let checkout_git_file = normalize(&entry_dir.join(gitdir.trim()));
+    if checkout_git_file.file_name() != Some(".git") {
+        return Err(invalid_entry(
+            &entry_dir,
+            "its gitdir doesn't name a checkout's .git file",
+        ));
+    }
+    let Some(checkout) = checkout_git_file.parent() else {
+        return Err(invalid_entry(&entry_dir, "its gitdir names no checkout"));
+    };
+    let Some(worktree_name) = checkout.file_name() else {
+        return Err(invalid_entry(&entry_dir, "its checkout has no name"));
+    };
+    let path = checkout.join(relative_path);
+    let path = if state::fs::path_is_directory(&path)? {
+        state::fs::canonicalize(&path)?
+    } else {
+        path
+    };
+
+    Ok(Some(Worktree {
+        worktree_id: read_worktree_id(&entry_dir)?,
+        worktree_name: worktree_name.to_string(),
+        entry_dir,
+        path,
+    }))
 }
 
 /// The main checkout holding `path` and `path` relative to it. The nearest `.git` decides: a
