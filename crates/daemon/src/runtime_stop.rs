@@ -212,6 +212,26 @@ pub async fn stop_recorded_runtimes(paths: PvPaths) -> Result<(), DaemonError> {
     }
 }
 
+/// Stops the recorded Gateway, so it no longer holds ports 80 and 443 when launchd opens them for
+/// a newly loaded LaunchAgent. The caller must verify daemon termination first; the next daemon
+/// starts a fresh Gateway on the new sockets.
+pub fn stop_recorded_gateway_blocking(paths: PvPaths) -> Result<(), DaemonError> {
+    super::build_runtime()?.block_on(stop_recorded_gateway(paths))
+}
+
+async fn stop_recorded_gateway(paths: PvPaths) -> Result<(), DaemonError> {
+    if !fs::path_entry_exists(paths.run())? {
+        return Ok(());
+    }
+    let metadata_path = paths.gateway_runtime_metadata();
+    let subject = monitor_subject(&paths, &metadata_path)?;
+    ProcessSupervisor::new(paths.clone())
+        .stop_monitored_for_shutdown(&subject)
+        .await?;
+
+    remove_record_without_monitor(&paths, &metadata_path)
+}
+
 fn remove_record_without_monitor(
     paths: &PvPaths,
     metadata_path: &Utf8Path,

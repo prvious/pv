@@ -289,6 +289,62 @@ fn daemon_restart_replaces_stale_pv_owned_launch_agent() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// A running Gateway keeps launchd's sockets on ports 80 and 443, so launchd could open new ones
+/// only once it stops. The restart stops the Gateway and leaves every other runtime running.
+#[test]
+fn daemon_restart_stops_the_gateway_before_loading_the_launch_agent_again() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let daemon_registration_path = tempdir
+        .path()
+        .join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
+    let environment = TestEnvironment::new(
+        &home,
+        &tempdir.path().join("work"),
+        &tempdir.path().join("pv"),
+        &daemon_registration_path,
+    );
+    let paths = PvPaths::for_home(&home);
+    platform::write_daemon_registration_file(
+        &daemon_registration_path,
+        &DaemonRegistrationConfig::for_paths(&paths),
+    )?;
+    let gateway = gateway_spec(&paths);
+    let mut worker = gateway.clone();
+    worker.name = "worker".to_owned();
+    worker.resource_name = "frankenphp".to_owned();
+    worker.track = "8.5-test".to_owned();
+    worker.command = paths
+        .resources()
+        .join("frankenphp/8.5/fixture/bin/frankenphp");
+    worker.metadata_path = paths.worker_runtime_metadata("8.5-test");
+    let mut gateway = RuntimeFixture::start(&paths, gateway)?;
+    let mut worker = RuntimeFixture::start(&paths, worker)?;
+    // Health after the restart, health again, then the reconciliation request.
+    let daemon = DaemonFixture::start(&paths, 3)?;
+
+    let output = run_pv(&["daemon:restart"], &environment)?;
+    daemon.finish()?;
+    let gateway_stopped = gateway.records_absent()?;
+    let worker_running = worker.records_exist()?;
+    worker.cleanup()?;
+    gateway.cleanup()?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(gateway_stopped);
+    assert!(worker_running);
+    assert_eq!(
+        environment.operations(),
+        vec![
+            format!("bootout {DAEMON_REGISTRATION_LABEL}"),
+            format!("bootstrap {daemon_registration_path}"),
+            format!("kickstart {DAEMON_REGISTRATION_LABEL}"),
+        ]
+    );
+
+    Ok(())
+}
+
 #[test]
 fn daemon_disable_removes_only_pv_owned_launch_agent() -> anyhow::Result<()> {
     for (name, already_unloaded) in [

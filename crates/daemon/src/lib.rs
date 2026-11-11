@@ -60,8 +60,8 @@ pub use reconciliation::{
     ReconciliationQueue, ReconciliationScope, ReconciliationScopeParseError, RunningReconciliation,
 };
 pub use runtime_stop::{
-    DAEMON_EXIT_GRACE, DaemonProcess, daemon_process_for_stop, stop_recorded_runtimes,
-    stop_recorded_runtimes_blocking,
+    DAEMON_EXIT_GRACE, DaemonProcess, daemon_process_for_stop, stop_recorded_gateway_blocking,
+    stop_recorded_runtimes, stop_recorded_runtimes_blocking,
 };
 pub use supervisor::{
     AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor,

@@ -147,6 +147,11 @@ pub(crate) fn unload_and_wait_for_daemon(
     if let Some(daemon) = daemon {
         daemon.wait_for_exit()?;
     }
+    // A running Gateway would keep launchd's sockets on ports 80 and 443, and launchd couldn't
+    // open new ones when the LaunchAgent loads again. The next daemon starts the Gateway again, so
+    // `.test` is down for a few seconds; workers and resources keep running.
+    #[cfg(target_os = "macos")]
+    ::daemon::stop_recorded_gateway_blocking(paths.clone())?;
     Ok(())
 }
 
