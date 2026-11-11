@@ -1,6 +1,8 @@
 //! Linux: lets PV's daemon open ports 80 and 443 as the user through the kernel's
 //! `net.ipv4.ip_unprivileged_port_start` setting, as Lerd and rootless Docker and Podman do.
 
+use std::io::Read as _;
+
 use camino::{Utf8Path, Utf8PathBuf};
 
 use crate::PlatformError;
@@ -79,21 +81,21 @@ pub(crate) fn apply_unprivileged_ports_privileged() -> Result<(), PlatformError>
     Ok(())
 }
 
-/// Deletes PV's file, and restores the kernel default only when PV's file was there, nothing
-/// else sets the value, and it is still PV's. A value an administrator set without PV stays.
+/// Restores the kernel default when nothing else sets the value and it is still PV's, then deletes
+/// PV's file. Without PV's file, a value an administrator set stays. The file goes last because it
+/// is the evidence that the value is PV's, so a removal that fails earlier is retried in full.
 pub(crate) fn remove_unprivileged_ports_privileged() -> Result<(), PlatformError> {
     let path = Utf8Path::new(UNPRIVILEGED_PORTS_PATH);
-    let owned = read_owned_unit(path)?.is_some();
-    if owned {
-        state::fs::remove_file_if_exists(path)
-            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-    }
     remove_leftover_candidate(path)?;
-    if owned && other_files_setting_ports()?.is_empty() && live_value()? == PV_PORT_START {
+    if read_owned_unit(path)?.is_none() {
+        return Ok(());
+    }
+    if other_files_setting_ports()?.is_empty() && live_value()? == PV_PORT_START {
         write_live_value(KERNEL_DEFAULT_PORT_START)?;
     }
 
-    Ok(())
+    state::fs::remove_file_if_exists(path)
+        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))
 }
 
 fn live_value() -> Result<u32, PlatformError> {
@@ -131,21 +133,32 @@ fn other_files_setting_ports() -> Result<Vec<Utf8PathBuf>, PlatformError> {
     }
     let mut files = Vec::new();
     for path in candidates {
-        if path == UNPRIVILEGED_PORTS_PATH
-            || !state::fs::path_is_file(&path)
-                .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?
-        {
-            continue;
-        }
-        let content = state::fs::read_to_string(&path)
-            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-        if content.lines().any(sets_ports) {
+        if path != UNPRIVILEGED_PORTS_PATH && file_sets_ports(&path)? {
             files.push(path);
         }
     }
     files.sort();
 
     Ok(files)
+}
+
+/// Whether `path` sets the value, read as `systemd-sysctl` reads it: through a symlink, with a link
+/// to `/dev/null` masking it. Comments in any encoding are fine; the key is ASCII.
+fn file_sets_ports(path: &Utf8Path) -> Result<bool, PlatformError> {
+    let failed = |error: &dyn std::fmt::Display| {
+        PlatformError::SystemIntegration(format!("could not read {path}: {error}"))
+    };
+    let Some(mut file) = state::fs::open_read_file(path).map_err(|error| failed(&error))? else {
+        return Ok(false);
+    };
+    if !file.metadata().map_err(|error| failed(&error))?.is_file() {
+        return Ok(false);
+    }
+    let mut content = Vec::new();
+    file.read_to_end(&mut content)
+        .map_err(|error| failed(&error))?;
+
+    Ok(String::from_utf8_lossy(&content).lines().any(sets_ports))
 }
 
 /// A `key = value` line for the setting, in either of sysctl.d's key spellings.

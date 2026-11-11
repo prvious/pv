@@ -10,6 +10,7 @@ use super::{HelperFixture, checksum, root, root_text, with_helper_fixture};
 
 const LIVE_VALUE: &str = "/proc/sys/net/ipv4/ip_unprivileged_port_start";
 const OTHER_FILE: &str = "/etc/sysctl.d/50-pv-system-test-ports.conf";
+const OTHER_TARGET: &str = "/etc/pv-system-test-ports.conf";
 
 #[test]
 #[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, the built helper and a disposable systemd machine"]
@@ -18,7 +19,7 @@ fn kernel_port_setting_applies_and_removes_only_pvs_own_file() -> Result<()> {
 }
 
 fn exercise(fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
-    for path in [UNPRIVILEGED_PORTS_PATH, OTHER_FILE] {
+    for path in [UNPRIVILEGED_PORTS_PATH, OTHER_FILE, OTHER_TARGET] {
         ensure!(
             !fs::path_entry_exists(Utf8Path::new(path))?,
             "refusing existing {path}"
@@ -41,6 +42,7 @@ fn exercise(fixture: &mut HelperFixture, helper: &Utf8Path) -> Result<()> {
         "--",
         UNPRIVILEGED_PORTS_PATH,
         OTHER_FILE,
+        OTHER_TARGET,
     ])
     .and_then(|_output| {
         root(&[
@@ -88,6 +90,22 @@ fn apply_and_remove(fixture: &HelperFixture) -> Result<()> {
         UNPRIVILEGED_PORTS_PATH
     ))?);
     assert!(fs::path_entry_exists(Utf8Path::new(OTHER_FILE))?);
+    assert_eq!(live_value()?, "80");
+
+    // `systemd-sysctl` follows a symlinked file, so the setting it makes is another tool's too.
+    root(&["/usr/bin/rm", "-f", "--", OTHER_FILE])?;
+    fixture.root_file(
+        "other-ports-target.conf",
+        "net.ipv4.ip_unprivileged_port_start = 80\n",
+        OTHER_TARGET,
+        "0644",
+    )?;
+    root(&["/usr/bin/ln", "-s", "--", OTHER_TARGET, OTHER_FILE])?;
+    PrivilegedHelperClient.apply_unprivileged_ports()?;
+    PrivilegedHelperClient.remove_unprivileged_ports()?;
+    assert!(!fs::path_entry_exists(Utf8Path::new(
+        UNPRIVILEGED_PORTS_PATH
+    ))?);
     assert_eq!(live_value()?, "80");
 
     // Without PV's file, an administrator's live value is theirs.
