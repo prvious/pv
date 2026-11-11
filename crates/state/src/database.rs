@@ -11,11 +11,11 @@ use crate::{PvPaths, StateError, fs, migrations};
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
-pub const DNS_PREFERRED_PORT: u16 = 35353;
+pub const DNS_PREFERRED_PORT: u16 = 15353;
 pub const GATEWAY_HTTP_PREFERRED_PORT: u16 = 48080;
 pub const GATEWAY_HTTPS_PREFERRED_PORT: u16 = 48443;
-pub const RUNTIME_PORT_FALLBACK_START: u16 = 45000;
-pub const RUNTIME_PORT_FALLBACK_END: u16 = 48999;
+pub const RUNTIME_PORT_FALLBACK_START: u16 = 15000;
+pub const RUNTIME_PORT_FALLBACK_END: u16 = 18999;
 const PROJECT_ID_LENGTH: usize = 10;
 const PROJECT_ID_ATTEMPTS: usize = 16;
 const PROJECT_ID_ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";

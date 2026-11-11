@@ -3419,12 +3419,12 @@ fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
 
-    let assigned_dns = database.assign_port(PortRequest::pv_dns(), |port| port == 35353)?;
+    let assigned_dns = database.assign_port(PortRequest::pv_dns(), |port| port == 15353)?;
     let reused_dns =
         database.assign_port(PortRequest::pv_dns(), |port| port == assigned_dns.port)?;
     let fallback_dns = {
         database.release_port(PortOwner::Dns)?;
-        database.assign_port(PortRequest::pv_dns(), |port| port != 35353)?
+        database.assign_port(PortRequest::pv_dns(), |port| port != 15353)?
     };
 
     with_normalized_timestamps(|| {

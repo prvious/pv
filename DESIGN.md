@@ -158,7 +158,7 @@ The DNS resolver runs inside the PV daemon process as a dedicated internal task/
 
 macOS is configured once to send `.test` lookups to PV's resolver. The resolver is managed by the PV daemon/supervisor and is part of whole-system PV status.
 
-PV configures macOS with `/etc/resolver/test`, pointing `.test` lookups at PV's internal resolver. Creating or removing this file requires admin privileges, but the resolver itself listens on high loopback ports so the PV daemon does not need to run as root. PV prefers DNS port `35353`. If that port is occupied by another process, PV chooses an available high port, stores it in `pv.db`, and writes that port into `/etc/resolver/test`.
+PV configures macOS with `/etc/resolver/test`, pointing `.test` lookups at PV's internal resolver. Creating or removing this file requires admin privileges, but the resolver itself listens on high loopback ports so the PV daemon does not need to run as root. PV prefers DNS port `15353`. If that port is occupied by another process, PV chooses an available high port, stores it in `pv.db`, and writes that port into `/etc/resolver/test`.
 
 If `/etc/resolver/test` already exists and is not PV-owned, `pv dns:install` and `pv setup` fail safely, report the resolver conflict, and print manual repair instructions instead of overwriting it.
 
@@ -1141,11 +1141,11 @@ Assigned backing Managed Resource ports are persisted in `pv.db` per resource tr
 
 PV does not need a separate port reservation system in v1. Reconciliation picks a port that passes the availability probe and starts the runtime. If another process takes the port before the runtime binds it, the runtime fails readiness with an error identifying the runtime. The next reconciliation finds the foreign listener and picks another port for Managed Resources. Persisted Gateway ports remain unchanged. If another process occupies one, stop or reconfigure that process and retry reconciliation. `pv ports:install` repairs pf redirects to the stored Gateway ports; it does not select replacement backend ports.
 
-When PV needs fallback high ports, it uses the `45000-48999` range. Backing Managed Resources still try conventional default ports first, then fall back into the PV high-port range.
+When PV needs fallback high ports, it uses the `15000-18999` range. The range sits below every supported OS's outgoing-connection range (Linux hands out source ports from 32768, macOS from 49152), so a loopback client's source port can never hold a port PV is about to bind. Backing Managed Resources still try conventional default ports first, then fall back into the PV high-port range.
 
-Gateway, DNS, Project-serving workers, and backing Managed Resources all draw fallback ports from the same `45000-48999` range. PV relies on persisted assignments and collision checks rather than partitioning the range by runtime type.
+Gateway, DNS, Project-serving workers, and backing Managed Resources all draw fallback ports from the same `15000-18999` range. PV relies on persisted assignments and collision checks rather than partitioning the range by runtime type.
 
-Fallback port selection is deterministic. PV scans sequentially within `45000-48999`, starting from the preferred/default port when applicable, then persists the chosen port.
+Fallback port selection is deterministic. PV scans sequentially within `15000-18999`, starting from the preferred/default port when applicable, then persists the chosen port.
 
 Before assigning a fallback port, PV checks existing port assignments in `pv.db` and avoids reusing a port already assigned to another desired runtime, even if that runtime is not currently running.
 

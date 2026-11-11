@@ -938,8 +938,8 @@ fn ports_install_uses_fallback_gateway_ports_when_preferred_ports_are_busy() -> 
     let assignments = Database::open(&paths)?.assigned_ports()?;
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(parsed_anchor.http_port, 45000);
-    assert_eq!(parsed_anchor.https_port, 45001);
+    assert_eq!(parsed_anchor.http_port, 15000);
+    assert_eq!(parsed_anchor.https_port, 15001);
     assert!(assignments.iter().any(|assignment| {
         assignment.owner == PortOwner::Gateway(state::GatewayPort::Http)
             && assignment.port == parsed_anchor.http_port
