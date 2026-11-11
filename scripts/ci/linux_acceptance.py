@@ -18,6 +18,7 @@ APP = INPUTS / "app"
 RELEASE = APP / "pv-release"
 PV = PV_HOME / "bin/pv"
 PORTS_SETTING = Path("/etc/sysctl.d/99-pv-ports.conf")
+UNPRIVILEGED_PORT_START = Path("/proc/sys/net/ipv4/ip_unprivileged_port_start")
 PLATFORM = "linux-arm64" if os.uname().machine == "aarch64" else "linux-amd64"
 EXPECTED = {
     "php": {"8.3", "8.4", "8.5"}, "frankenphp": {"8.3", "8.4", "8.5"},
@@ -147,6 +148,9 @@ def install():
     # Seed downloads after --prune, which removes the first installation's cache.
     prepare_artifacts()
     run("reinstall", "bash", str(installer), "--yes", "--no-setup", timeout=180)
+    # Docker starts a container's network namespace at 0; a distribution starts at 1024.
+    run("unprivileged-ports-default", "sudo", "-n", "sh", "-c",
+        f"echo 1024 > {UNPRIVILEGED_PORT_START}")
     run("setup", str(PV), "setup", "--yes", timeout=600)
 
 
@@ -171,7 +175,7 @@ def https_ready():
 
 
 def unprivileged_port_start():
-    return Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text().strip()
+    return UNPRIVILEGED_PORT_START.read_text().strip()
 
 
 def system_acceptance():
