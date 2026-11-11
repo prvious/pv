@@ -251,15 +251,24 @@ fn gateway_fake_serves_an_inherited_listener_and_keeps_it_through_loads() -> Res
 }
 
 #[test]
-fn gateway_fake_refuses_to_run_without_the_listener_its_config_binds() -> Result<()> {
+fn gateway_fake_refuses_a_descriptor_that_is_not_a_listener() -> Result<()> {
     let tempdir = tempdir()?;
     let root = tempdir.path();
     let config = format!(
         "{{\n    admin \"unix/{}|0600\"\n}}\n\nhttp://pv-gateway.localhost {{\n    bind fd/3\n}}\n",
         root.join("admin.sock")
     );
-    let (_fake, mut process) =
-        spawn_gateway_command(root, "run", &config, FakeSettings::default(), Vec::new())?;
+    let not_a_listener = state::fs::open_append_file(&root.join("not-a-listener"))?;
+    let (_fake, mut process) = spawn_gateway_command(
+        root,
+        "run",
+        &config,
+        FakeSettings::default(),
+        vec![FdMapping {
+            parent_fd: not_a_listener.into(),
+            child_fd: 3,
+        }],
+    )?;
     let status = wait_for_exit(&mut process)?;
     let stderr = state::fs::read_to_string(&root.join("caddy.stderr"))?;
 

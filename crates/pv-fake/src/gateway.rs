@@ -146,10 +146,10 @@ impl InheritedListeners {
 /// Takes ownership of an inherited listener after checking that it is a TCP socket bound to a
 /// loopback port, and keeps descendants from inheriting it. Errors read like Caddy's.
 fn adopt_listener(fd: i32) -> Result<std::net::TcpListener> {
-    // SAFETY: the daemon's monitor mapped the Gateway's listeners to these numbers before exec,
-    // and nothing else in this process has opened a descriptor yet, so each number is either that
-    // listener or not open. `ManuallyDrop` keeps a number that fails the checks below from being
-    // closed.
+    // SAFETY: only the daemon's Gateway monitor starts `caddy run` with a `bind fd/N` config, and it
+    // maps the Gateway's listeners to these numbers before exec, so each is an open descriptor that
+    // nothing else in this process uses. `ManuallyDrop` keeps a descriptor that fails the checks
+    // below open, as it was inherited.
     let listener = ManuallyDrop::new(unsafe { std::net::TcpListener::from_raw_fd(fd) });
     let checked = socket2::SockRef::from(&*listener)
         .r#type()
@@ -286,7 +286,11 @@ impl GatewayConfig {
                 https_site = true;
             }
             if let Some(fd) = line.strip_prefix("bind fd/") {
-                let fd = Some(fd.parse().with_context(|| format!("bind fd/{fd}"))?);
+                let fd = fd
+                    .parse::<u16>()
+                    .map(i32::from)
+                    .with_context(|| format!("bind fd/{fd}"))?;
+                let fd = Some(fd);
                 if https_site {
                     config.https_fd = fd;
                 } else {
