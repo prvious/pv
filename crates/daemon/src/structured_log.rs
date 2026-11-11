@@ -466,6 +466,43 @@ pub(crate) fn project_tls_maintenance_failed(paths: &PvPaths, project_id: &str, 
     );
 }
 
+/// Records the daemon moving its DNS resolver off a port another program took.
+pub(crate) fn dns_port_moved(paths: &PvPaths, from: u16, to: u16) {
+    append_best_effort(
+        paths,
+        "warn",
+        "dns",
+        "dns_port_moved",
+        "DNS port was taken; moved PV's resolver to a new port",
+        &[("from", &from.to_string()), ("to", &to.to_string())],
+    );
+}
+
+/// Records the health tick pointing the system's `.test` lookups back at PV's DNS port.
+pub(crate) fn dns_resolver_repaired(paths: &PvPaths, port: u16) {
+    append_best_effort(
+        paths,
+        "info",
+        "dns",
+        "dns_resolver_repaired",
+        "system resolver configuration repaired",
+        &[("port", &port.to_string())],
+    );
+}
+
+/// Records a system resolver configuration the health tick couldn't repair, or leaves alone because
+/// it isn't PV's.
+pub(crate) fn dns_resolver_not_repaired(paths: &PvPaths, port: u16, reason: &str) {
+    append_best_effort(
+        paths,
+        "warn",
+        "dns",
+        "dns_resolver_not_repaired",
+        "system resolver configuration needs repair",
+        &[("port", &port.to_string()), ("reason", reason)],
+    );
+}
+
 pub(crate) fn runtime_health_scan_failed(paths: &PvPaths, error: &str) {
     append_with_stderr_fallback(
         paths,

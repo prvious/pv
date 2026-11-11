@@ -80,6 +80,16 @@ pub enum DaemonError {
     #[error("{message}")]
     GatewayListeners { message: String },
 
+    /// Another program held the assigned DNS port, and the helper couldn't point `.test` lookups
+    /// at a new one.
+    #[error("{bind_error}; moving PV's DNS resolver to port {port} failed: {source}")]
+    DnsPortMove {
+        port: u16,
+        bind_error: Box<DaemonError>,
+        #[source]
+        source: platform::PlatformError,
+    },
+
     #[error(
         "{source}; additionally failed to remove daemon socket during startup cleanup: {cleanup}"
     )]

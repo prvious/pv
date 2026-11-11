@@ -1890,5 +1890,6 @@ fn test_host() -> Result<daemon::HostIntegration> {
             http_port,
             https_port,
         },
+        dns_repair: daemon::DnsRepair::Off,
     })
 }

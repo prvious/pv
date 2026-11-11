@@ -83,10 +83,11 @@ Daemons started with
 manifest from a closed loopback port, so the fetch fails at once.
 
 Every daemon a test starts takes a `HostIntegration` whose Gateway listeners
-are `GatewayListenerSource::Bind` on two `pv_fake::ports()`; each test crate's
-`test_host()` builds one. Only `pv daemon:run` passes
-`HostIntegration::production()`, because launchd's sockets and ports 80 and 443
-belong to the machine's own PV. A fake's `started` event lists the sockets it
+are `GatewayListenerSource::Bind` on two `pv_fake::ports()` and whose
+`dns_repair` is `DnsRepair::Off`; each test crate's `test_host()` builds one.
+Only `pv daemon:run` passes `HostIntegration::production()`, because launchd's
+sockets, ports 80 and 443, and the privileged helper that repairs DNS belong to
+the machine's own PV. A fake's `started` event lists the sockets it
 inherited, so a test can check that only the Gateway gets the listeners.
 
 A port a test hands to a fake, a runtime, or `pv.db` comes from

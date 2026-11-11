@@ -22,7 +22,7 @@ use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use crate::watcher::{ProjectConfigWatcher, WatchMessage};
-use crate::{DaemonError, GatewayListenerHolder};
+use crate::{DaemonError, DnsRepair, GatewayListenerHolder};
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
 };
@@ -38,6 +38,7 @@ pub(crate) async fn serve(
     mut shutdown: oneshot::Receiver<()>,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
     gateway_listeners: Arc<GatewayListenerHolder>,
+    dns_repair: DnsRepair,
     (project_config_watcher, watch_messages): (
         ProjectConfigWatcher,
         mpsc::UnboundedReceiver<WatchMessage>,
@@ -221,12 +222,20 @@ pub(crate) async fn serve(
             }, if next_health_scan.is_some() && runtime_health_task.is_none() => {
                 let health_paths = paths.clone();
                 let health_runtime_catalog = runtime_catalog.clone();
-                runtime_health_task = Some(tokio::spawn(scan_runtime_health(
-                    health_paths,
-                    health_runtime_catalog,
-                    Some(hooks.clone()),
-                    gateway_listeners.source().ports(),
-                )));
+                let health_hooks = hooks.clone();
+                let gateway_ports = gateway_listeners.source().ports();
+                runtime_health_task = Some(tokio::spawn(async move {
+                    if dns_repair == DnsRepair::Helper {
+                        crate::dns::keep_system_resolver(&health_paths).await;
+                    }
+                    scan_runtime_health(
+                        health_paths,
+                        health_runtime_catalog,
+                        Some(health_hooks),
+                        gateway_ports,
+                    )
+                    .await
+                }));
             }
             scope = background_scope_receiver.recv(), if background_scopes_open => {
                 match scope {

@@ -47,7 +47,9 @@ pub use client::{
 pub use dns::{dns_port_available, response_bytes};
 pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
 pub use health::RUNTIME_HEALTH_SCAN;
-pub use host::{GatewayListenerHolder, HostIntegration, gateway_failure_is_port_conflict};
+pub use host::{
+    DnsRepair, GatewayListenerHolder, HostIntegration, gateway_failure_is_port_conflict,
+};
 pub use monitor::{
     LiveRuntime, MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind,
     MonitorExit, MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, live_runtime,
@@ -166,7 +168,7 @@ impl RunningDaemon {
                 Ok(project_config_watcher) => project_config_watcher,
                 Err(error) => return Err(cleanup_startup_endpoint(&paths, error)),
             };
-        let dns = match dns::RunningDnsResolver::start(paths.clone()).await {
+        let dns = match dns::RunningDnsResolver::start(paths.clone(), host.dns_repair).await {
             Ok(dns) => dns,
             Err(error) => {
                 return Err(cleanup_startup_endpoint(&paths, error));
@@ -182,6 +184,7 @@ impl RunningDaemon {
             shutdown_receiver,
             runtime_catalog,
             gateway_listeners,
+            host.dns_repair,
             project_config_watcher,
         ));
 
@@ -396,6 +399,7 @@ mod tests {
                 http_port,
                 https_port,
             },
+            dns_repair: super::DnsRepair::Off,
         })
     }
 

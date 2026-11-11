@@ -3441,6 +3441,41 @@ fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
     Ok(())
 }
 
+/// The daemon moves its DNS port when another program took it, but never onto a port another
+/// owner holds, as a stopped worker's port looks free.
+#[test]
+fn dns_port_moves_unless_another_owner_holds_the_port() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    database.assign_port(PortRequest::pv_dns(), |port| port == 15353)?;
+    let worker = database.assign_php_worker_port("8.4", |_port| true)?;
+
+    let refused = database.move_port(PortRequest::pv_dns(), worker.port);
+    let moved = database.move_port(PortRequest::pv_dns(), 15400)?;
+
+    assert!(matches!(refused, Err(StateError::NoAvailablePort { .. })));
+    assert_eq!(moved.port, 15400);
+    assert_eq!(
+        database
+            .assigned_ports()?
+            .into_iter()
+            .map(|assignment| (assignment.owner, assignment.port))
+            .collect::<Vec<_>>(),
+        [
+            (PortOwner::Dns, 15400),
+            (
+                PortOwner::PhpWorker {
+                    php_runtime_key: "8.4".to_owned()
+                },
+                worker.port
+            ),
+        ]
+    );
+
+    Ok(())
+}
+
 #[test]
 fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     let tempdir = tempdir()?;

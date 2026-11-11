@@ -160,6 +160,56 @@ print(gateway)
 sys.exit(0 if gateway["status"] == "failed" and "Port 80" in (gateway["message"] or "") else 1)' "$PV_RC_EVIDENCE_DIR/root-holder-status.json"
 }
 
+DNS_PORT_BEFORE_REPAIR=
+DNS_PORT_HOLDER_PID=
+
+record_dns_port() {
+  DNS_PORT_BEFORE_REPAIR=$(pv dns:status | sed -n 's/^DNS port: \([0-9][0-9]*\)$/\1/p')
+  [ -n "$DNS_PORT_BEFORE_REPAIR" ] || return 1
+  printf 'port: %s\n' "$DNS_PORT_BEFORE_REPAIR"
+}
+
+resolver_port() {
+  sed -n 's/^port //p' /etc/resolver/test 2>/dev/null
+}
+
+# The daemon repairs /etc/resolver/test on its next health tick, every 30 s.
+wait_for_resolver_port() {
+  local expected=$1
+  local deadline=$((SECONDS + 40))
+  until [ "$(resolver_port)" = "$expected" ]; do
+    [ "$SECONDS" -le "$deadline" ] || return 1
+    sleep 1
+  done
+  cat /etc/resolver/test
+}
+
+wait_for_moved_resolver_port() {
+  local deadline=$((SECONDS + 40))
+  local port
+  while [ "$SECONDS" -le "$deadline" ]; do
+    port=$(resolver_port)
+    if [ -n "$port" ] && [ "$port" != "$DNS_PORT_BEFORE_REPAIR" ]; then
+      cat /etc/resolver/test
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Holds PV's DNS port over TCP as the user for up to 120 s.
+start_dns_port_holder() {
+  python3 -c 'import socket, sys, time
+listener = socket.socket()
+listener.bind(("127.0.0.1", int(sys.argv[1])))
+listener.listen()
+time.sleep(120)' "$DNS_PORT_BEFORE_REPAIR" &
+  DNS_PORT_HOLDER_PID=$!
+  sleep 1
+  kill -0 "$DNS_PORT_HOLDER_PID"
+}
+
 preserve_rc_binary() {
   install -d "$(dirname "$PV_RC_BIN")" && install -m 755 "$HOME/.pv/bin/pv" "$PV_RC_BIN"
 }
@@ -330,6 +380,7 @@ Privileged macOS RC evidence checklist:
 - LaunchAgent installed, printed with its GatewayHttp and GatewayHttps sockets, restarted, and uninstalled
 - Gateway serves ports 80 and 443 from launchd's sockets
 - a root listener on port 80 fails the Gateway with the port named, doctor names its pid, and daemon:restart recovers
+- the daemon restores a deleted /etc/resolver/test, and moves to a new DNS port when another program holds it
 - Project linked and served through .test
 - PV placeholder TLS leaf recorded and verified with macOS system policy without an explicit anchor
 - Gateway HTTPS verified through installed system trust without --cacert
@@ -394,6 +445,15 @@ record_status root-holder-stop required stop_root_port_80_holder
 record_status root-holder-daemon-restart required pv daemon:restart
 record_status root-holder-reconciliation-after-restart required wait_for_pv_jobs_idle
 record_status root-holder-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains root-holder-serve-https pv-privileged-rc-ok
+record_status dns-port-before-repair required record_dns_port
+record_status dns-resolver-deleted required sudo rm -f /etc/resolver/test
+record_status dns-resolver-repaired required wait_for_resolver_port "$DNS_PORT_BEFORE_REPAIR"
+record_status dns-holder-daemon-disable required pv daemon:disable
+record_status dns-holder-start required start_dns_port_holder
+record_status dns-holder-daemon-enable required pv daemon:enable
+record_status dns-port-moved required wait_for_moved_resolver_port
+record_status dns-moved-lookup required dscacheutil -q host -a name pv-rc-project.test && require_output_contains dns-moved-lookup "ip_address: 127.0.0.1"
+record_status dns-holder-stop required kill "$DNS_PORT_HOLDER_PID"
 record_status update-check required pv update --check --json
 record_status diagnostics required pv doctor
 record_status jobs evidence pv jobs

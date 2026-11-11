@@ -26,6 +26,7 @@ pub(crate) fn test_host() -> anyhow::Result<daemon::HostIntegration> {
             http_port,
             https_port,
         },
+        dns_repair: daemon::DnsRepair::Off,
     })
 }
 

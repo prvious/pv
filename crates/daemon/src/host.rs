@@ -1,4 +1,5 @@
-//! How the daemon reaches the host: where the Gateway's ports 80 and 443 come from.
+//! How the daemon reaches the host: where the Gateway's ports 80 and 443 come from, and whether it
+//! keeps `.test` DNS configured.
 
 use std::sync::{Mutex, PoisonError};
 
@@ -7,18 +8,28 @@ use platform::{GatewayListenerError, GatewayListenerSource, GatewayListeners};
 use crate::DaemonError;
 
 /// What the daemon takes from the host. `pv daemon:run` uses [`HostIntegration::production`];
-/// tests bind two test ports instead.
+/// tests bind two test ports instead and never repair DNS.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct HostIntegration {
     pub gateway_listeners: GatewayListenerSource,
+    pub dns_repair: DnsRepair,
 }
 
 impl HostIntegration {
     pub const fn production() -> Self {
         Self {
             gateway_listeners: GatewayListenerSource::production(),
+            dns_repair: DnsRepair::Helper,
         }
     }
+}
+
+/// Whether the daemon asks PV's privileged helper to keep the system's `.test` resolver
+/// configuration pointed at PV's DNS port.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DnsRepair {
+    Helper,
+    Off,
 }
 
 /// The Gateway's two listening sockets, held for the daemon's lifetime. launchd hands its sockets

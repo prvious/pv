@@ -7,14 +7,16 @@ use hickory_proto::rr::rdata::{A, SOA};
 use hickory_proto::rr::{Name, RData, Record, RecordType};
 use hickory_proto::serialize::binary::BinEncodable;
 use platform::clock;
-use platform::{DNS_LISTEN_ADDRESS, loopback_tcp_port_available};
+use platform::{
+    DNS_LISTEN_ADDRESS, ResolverConfig, ResolverFileState, loopback_tcp_port_available,
+};
 use state::{Database, PortOwner, PortRequest, PvPaths};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, UdpSocket as TokioUdpSocket};
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, JoinSet};
 
-use crate::DaemonError;
+use crate::{DaemonError, DnsRepair, structured_log};
 
 pub const DNS_TTL_SECONDS: u32 = 5;
 const DNS_TCP_ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(50);
@@ -28,8 +30,8 @@ pub struct RunningDnsResolver {
 }
 
 impl RunningDnsResolver {
-    pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
-        let (udp_socket, tcp_listener) = bind_assigned_dns_sockets(&paths).await?;
+    pub async fn start(paths: PvPaths, dns_repair: DnsRepair) -> Result<Self, DaemonError> {
+        let (udp_socket, tcp_listener) = bind_assigned_dns_sockets(&paths, dns_repair).await?;
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let task = tokio::spawn(run_dns_resolver(
             udp_socket,
@@ -86,9 +88,17 @@ impl RunningDnsResolver {
 
 async fn bind_assigned_dns_sockets(
     paths: &PvPaths,
+    dns_repair: DnsRepair,
 ) -> Result<(TokioUdpSocket, TokioTcpListener), DaemonError> {
     if let Some(port) = assigned_dns_port(paths)? {
-        return bind_dns_sockets(port).await;
+        return match bind_dns_sockets(port).await {
+            Err(error)
+                if dns_repair == DnsRepair::Helper && dns_bind_error_is_addr_in_use(&error) =>
+            {
+                move_dns_port(paths, port, error).await
+            }
+            result => result,
+        };
     }
 
     let mut last_bind_error = None;
@@ -119,6 +129,115 @@ async fn bind_assigned_dns_sockets(
         database.assign_port(PortRequest::pv_dns(), dns_port_available)?
     };
     bind_dns_sockets(assignment.port).await
+}
+
+/// Another program took the assigned DNS port. Binds the next free candidate, points the system's
+/// `.test` lookups at it through the helper, and only then records it in `pv.db`. When the helper
+/// fails, the candidate is dropped and startup fails as it would without the move.
+async fn move_dns_port(
+    paths: &PvPaths,
+    assigned: u16,
+    bind_error: DaemonError,
+) -> Result<(TokioUdpSocket, TokioTcpListener), DaemonError> {
+    let held = Database::open(paths)?
+        .assigned_ports()?
+        .into_iter()
+        .map(|assignment| assignment.port)
+        .collect::<Vec<_>>();
+    let candidates = PortRequest::pv_dns()
+        .candidates()
+        .into_iter()
+        .filter(|candidate| *candidate != assigned && !held.contains(candidate))
+        .take(DNS_BIND_ATTEMPTS);
+    let mut bound = None;
+    for candidate in candidates {
+        match bind_dns_sockets(candidate).await {
+            Ok(sockets) => {
+                bound = Some((candidate, sockets));
+                break;
+            }
+            Err(error) if dns_bind_error_is_addr_in_use(&error) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    let Some((candidate, sockets)) = bound else {
+        return Err(bind_error);
+    };
+    if let Err(source) =
+        tokio::task::spawn_blocking(move || platform::apply_system_resolver(candidate)).await?
+    {
+        return Err(DaemonError::DnsPortMove {
+            port: candidate,
+            bind_error: Box::new(bind_error),
+            source,
+        });
+    }
+    Database::open(paths)?.move_port(PortRequest::pv_dns(), candidate)?;
+    structured_log::dns_port_moved(paths, assigned, candidate);
+
+    Ok(sockets)
+}
+
+/// What the health tick does about the system's `.test` resolver configuration.
+#[derive(Debug, Eq, PartialEq)]
+enum ResolverRepair {
+    LeaveAlone,
+    Apply,
+    Report,
+}
+
+fn resolver_repair(state: &ResolverFileState) -> ResolverRepair {
+    match state {
+        ResolverFileState::Current { .. } => ResolverRepair::LeaveAlone,
+        ResolverFileState::Missing { .. } | ResolverFileState::Stale { .. } => {
+            ResolverRepair::Apply
+        }
+        ResolverFileState::Conflict { .. } | ResolverFileState::Unreadable { .. } => {
+            ResolverRepair::Report
+        }
+    }
+}
+
+/// Points the system's `.test` lookups back at PV's DNS port when they're missing or stale, through
+/// the helper. Another tool's configuration and a failed read are only logged. The next tick tries
+/// again; `pv status` and `pv doctor` keep reporting what's wrong.
+pub(crate) async fn keep_system_resolver(paths: &PvPaths) {
+    let port = match assigned_dns_port(paths) {
+        Ok(Some(port)) => port,
+        Ok(None) => return,
+        Err(error) => {
+            structured_log::runtime_health_scan_failed(paths, &error.to_string());
+            return;
+        }
+    };
+    let inspected = tokio::task::spawn_blocking(move || {
+        platform::inspect_system_resolver(Some(&ResolverConfig::new(port)))
+    })
+    .await;
+    let state = match inspected {
+        Ok(state) => state,
+        Err(error) => {
+            structured_log::dns_resolver_not_repaired(paths, port, &error.to_string());
+            return;
+        }
+    };
+    match resolver_repair(&state) {
+        ResolverRepair::LeaveAlone => {}
+        ResolverRepair::Apply => {
+            match tokio::task::spawn_blocking(move || platform::apply_system_resolver(port)).await {
+                Ok(Ok(())) => structured_log::dns_resolver_repaired(paths, port),
+                Ok(Err(error)) => {
+                    structured_log::dns_resolver_not_repaired(paths, port, &error.to_string());
+                }
+                Err(error) => {
+                    structured_log::dns_resolver_not_repaired(paths, port, &error.to_string());
+                }
+            }
+        }
+        ResolverRepair::Report => {
+            structured_log::dns_resolver_not_repaired(paths, port, &format!("{state:?}"));
+        }
+    }
 }
 
 fn assigned_dns_port(paths: &PvPaths) -> Result<Option<u16>, DaemonError> {
@@ -301,9 +420,38 @@ mod tests {
     use hickory_proto::rr::{DNSClass, Name, RData, RecordType};
     use hickory_proto::serialize::binary::BinEncodable;
     use insta::assert_debug_snapshot;
+    use platform::ResolverFileState;
+
+    use super::resolver_repair;
 
     const REQUEST_ID: u16 = 42;
     const EXPECTED_DNS_TTL_SECONDS: u32 = 5;
+
+    /// The health tick repairs only a missing or stale PV configuration and logs anything else.
+    #[test]
+    fn the_health_tick_applies_only_missing_or_stale_resolver_configuration() {
+        let path = || "/etc/resolver/test".into();
+        let decisions = [
+            ResolverFileState::Current {
+                path: path(),
+                port: 15353,
+            },
+            ResolverFileState::Missing { path: path() },
+            ResolverFileState::Stale {
+                path: path(),
+                expected_port: Some(15353),
+                actual_port: Some(15354),
+            },
+            ResolverFileState::Conflict { path: path() },
+            ResolverFileState::Unreadable {
+                path: path(),
+                message: "permission denied".to_owned(),
+            },
+        ]
+        .map(|state| (format!("{state:?}"), resolver_repair(&state)));
+
+        assert_debug_snapshot!(decisions);
+    }
 
     #[test]
     fn builds_a_loopback_answer_and_nodata_for_aaaa() -> Result<()> {

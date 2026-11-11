@@ -19,6 +19,7 @@ RELEASE = APP / "pv-release"
 PV = PV_HOME / "bin/pv"
 PORTS_SETTING = Path("/etc/sysctl.d/99-pv-ports.conf")
 UNPRIVILEGED_PORT_START = Path("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+DNS_UNIT = Path("/etc/systemd/system/pv-dns.service")
 PLATFORM = "linux-arm64" if os.uname().machine == "aarch64" else "linux-amd64"
 EXPECTED = {
     "php": {"8.3", "8.4", "8.5"}, "frankenphp": {"8.3", "8.4", "8.5"},
@@ -174,6 +175,16 @@ def https_ready():
     return True
 
 
+def test_domain_resolves():
+    result = subprocess.run(["getent", "ahostsv4", "probe.test"], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, check=False)
+    return result.returncode == 0 and "127.0.0.1" in result.stdout
+
+
+def dns_repaired():
+    return DNS_UNIT.exists() and test_domain_resolves()
+
+
 def unprivileged_port_start():
     return UNPRIVILEGED_PORT_START.read_text().strip()
 
@@ -208,6 +219,11 @@ def system_acceptance():
     wait_for("restart reconciliation", lambda: reconciliation_ready(previous_jobs))
     wait_for("HTTPS after daemon restart", https_ready)
     assert runtime_pids() == before, "daemon restart replaced a managed runtime"
+    # The daemon's health tick, every 30 s, puts PV's DNS routing back.
+    run("dns-unit-stop", "sudo", "-n", "systemctl", "stop", "pv-dns.service")
+    run("dns-unit-delete", "sudo", "-n", "rm", "-f", str(DNS_UNIT))
+    run("dns-unit-reload", "sudo", "-n", "systemctl", "daemon-reload")
+    wait_for("DNS repaired by the daemon", dns_repaired, 40)
     run("daemon-disable", str(PV), "daemon:disable", timeout=60)
     run("enable-after-stop", str(PV), "daemon:enable", timeout=300)
     wait_for("resources after stop", https_ready)

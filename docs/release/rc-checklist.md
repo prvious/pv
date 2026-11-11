@@ -46,6 +46,7 @@ Default-track matrix under validation: PHP/FrankenPHP `8.5`, Caddy `2`, Composer
 | `pv setup` fetches the artifact manifest before default-resource planning. |  |
 | Cached manifest fallback warning appears only when a cache exists. |  |
 | DNS resolver config is PV-owned and `.test` resolves locally. |  |
+| The daemon restores a deleted `/etc/resolver/test`, and moves to a new DNS port when another program holds it. |  |
 | An older PV's `pf` redirect is gone after setup. |  |
 | `launchctl print` lists the daemon's `GatewayHttp` and `GatewayHttps` sockets, and the Gateway serves ports 80 and 443. |  |
 | PV local CA is trusted in the macOS System keychain. |  |

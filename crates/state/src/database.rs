@@ -2746,6 +2746,36 @@ impl Database {
         })
     }
 
+    /// Moves `request`'s owner to `port` in one transaction, unless another owner holds it.
+    pub fn move_port(
+        &mut self,
+        request: PortRequest,
+        port: u16,
+    ) -> Result<PortAssignment, StateError> {
+        let identity = request.owner.identity()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if assigned_port_numbers_except_in_transaction(&transaction, &identity)?.contains(&port) {
+            return Err(StateError::NoAvailablePort {
+                name: identity.display_name(),
+                preferred_port: port,
+                fallback_start: port,
+                fallback_end: port,
+                attempts: 1,
+            });
+        }
+        let updated_at = timestamp()?;
+        upsert_port_in_transaction(&transaction, &identity, port, &updated_at)?;
+        transaction.commit()?;
+
+        Ok(PortAssignment {
+            owner: request.owner,
+            port,
+            updated_at,
+        })
+    }
+
     pub fn assign_php_worker_port(
         &mut self,
         php_runtime_key: impl Into<String>,
@@ -3158,7 +3188,8 @@ impl PortRequest {
         self.owner.display_name()
     }
 
-    fn candidates(&self) -> Vec<u16> {
+    /// The ports to try, in order: the preferred port, then the fallback range.
+    pub fn candidates(&self) -> Vec<u16> {
         let mut candidates = vec![self.preferred_port];
 
         for port in self.fallback_start..=self.fallback_end {
