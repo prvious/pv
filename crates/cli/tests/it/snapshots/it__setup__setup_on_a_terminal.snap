@@ -23,6 +23,9 @@ expression: setup.stdout
 │  ✓ .test domain routing configured
 │    <tempdir>/etc/resolver/test
 │
+✓  Ports 80 and 443 ready
+│  ✓ Ports 80 and 443 are available to PV
+│
 ✓  Local HTTPS certificates trusted
 │  ✓ Prepared PV local CA
 │    certificate: <tempdir>/home/.pv/certificates/ca.pem
@@ -38,7 +41,7 @@ expression: setup.stdout
 │  ✓ Daemon healthy
 │
 ✓  Local HTTPS, .test domains and startup configured
-│  DNS resolver · CA trust · daemon registration
+│  DNS resolver · ports 80 and 443 · CA trust · daemon registration
 │
 ◇  System reconciliation completed: stub job completed
 │

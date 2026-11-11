@@ -490,6 +490,7 @@ async fn serving_transition_clears_and_restores_all_dormant_env_entries() -> Res
 #[tokio::test]
 async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_reconciliation()
 -> Result<()> {
+    let host = crate::host::test_host()?;
     let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -508,7 +509,7 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
     let finished_system_jobs = finished_system_job_count(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
     let jobs_before_health_tick = Database::open(&paths)?.recent_jobs()?;
     assert_eq!(jobs_before_health_tick.len(), 1);
@@ -1144,6 +1145,7 @@ async fn invalid_config_failure_rolls_back_resource_state_mutations() -> Result<
 
 #[tokio::test]
 async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Result<()> {
+    let host = crate::host::test_host()?;
     let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1179,7 +1181,7 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
     let finished_system_jobs = finished_system_job_count(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
     write_project_certificate_with_remaining_days(&paths, &project, &local_ca, 7)?;
     state::fs::remove_file(&paths.project_tls_private_key(&project.id))?;
@@ -1498,11 +1500,12 @@ async fn run_project_reconciliation(
     paths: &PvPaths,
     project: &ProjectRecord,
 ) -> Result<Vec<Value>> {
+    let host = crate::host::test_host()?;
     pv_fake::seed_dns_port(paths)?;
 
     let finished_system_jobs = finished_system_job_count(paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     let result = async {
         wait_for_new_finished_system_job(paths, finished_system_jobs).await?;
         request_lines(

@@ -2,7 +2,10 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::process::{Child, ExitCode, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
+use rustix::fs::FileType;
+#[cfg(not(target_os = "linux"))]
+use rustix::fs::{Mode, OFlags};
 use rustix::io::{FdFlags, fcntl_setfd};
 use tokio::signal::unix::{Signal, SignalKind, signal};
 
@@ -52,6 +55,7 @@ pub(crate) fn run() -> Result<ExitCode> {
         .with_context(|| format!("parsing {scenario_path}"))?;
     let events = EventLog::new(events_path(&executable));
     // Before the runtime opens its own descriptors, which would take free numbers.
+    let inherited_sockets = inherited_sockets()?;
     let inherited = match scenario.persona {
         Persona::Caddy | Persona::FrankenPhp => gateway::InheritedListeners::adopt(&argv)?,
         _ => gateway::InheritedListeners::default(),
@@ -67,7 +71,13 @@ pub(crate) fn run() -> Result<ExitCode> {
                 .with_context(|| format!("descendant parent pipe {parent_fd}"))?;
             runtime.block_on(run_descendant(scenario, parent_fd, events))
         }
-        _ => runtime.block_on(run_persona(scenario, argv, events, inherited)),
+        _ => runtime.block_on(run_persona(
+            scenario,
+            argv,
+            events,
+            inherited,
+            inherited_sockets,
+        )),
     };
     // The lifeline watcher blocks on its pipe until the test process exits; don't wait for it.
     runtime.shutdown_background();
@@ -80,6 +90,7 @@ async fn run_persona(
     argv: Vec<String>,
     events: EventLog,
     inherited: gateway::InheritedListeners,
+    inherited_sockets: Vec<i32>,
 ) -> Result<ExitCode> {
     // Install handlers first, so a SIGTERM that arrives during startup is handled, not fatal.
     let mut signals = Signals::new()?;
@@ -91,6 +102,7 @@ async fn run_persona(
         persona: scenario.persona,
         argv: argv.clone(),
         lifeline_armed,
+        inherited_sockets,
     })?;
     let descendant = if scenario.settings.descendant {
         Some(spawn_descendant(&argv, &events)?)
@@ -275,4 +287,46 @@ impl Signals {
             _ = self.interrupt.recv() => "SIGINT",
         }
     }
+}
+
+/// The descriptors from 3 up that this process inherited as sockets.
+fn inherited_sockets() -> Result<Vec<i32>> {
+    let mut sockets = Vec::new();
+    for path in state::fs::read_dir_paths(Utf8Path::new(DESCRIPTOR_DIRECTORY))? {
+        if let Some(fd) = path.file_name().and_then(|name| name.parse::<i32>().ok())
+            && fd > 2
+            && is_socket(&path)
+        {
+            sockets.push(fd);
+        }
+    }
+    sockets.sort_unstable();
+
+    Ok(sockets)
+}
+
+#[cfg(target_os = "linux")]
+const DESCRIPTOR_DIRECTORY: &str = "/proc/self/fd";
+
+/// Stat follows `/proc/self/fd/<fd>` to the descriptor's socket.
+#[cfg(target_os = "linux")]
+fn is_socket(path: &Utf8Path) -> bool {
+    rustix::fs::stat(path.as_std_path())
+        .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::Socket)
+}
+
+#[cfg(not(target_os = "linux"))]
+const DESCRIPTOR_DIRECTORY: &str = "/dev/fd";
+
+/// Opening `/dev/fd/<fd>` duplicates the descriptor. Check the duplicate, never the path: macOS
+/// shares the vnode behind `/dev/fd/<fd>` between processes, so stat on it races.
+#[cfg(not(target_os = "linux"))]
+fn is_socket(path: &Utf8Path) -> bool {
+    rustix::fs::open(
+        path.as_std_path(),
+        OFlags::RDONLY | OFlags::CLOEXEC,
+        Mode::empty(),
+    )
+    .and_then(|duplicate| rustix::fs::fstat(&duplicate))
+    .is_ok_and(|stat| FileType::from_raw_mode(stat.st_mode) == FileType::Socket)
 }

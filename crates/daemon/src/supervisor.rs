@@ -232,6 +232,24 @@ impl ProcessSupervisor {
 
     /// Starts `spec`'s runtime under a new monitor, run by the installed `pv`, and records it.
     pub async fn start(&self, spec: ProcessSpec) -> Result<ManagedProcess, DaemonError> {
+        self.start_with_listeners(spec, None).await
+    }
+
+    /// Starts the Gateway as [`ProcessSupervisor::start`] does, serving `listeners` at descriptors
+    /// 3 and 4.
+    pub async fn start_gateway(
+        &self,
+        spec: ProcessSpec,
+        listeners: &platform::GatewayListeners,
+    ) -> Result<ManagedProcess, DaemonError> {
+        self.start_with_listeners(spec, Some(listeners)).await
+    }
+
+    async fn start_with_listeners(
+        &self,
+        spec: ProcessSpec,
+        listeners: Option<&platform::GatewayListeners>,
+    ) -> Result<ManagedProcess, DaemonError> {
         require_process_containment()?;
         state::fs::ensure_layout(&self.paths)?;
         let subject = monitor_subject(&self.paths, &spec.metadata_path)?;
@@ -240,7 +258,7 @@ impl ProcessSupervisor {
         self.stop_subject(&spec.metadata_path, stop.signal, stop_grace(stop))
             .await?;
 
-        let state = monitor::start_monitor(
+        let state = monitor::start_monitor_with_listeners(
             &self.paths,
             &self.paths.active_pv_binary(),
             MonitorStart {
@@ -252,6 +270,7 @@ impl ProcessSupervisor {
                 fallback_stop: stop,
                 lifeline_fd: None,
             },
+            listeners,
         )
         .await?;
         let instance =

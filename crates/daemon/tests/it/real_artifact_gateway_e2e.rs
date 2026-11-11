@@ -57,8 +57,16 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
         php_track.to_owned(),
         state::php_runtime_key(php_track, &["apcu".to_owned()])?,
     ];
+    let gateway_listeners = crate::host::test_gateway_listeners()?;
     preserve_gateway_request_result(
-        verify_wildcard_routing(&paths, &parent, &child, &worker_runtime_keys[1]).await,
+        verify_wildcard_routing(
+            &paths,
+            &gateway_listeners,
+            &parent,
+            &child,
+            &worker_runtime_keys[1],
+        )
+        .await,
         daemon::stop_recorded_runtimes(paths.clone())
             .await
             .map_err(Into::into),
@@ -72,6 +80,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
 
 async fn verify_wildcard_routing(
     paths: &PvPaths,
+    gateway_listeners: &daemon::GatewayListenerHolder,
     parent: &Utf8Path,
     child: &Utf8Path,
     admin_runtime_key: &str,
@@ -85,7 +94,8 @@ async fn verify_wildcard_routing(
             link_project(&mut database, child, "laravel.test")?;
             link_project(&mut database, parent, "api.laravel.test")?;
         }
-        daemon::gateway::reconcile_gateway_runtimes(paths).await?;
+        daemon::gateway::reconcile_gateway_runtimes(paths, gateway_listeners).await?;
+        let (_http_port, https_port) = gateway_listeners.source().ports();
         ensure!(
             paths.worker_runtime_metadata(admin_runtime_key).exists(),
             "admin.laravel.test is not on its own `{admin_runtime_key}` worker"
@@ -100,6 +110,7 @@ async fn verify_wildcard_routing(
         ] {
             let response = request_gateway_https_with_curl(
                 paths,
+                https_port,
                 hostname,
                 &["--retry", "10", "--retry-delay", "1", "--retry-all-errors"],
             )?;
@@ -111,6 +122,7 @@ async fn verify_wildcard_routing(
 
         let deeper = request_gateway_https_with_curl(
             paths,
+            https_port,
             "laravel.test",
             &["--header", "Host: v1.foo.laravel.test"],
         );
@@ -119,7 +131,7 @@ async fn verify_wildcard_routing(
             "v1.foo.laravel.test reached a Project: {deeper:?}"
         );
         ensure!(
-            request_gateway_https_with_curl(paths, "v1.foo.laravel.test", &[]).is_err(),
+            request_gateway_https_with_curl(paths, https_port, "v1.foo.laravel.test", &[]).is_err(),
             "v1.foo.laravel.test completed a trusted TLS handshake"
         );
     }
@@ -217,14 +229,13 @@ fn seed_local_ca(paths: &PvPaths) -> Result<()> {
 )]
 fn request_gateway_https_with_curl(
     paths: &PvPaths,
+    https_port: u16,
     hostname: &str,
     extra_arguments: &[&str],
 ) -> Result<String> {
-    let mut database = Database::open(paths)?;
-    let gateway_ports = database.assign_gateway_ports(|_port| true)?;
     let ca_certificate = paths.ca_certificate().to_string();
-    let resolve = format!("{hostname}:{}:127.0.0.1", gateway_ports.https.port);
-    let url = format!("https://{hostname}:{}/", gateway_ports.https.port);
+    let resolve = format!("{hostname}:{https_port}:127.0.0.1");
+    let url = format!("https://{hostname}:{https_port}/");
     let output = std::process::Command::new("/usr/bin/curl")
         .args([
             "--silent",

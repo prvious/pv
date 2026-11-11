@@ -15,15 +15,14 @@ use insta::{Settings, assert_debug_snapshot};
 use rusqlite::{Connection, TransactionBehavior, params};
 use state::testing::Migration;
 use state::{
-    AppReleaseLayout, Database, EnvContextValues, GATEWAY_HTTP_PREFERRED_PORT,
-    GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, HelperLifecycleLock, JobDiagnosticSubject,
+    AppReleaseLayout, Database, EnvContextValues, HelperLifecycleLock, JobDiagnosticSubject,
     JobStatus, JobsLock, LinkDiscoveredProjectInput, ManagedResourceDesiredState,
     ManagedResourceTrackInstallInput, ManagedResourceTrackRemovalInput, PortOwner, PortRequest,
     PostgresPreloadLibrary, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
     ProjectManagedResourceInput, ProjectMode, ProjectPhpRuntimeInput,
     ProjectReconciliationStateInput, ProjectRecord, PvPaths, RUNTIME_PORT_FALLBACK_END,
-    RUNTIME_PORT_FALLBACK_START, ResourceAllocationInput, ResourceAllocationStatus,
-    RuntimeLifecycleLock, RuntimeObservedStatus, RuntimeSubject, StateError, UpdateLock,
+    ResourceAllocationInput, ResourceAllocationStatus, RuntimeLifecycleLock, RuntimeObservedStatus,
+    RuntimeSubject, StateError, UpdateLock,
 };
 
 #[test]
@@ -828,9 +827,10 @@ fn admin_port_migration_removes_current_and_legacy_rows() -> Result<()> {
         state::testing::query_i64(&database, "SELECT COUNT(*) FROM resource_ports")?,
         1
     );
+    // The Gateway's own ports go with migration 18.
     assert_eq!(
         state::testing::query_i64(&database, "SELECT COUNT(*) FROM ports")?,
-        1
+        0
     );
 
     Ok(())
@@ -3442,44 +3442,6 @@ fn dns_port_allocator_persists_and_reuses_preferred_assignment() -> Result<()> {
 }
 
 #[test]
-fn gateway_port_allocator_persists_only_http_and_https_assignments() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let assigned = database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
-    })?;
-    let reused = database.assign_gateway_ports(|_port| false)?;
-
-    assert_eq!(assigned.http.port, GATEWAY_HTTP_PREFERRED_PORT);
-    assert_eq!(assigned.https.port, GATEWAY_HTTPS_PREFERRED_PORT);
-    assert_eq!(assigned.http.owner, PortOwner::Gateway(GatewayPort::Http));
-    assert_eq!(assigned.https.owner, PortOwner::Gateway(GatewayPort::Https));
-    assert_eq!(reused.http.port, assigned.http.port);
-    assert_eq!(reused.https.port, assigned.https.port);
-
-    with_normalized_timestamps(|| {
-        assert_debug_snapshot!(
-            "gateway_port_allocator_persists_distinct_http_and_https_assignments",
-            (assigned, reused, database.assigned_ports()?)
-        );
-        Ok::<(), anyhow::Error>(())
-    })?;
-
-    let mut fallback_database =
-        Database::open(&PvPaths::for_home(tempdir.path().join("fallback-home")))?;
-    let fallback = fallback_database.assign_gateway_ports(|port| {
-        port != GATEWAY_HTTP_PREFERRED_PORT && port != GATEWAY_HTTPS_PREFERRED_PORT
-    })?;
-
-    assert_eq!(fallback.http.port, RUNTIME_PORT_FALLBACK_START);
-    assert_eq!(fallback.https.port, RUNTIME_PORT_FALLBACK_START + 1);
-
-    Ok(())
-}
-
-#[test]
 fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -3539,36 +3501,6 @@ fn php_worker_port_allocator_persists_one_port_per_track() -> Result<()> {
         ));
         Ok::<(), anyhow::Error>(())
     })?;
-
-    Ok(())
-}
-
-#[test]
-fn gateway_port_allocator_rolls_back_when_https_cannot_be_assigned() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut database = Database::open(&paths)?;
-
-    let error = match database.assign_gateway_ports(|port| port == GATEWAY_HTTP_PREFERRED_PORT) {
-        Ok(assignments) => {
-            return Err(anyhow!(
-                "HTTPS assignment should fail, but assigned {assignments:?}"
-            ));
-        }
-        Err(error) => error,
-    };
-
-    assert!(matches!(
-        error,
-        StateError::NoAvailablePort {
-            name,
-            preferred_port: GATEWAY_HTTPS_PREFERRED_PORT,
-            fallback_start: RUNTIME_PORT_FALLBACK_START,
-            fallback_end: RUNTIME_PORT_FALLBACK_END,
-            ..
-        } if name == "gateway https"
-    ));
-    assert_eq!(database.assigned_ports()?, Vec::new());
 
     Ok(())
 }

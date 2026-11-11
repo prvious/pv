@@ -43,11 +43,9 @@ pub use daemon_registration::{
     write_daemon_registration_file,
 };
 pub use error::PlatformError;
-#[cfg(unix)]
-pub use gateway_listeners::GatewayListeners;
 pub use gateway_listeners::{
     GATEWAY_HTTP_PORT, GATEWAY_HTTP_SOCKET, GATEWAY_HTTPS_PORT, GATEWAY_HTTPS_SOCKET,
-    GatewayListenerError, GatewayListenerSource,
+    GatewayListenerError, GatewayListenerSource, GatewayListeners,
 };
 #[cfg(target_os = "linux")]
 pub use helper::run_privileged_helper_lifecycle;

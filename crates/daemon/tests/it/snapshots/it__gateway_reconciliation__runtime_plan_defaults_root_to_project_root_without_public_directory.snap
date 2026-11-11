@@ -4,8 +4,6 @@ expression: plan
 ---
 RuntimePlan {
     gateway: GatewayRuntimePlan {
-        http_port: <port>,
-        https_port: <port>,
         admin_socket_path: "<tempdir>/home/.pv/run/gateway-admin.sock",
         ca_certificate_path: "<tempdir>/home/.pv/certificates/ca.pem",
         ca_private_key_path: "<tempdir>/home/.pv/certificates/ca-key.pem",

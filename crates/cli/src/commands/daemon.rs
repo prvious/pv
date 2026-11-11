@@ -1,7 +1,7 @@
 use std::process::ExitCode;
 
 use ::daemon::MonitorHooks;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use platform::{DAEMON_REGISTRATION_NAME, DaemonRegistrationConfig, DaemonRegistrationFileState};
 use state::{PvPaths, StateError};
 
@@ -169,9 +169,17 @@ pub(crate) fn restart(
 
     match state {
         DaemonRegistrationFileState::Current { .. } => {
-            #[cfg(target_os = "linux")]
-            environment.enable_daemon_registration(&path)?;
-            environment.restart_daemon_registration()?;
+            if cfg!(target_os = "macos") {
+                restart_daemon_without_reconciliation(
+                    environment,
+                    &paths,
+                    &path,
+                    DaemonHealthCheck::RequireCompatibleProtocol,
+                )?;
+            } else {
+                environment.enable_daemon_registration(&path)?;
+                environment.restart_daemon_registration()?;
+            }
             output.success(restarted_message)?;
             wait_for_daemon_and_submit_reconciliation(paths, output)?;
 
@@ -208,7 +216,7 @@ pub(crate) fn restart(
 pub(crate) fn run() -> Result<ExitCode, ExecuteError> {
     let paths = PvPaths::default_home()?;
 
-    ::daemon::run_blocking(paths)?;
+    ::daemon::run_blocking(paths, ::daemon::HostIntegration::production())?;
 
     Ok(ExitCode::SUCCESS)
 }
@@ -334,10 +342,58 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     Ok(PvPaths::for_home(home))
 }
 
-fn daemon_registration_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
+pub(super) fn daemon_registration_path(
+    environment: &impl Environment,
+) -> Result<Utf8PathBuf, ExecuteError> {
     utf8_path(environment.daemon_registration_path())
 }
 
 fn utf8_path(path: impl Into<std::path::PathBuf>) -> Result<Utf8PathBuf, ExecuteError> {
     Utf8PathBuf::from_path_buf(path.into()).map_err(|path| CliError::NonUtf8Path { path }.into())
+}
+
+/// Unloads the daemon, waits for it to exit, and loads its registration again. launchd opens a
+/// LaunchAgent's sockets only when it loads the agent, so this also picks up ports 80 and 443
+/// after a conflict cleared.
+pub(super) fn restart_daemon_without_reconciliation(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    daemon_registration_path: &Utf8Path,
+    health_check: DaemonHealthCheck,
+) -> Result<(), ExecuteError> {
+    unload_and_wait_for_daemon(environment, paths)?;
+    environment.enable_daemon_registration(daemon_registration_path)?;
+    clear_daemon_startup_failure_marker(paths)?;
+    environment.restart_daemon_registration()?;
+    wait_until_daemon_started(paths.clone(), health_check)?;
+
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DaemonHealthCheck {
+    RequireCompatibleProtocol,
+    AcceptProtocolMismatch,
+}
+
+fn wait_until_daemon_started(
+    paths: PvPaths,
+    health_check: DaemonHealthCheck,
+) -> Result<(), ExecuteError> {
+    match health_check {
+        DaemonHealthCheck::RequireCompatibleProtocol => {
+            ::daemon::wait_until_healthy_blocking(paths)?
+        }
+        DaemonHealthCheck::AcceptProtocolMismatch => {
+            ::daemon::wait_until_healthy_allowing_protocol_mismatch_blocking(paths)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn clear_daemon_startup_failure_marker(paths: &PvPaths) -> Result<(), ExecuteError> {
+    state::fs::remove_file_if_exists(&paths.daemon_startup_error())?;
+
+    Ok(())
 }

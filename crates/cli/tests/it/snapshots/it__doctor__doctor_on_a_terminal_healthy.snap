@@ -7,11 +7,12 @@ expression: healthy.stdout
 
 SYSTEM
 ✓  State layout             9 PV-owned directories have user-only permissions
-✓  Database                 read-only open succeeded; 17 migrations applied
+✓  Database                 read-only open succeeded; 18 migrations applied
 ✓  Privileged helper        available at version 3.0.0 with protocol 3
 
 ROUTING
 ✓  DNS config               system resolver uses port 35353
+✓  Ports 80 and 443         no conflict reported
 ✓  Local CA trust           system trust matches fingerprint <fingerprint>
 
 DAEMON & JOBS
@@ -24,4 +25,4 @@ DAEMON & JOBS
 ✓  Artifact manifest cache  cached manifest is present
    path: <tempdir>/home/.pv/downloads/manifest.json
 
-✓  All 10 checks passed · 0 warnings · 0 failed
+✓  All 11 checks passed · 0 warnings · 0 failed

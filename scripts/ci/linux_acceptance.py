@@ -17,6 +17,7 @@ EVIDENCE = Path(os.environ["PV_ACCEPTANCE_EVIDENCE_DIR"])
 APP = INPUTS / "app"
 RELEASE = APP / "pv-release"
 PV = PV_HOME / "bin/pv"
+PORTS_SETTING = Path("/etc/sysctl.d/99-pv-ports.conf")
 PLATFORM = "linux-arm64" if os.uname().machine == "aarch64" else "linux-amd64"
 EXPECTED = {
     "php": {"8.3", "8.4", "8.5"}, "frankenphp": {"8.3", "8.4", "8.5"},
@@ -169,8 +170,14 @@ def https_ready():
     return True
 
 
+def unprivileged_port_start():
+    return Path("/proc/sys/net/ipv4/ip_unprivileged_port_start").read_text().strip()
+
+
 def system_acceptance():
     run("helper-active", "systemctl", "is-active", "pv-helper.socket")
+    assert PORTS_SETTING.read_text() == "# Managed by PV\nnet.ipv4.ip_unprivileged_port_start=80\n"
+    assert unprivileged_port_start() == "80"
     run("dns-active", "systemctl", "is-active", "pv-dns.service")
     assert "127.0.0.1" in run("getaddrinfo", "getent", "ahostsv4", "probe.test")
     run("resolved-query", "resolvectl", "query", "probe.test")
@@ -217,6 +224,8 @@ def system_acceptance():
     for directory in ["/etc/systemd/system", "/run/systemd/system"]:
         assert not list(Path(directory).rglob("pv-*.service")), "PV service remains"
         assert not list(Path(directory).rglob("pv-*.socket")), "PV socket remains"
+    assert not PORTS_SETTING.exists(), "PV's port setting remains"
+    assert unprivileged_port_start() == "1024"
     for directory in ["/usr/local/share/ca-certificates", "/etc/pki/ca-trust/source/anchors"]:
         assert not list(Path(directory).glob("pv-local-ca-*")), "PV CA anchor remains"
     for bundle in ["/etc/ssl/certs/ca-certificates.crt",

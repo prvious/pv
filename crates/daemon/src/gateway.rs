@@ -10,6 +10,7 @@ use std::time::Duration;
 use camino::{Utf8Path, Utf8PathBuf};
 use config::{ProjectConfig, ProjectConfigFile};
 use futures_util::StreamExt;
+use platform::GatewayListenerSource;
 use platform::clock::{self, Deadline, Limit};
 use platform::loopback_tcp_port_available;
 use resources::{ResourceAdapter, caddy_adapter, frankenphp_adapter};
@@ -27,9 +28,9 @@ use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::task::JoinHandle;
 
 use crate::gateway_config::{
-    GATEWAY_HEALTH_HOSTNAME, GatewayConfigInput, GatewayProjectRoute, HEALTH_PATH,
-    PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigTree, WORKER_HEALTH_HOSTNAME,
-    gateway_health_response, promote_config_dir, promote_validated_config_tree_async,
+    GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_RESPONSE, GATEWAY_HTTPS_LISTENER, GatewayConfigInput,
+    GatewayProjectRoute, HEALTH_PATH, PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigTree,
+    WORKER_HEALTH_HOSTNAME, promote_config_dir, promote_validated_config_tree_async,
     render_gateway_config, render_gateway_project_config, render_php_worker_config,
     render_php_worker_project_config, worker_health_response,
 };
@@ -44,7 +45,8 @@ use crate::supervisor::{
 };
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, DaemonError,
-    ProcessSpec, ProcessSupervisor, ReadinessCheck, RuntimeReconciliationFailure, StopSignal,
+    GatewayListenerHolder, ProcessSpec, ProcessSupervisor, ReadinessCheck,
+    RuntimeReconciliationFailure, StopSignal,
 };
 
 #[expect(
@@ -159,8 +161,6 @@ pub struct RuntimePlan {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayRuntimePlan {
-    pub http_port: u16,
-    pub https_port: u16,
     pub admin_socket_path: Utf8PathBuf,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
@@ -225,20 +225,25 @@ pub fn promote_validated_config_for_test(
     crate::gateway_config::promote_validated_config(path, content, validate)
 }
 
-pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
-    reconcile_all_gateway_runtimes(paths, None).await
+pub async fn reconcile_gateway_runtimes(
+    paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
+) -> Result<String, DaemonError> {
+    reconcile_all_gateway_runtimes(paths, listeners, None).await
 }
 
 pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<String, DaemonError> {
-    reconcile_all_gateway_runtimes(paths, Some(phase_log)).await
+    reconcile_all_gateway_runtimes(paths, listeners, Some(phase_log)).await
 }
 
 #[doc(hidden)]
 pub async fn reconcile_project_gateway_runtimes_for_test(
     paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
     project_id: &str,
 ) -> Result<String, DaemonError> {
     let phase_log = structured_log::ReconciliationPhaseLog::new(
@@ -247,21 +252,26 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
         "reconcile",
         &format!("project:{project_id}"),
     );
-    match reconcile_project_gateway_runtimes_with_phase_log(paths, project_id, &phase_log).await? {
+    match reconcile_project_gateway_runtimes_with_phase_log(
+        paths, listeners, project_id, &phase_log,
+    )
+    .await?
+    {
         ProjectGatewayReconciliationOutcome::Reconciled { summary, .. } => Ok(summary),
         ProjectGatewayReconciliationOutcome::PromoteSystem => {
-            reconcile_all_gateway_runtimes(paths, Some(&phase_log)).await
+            reconcile_all_gateway_runtimes(paths, listeners, Some(&phase_log)).await
         }
     }
 }
 
 pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
     project_id: &str,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
     let Some(gateway_command) = first_installed_caddy_command(paths)? else {
-        let summary = reconcile_all_gateway_runtimes(paths, Some(phase_log)).await?;
+        let summary = reconcile_all_gateway_runtimes(paths, listeners, Some(phase_log)).await?;
 
         return Ok(ProjectGatewayReconciliationOutcome::Reconciled {
             summary,
@@ -297,7 +307,7 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
         && !target_active_impact.served
         && target_active_impact.runtime_keys.is_empty()
     {
-        let readiness = gateway_readiness_plan(&targeted.plan);
+        let readiness = gateway_readiness_plan(&targeted.plan, listeners.source());
         if !matches!(
             clock::timeout(
                 &READINESS_PROBE_TIMEOUT,
@@ -378,6 +388,7 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
     if gateway_required {
         reconcile_planned_gateway(
             paths,
+            listeners,
             &targeted.plan,
             &gateway_command,
             Some(&active_impact.gateway_fragments),
@@ -454,6 +465,7 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
 
 async fn reconcile_all_gateway_runtimes(
     paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
     phase_log: Option<&structured_log::ReconciliationPhaseLog>,
 ) -> Result<String, DaemonError> {
     let lookup_started_at = clock::now();
@@ -537,9 +549,14 @@ async fn reconcile_all_gateway_runtimes(
         Ok(plan) => plan,
         Err(error) => {
             let recording = record_runtime_error(paths, RuntimeSubject::Gateway, &error).err();
-            let recovery =
-                recover_previous_gateway(paths, &gateway_command, None, previous_gateway.as_ref())
-                    .await;
+            let recovery = recover_previous_gateway(
+                paths,
+                listeners,
+                &gateway_command,
+                None,
+                previous_gateway.as_ref(),
+            )
+            .await;
             let mut failures = vec![("gateway".to_owned(), error)];
             if let Some(recording) = recording {
                 failures.push(("gateway".to_owned(), recording));
@@ -669,6 +686,7 @@ async fn reconcile_all_gateway_runtimes(
     if !worker_failures.is_empty() {
         let recovery = recover_previous_gateway(
             paths,
+            listeners,
             &gateway_command,
             Some(&plan),
             previous_gateway.as_ref(),
@@ -697,7 +715,7 @@ async fn reconcile_all_gateway_runtimes(
 
     let gateway_timer = phase_log
         .map(|phase_log| phase_log.start(structured_log::ReconciliationPhase::Gateway, "gateway"));
-    reconcile_planned_gateway(paths, &plan, &gateway_command, None).await?;
+    reconcile_planned_gateway(paths, listeners, &plan, &gateway_command, None).await?;
     if let Some(gateway_timer) = gateway_timer {
         gateway_timer.finish(
             structured_log::PhaseOutcome::Succeeded,
@@ -754,6 +772,7 @@ async fn reconcile_all_gateway_runtimes(
 
 async fn recover_previous_gateway(
     paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
     gateway_command: &CaddyCliCommand,
     plan: Option<&RuntimePlan>,
     snapshot: Option<&ActiveRuntimeConfigSnapshot>,
@@ -776,7 +795,8 @@ async fn recover_previous_gateway(
         }
         match supervisor.verify_ownership(&gateway_spec) {
             Ok(None) => {
-                return reconcile_planned_gateway(paths, plan, gateway_command, None).await;
+                return reconcile_planned_gateway(paths, listeners, plan, gateway_command, None)
+                    .await;
             }
             Ok(Some(_)) | Err(_) => return Ok(()),
         }
@@ -790,10 +810,6 @@ async fn recover_previous_gateway(
         .collect::<Vec<_>>();
     let plan = RuntimePlan {
         gateway: GatewayRuntimePlan {
-            http_port: optional_config_port(&snapshot.root, "http_port ")?
-                .ok_or_else(missing_previous_service_port)?,
-            https_port: optional_config_port(&snapshot.root, "https_port ")?
-                .ok_or_else(missing_previous_service_port)?,
             admin_socket_path: paths.gateway_admin_socket(),
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
@@ -813,11 +829,12 @@ async fn recover_previous_gateway(
             fragments,
         },
     };
-    reconcile_gateway_config(paths, &plan, gateway_command, desired).await
+    reconcile_gateway_config(paths, listeners, &plan, gateway_command, desired).await
 }
 
 async fn reconcile_planned_gateway(
     paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
     plan: &RuntimePlan,
     gateway_command: &CaddyCliCommand,
     preserved_fragments: Option<&BTreeMap<String, String>>,
@@ -828,17 +845,25 @@ async fn reconcile_planned_gateway(
             return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     };
-    reconcile_gateway_config(paths, plan, gateway_command, desired_gateway_config).await
+    reconcile_gateway_config(
+        paths,
+        listeners,
+        plan,
+        gateway_command,
+        desired_gateway_config,
+    )
+    .await
 }
 
 async fn reconcile_gateway_config(
     paths: &PvPaths,
+    listeners: &GatewayListenerHolder,
     plan: &RuntimePlan,
     gateway_command: &CaddyCliCommand,
     desired_gateway_config: DesiredGatewayConfig,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let gateway_readiness = gateway_readiness_plan(plan);
+    let gateway_readiness = gateway_readiness_plan(plan, listeners.source());
     let gateway_spec = gateway_process_spec(paths, gateway_command);
     if match reconcile_unchanged_runtime(
         &supervisor,
@@ -870,6 +895,7 @@ async fn reconcile_gateway_config(
             gateway_readiness,
             &desired_gateway_config.tree.fingerprint,
             RuntimeSubject::Gateway,
+            Some(listeners),
         )
         .await?;
         finish_promoted_runtime(runtime.wait().await)?;
@@ -986,6 +1012,7 @@ async fn prepare_planned_worker(
         readiness,
         &desired_config.fingerprint,
         subject.clone(),
+        None,
     )
     .await?;
 
@@ -1048,13 +1075,13 @@ fn usize_as_u64(value: usize) -> u64 {
 
 /// The Gateway is ready once it answers its health route over HTTP and HTTPS, with a certificate
 /// from PV's CA.
-fn gateway_readiness_plan(plan: &RuntimePlan) -> RuntimeReadinessPlan {
+fn gateway_readiness_plan(
+    plan: &RuntimePlan,
+    source: GatewayListenerSource,
+) -> RuntimeReadinessPlan {
+    let (http_port, https_port) = source.ports();
     RuntimeReadinessPlan {
-        check: gateway_readiness_check(
-            plan.gateway.http_port,
-            plan.gateway.https_port,
-            &plan.gateway.ca_certificate_path,
-        ),
+        check: gateway_readiness_check(http_port, https_port, &plan.gateway.ca_certificate_path),
         budget: RUNTIME_START_READINESS_TIMEOUT,
         admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_socket_path.clone()),
         preserve_staged_config: false,
@@ -1070,30 +1097,9 @@ struct RuntimeReadinessPlan {
     preserve_staged_config: bool,
 }
 
-fn optional_config_port(config: &str, prefix: &str) -> Result<Option<u16>, DaemonError> {
-    let Some(port) = config
-        .lines()
-        .find_map(|line| line.trim_start().strip_prefix(prefix))
-    else {
-        return Ok(None);
-    };
-    port.trim()
-        .parse()
-        .map(Some)
-        .map_err(|error| DaemonError::UnexpectedProtocolResponse {
-            reason: format!("previous runtime config has invalid port `{port}`: {error}"),
-        })
-}
-
-fn missing_previous_service_port() -> DaemonError {
-    DaemonError::UnexpectedProtocolResponse {
-        reason: "previous runtime config is missing a service port".to_owned(),
-    }
-}
-
 /// Asks the Gateway for its health route over HTTP and HTTPS, which must present a certificate from
 /// PV's CA.
-pub(crate) fn gateway_readiness_check(
+pub fn gateway_readiness_check(
     http_port: u16,
     https_port: u16,
     ca_certificate_path: &Utf8Path,
@@ -1105,7 +1111,7 @@ pub(crate) fn gateway_readiness_check(
         https_port,
         server_name: GATEWAY_HEALTH_HOSTNAME.to_owned(),
         path: HEALTH_PATH.to_owned(),
-        expected_body: gateway_health_response(http_port, https_port),
+        expected_body: GATEWAY_HEALTH_RESPONSE.to_owned(),
         ca_certificate_path: ca_certificate_path.to_path_buf(),
     }
 }
@@ -1840,11 +1846,16 @@ fn validation_process_group_exists(_pid: Option<i32>) -> Result<bool, DaemonErro
 }
 
 pub fn gateway_process_spec(paths: &PvPaths, command: &CaddyCliCommand) -> ProcessSpec {
+    let mut private_environment = caddy_xdg_environment(paths);
+    // Documents how the Gateway listens, and makes Gateways started without inherited listeners
+    // fail the metadata match so reconciliation replaces them instead of loading a config that
+    // binds fd/3.
+    private_environment.insert("PV_GATEWAY_LISTENERS".to_owned(), "fd:3,4".to_owned());
     ProcessSpec {
         name: "gateway".to_owned(),
         command: command.executable.clone(),
         arguments: command.run_arguments(&paths.gateway_root_config()),
-        private_environment: caddy_xdg_environment(paths),
+        private_environment,
         config_path: paths.gateway_root_config(),
         config_fingerprint: None,
         log_path: paths.gateway_supervisor_log(),
@@ -1876,7 +1887,6 @@ pub fn worker_process_spec(
 
 pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     let mut database = Database::open(paths)?;
-    let gateway_ports = database.assign_gateway_ports(loopback_tcp_port_available)?;
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
     let held_project_ids = database.held_project_ids()?;
 
@@ -1971,8 +1981,6 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
 
     Ok(RuntimePlan {
         gateway: GatewayRuntimePlan {
-            http_port: gateway_ports.http.port,
-            https_port: gateway_ports.https.port,
             admin_socket_path: paths.gateway_admin_socket(),
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
@@ -1987,7 +1995,6 @@ fn build_target_runtime_plan(
     project_id: &str,
 ) -> Result<Option<TargetedRuntimePlan>, DaemonError> {
     let mut database = Database::open(paths)?;
-    let gateway_ports = database.assign_gateway_ports(loopback_tcp_port_available)?;
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
     let mut current_runtime_key = None;
     let project =
@@ -2047,8 +2054,6 @@ fn build_target_runtime_plan(
     Ok(Some(TargetedRuntimePlan {
         plan: RuntimePlan {
             gateway: GatewayRuntimePlan {
-                http_port: gateway_ports.http.port,
-                https_port: gateway_ports.https.port,
                 admin_socket_path: paths.gateway_admin_socket(),
                 ca_certificate_path: paths.ca_certificate(),
                 ca_private_key_path: paths.ca_private_key(),
@@ -2754,11 +2759,9 @@ fn desired_gateway_config(
     let active_dir = paths.gateway_projects_config_dir();
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let mut fragments = gateway_project_config_fragments(paths, &routes, preserved_fragments)?;
-    enforce_project_bind_policy(&mut fragments);
+    enforce_project_bind_policy(&mut fragments, GATEWAY_HTTPS_LISTENER);
     let import_project_configs = !fragments.is_empty();
     let mut config_input = GatewayConfigInput {
-        http_port: plan.gateway.http_port,
-        https_port: plan.gateway.https_port,
         admin_socket_path: plan.gateway.admin_socket_path.clone(),
         ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
         ca_private_key_path: plan.gateway.ca_private_key_path.clone(),
@@ -2806,7 +2809,7 @@ fn desired_worker_config(
             }
         }
     }
-    enforce_project_bind_policy(&mut fragments);
+    enforce_project_bind_policy(&mut fragments, "127.0.0.1");
     let fragment_project_ids = fragments
         .iter()
         .map(|fragment| fragment.project_id.as_str())
@@ -2878,7 +2881,7 @@ fn merge_worker_fragment_sites(desired: &str, previous: &str) -> Result<String, 
     ))
 }
 
-fn enforce_project_bind_policy(fragments: &mut [ProjectConfigFragment]) {
+fn enforce_project_bind_policy(fragments: &mut [ProjectConfigFragment], bind: &str) {
     // Preserved routes keep their last valid roots, but use PV's current bind policy.
     // Change desired bytes before fingerprinting; rollback still uses the exact backup.
     for fragment in fragments {
@@ -2890,7 +2893,7 @@ fn enforce_project_bind_policy(fragments: &mut [ProjectConfigFragment]) {
                 if directive.split_whitespace().next() == Some("bind") {
                     let indent = &line[..line.len() - directive.len()];
                     let newline = if line.ends_with('\n') { "\n" } else { "" };
-                    format!("{indent}bind 127.0.0.1{newline}")
+                    format!("{indent}bind {bind}{newline}")
                 } else {
                     line.to_owned()
                 }
@@ -3129,6 +3132,7 @@ async fn prepare_promoted_runtime(
     readiness: RuntimeReadinessPlan,
     desired_fingerprint: &str,
     subject: RuntimeSubject,
+    gateway_listeners: Option<&GatewayListenerHolder>,
 ) -> Result<PendingPromotedRuntime, DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let matching_runtime = match supervisor.verify_ownership(&spec) {
@@ -3163,6 +3167,7 @@ async fn prepare_promoted_runtime(
         &readiness,
         desired_fingerprint,
         matching_runtime,
+        gateway_listeners,
     )
     .await
     {
@@ -3345,6 +3350,7 @@ async fn begin_runtime_transaction(
     readiness: &RuntimeReadinessPlan,
     desired_fingerprint: &str,
     matching_runtime: bool,
+    gateway_listeners: Option<&GatewayListenerHolder>,
 ) -> Result<StartedRuntimeTransaction, RuntimeTransactionError> {
     if matching_runtime {
         if supervisor.verify_ownership(spec)?.is_none() {
@@ -3370,7 +3376,11 @@ async fn begin_runtime_transaction(
             Duration::from_secs(1),
         )
         .await?;
-    if !stopped_own_runtime && foreign_listener_is_ready(&readiness.check).await {
+    // The Gateway's listeners are verified PV sockets, so only a worker's port can be foreign.
+    if gateway_listeners.is_none()
+        && !stopped_own_runtime
+        && foreign_listener_is_ready(&readiness.check).await
+    {
         return Err(RuntimeTransactionError::new(
             DaemonError::UnexpectedProtocolResponse {
                 reason: format!(
@@ -3382,7 +3392,14 @@ async fn begin_runtime_transaction(
     }
 
     delete_optional_file(readiness.admin_endpoint.path()).map_err(RuntimeTransactionError::new)?;
-    let mut process = supervisor.start(spec.clone()).await?;
+    let mut process = match gateway_listeners {
+        // Bound only now, once the previous Gateway has released the ports.
+        Some(holder) => {
+            let listeners = holder.for_start().map_err(RuntimeTransactionError::new)?;
+            supervisor.start_gateway(spec.clone(), &listeners).await?
+        }
+        None => supervisor.start(spec.clone()).await?,
+    };
     let staging_error = match supervisor.mark_replacement_required(spec, desired_fingerprint) {
         Ok(true) => None,
         // A runtime that exits right after it starts is no longer PV's to stage.
@@ -4456,8 +4473,9 @@ mod tests {
     use crate::DaemonError;
 
     use super::{
-        PhpWorkerRuntimePlan, RuntimeProject, build_target_runtime_plan,
-        combined_runtime_reconciliation_error, desired_worker_config, enforce_project_bind_policy,
+        GATEWAY_HTTPS_LISTENER, PhpWorkerRuntimePlan, ProjectConfigFragment, RuntimeProject,
+        build_target_runtime_plan, combined_runtime_reconciliation_error, desired_worker_config,
+        enforce_project_bind_policy,
     };
     #[cfg(unix)]
     use super::{
@@ -4563,6 +4581,35 @@ mod tests {
         Ok(())
     }
 
+    /// A site an older PV rendered, preserved for an invalid Project, binds where its runtime now
+    /// listens: the Gateway's inherited HTTPS listener, or a worker's loopback port.
+    #[test]
+    fn preserved_sites_bind_where_their_runtime_listens() {
+        for (site, bind, expected) in [
+            (
+                "old.test {\n    bind 127.0.0.1\n    reverse_proxy 127.0.0.1:8000\n}\n",
+                GATEWAY_HTTPS_LISTENER,
+                "old.test {\n    bind fd/4\n    reverse_proxy 127.0.0.1:8000\n}\n",
+            ),
+            (
+                "http://old.test:8000 {\n    bind 127.0.0.1 ::1\n    root * /project\n}\n",
+                "127.0.0.1",
+                "http://old.test:8000 {\n    bind 127.0.0.1\n    root * /project\n}\n",
+            ),
+        ] {
+            let mut fragments = vec![ProjectConfigFragment {
+                project_id: "project".to_owned(),
+                file_name: "project.Caddyfile".to_owned(),
+                primary_hostname: "old.test".to_owned(),
+                content: site.to_owned(),
+            }];
+
+            enforce_project_bind_policy(&mut fragments, bind);
+
+            assert_eq!(fragments[0].content, expected);
+        }
+    }
+
     #[tokio::test]
     async fn preserved_worker_sites_use_current_binds_and_rollback_exact_bytes() -> Result<()> {
         let previous =
@@ -4600,7 +4647,7 @@ mod tests {
         .fragments;
         assert_debug_snapshot!(fragments[0].content);
         let normalized = fragments.clone();
-        enforce_project_bind_policy(&mut fragments);
+        enforce_project_bind_policy(&mut fragments, "127.0.0.1");
         assert_eq!(fragments, normalized);
 
         let root = tempdir.path().join("root.Caddyfile");

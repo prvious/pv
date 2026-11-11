@@ -117,6 +117,49 @@ wait_for_pv_jobs_idle() {
   return 1
 }
 
+launch_agent_lists_gateway_sockets() {
+  local printed
+  printed=$(launchctl print "gui/$(id -u)/com.prvious.pv.daemon") || return 1
+  printf '%s\n' "$printed"
+  grep -Eq 'GatewayHttp([^s]|$)' <<< "$printed" && grep -Fq GatewayHttps <<< "$printed"
+}
+
+ROOT_PORT_80_HOLDER_PID=
+ROOT_PORT_80_HOLDER_PID_FILE="$PV_RC_EVIDENCE_DIR/root-port-80-holder.pid"
+
+# Holds 127.0.0.1:80 as root for up to 120 s and records the listener's own pid.
+start_root_port_80_holder() {
+  sudo python3 -c 'import os, socket, sys, time
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", 80))
+listener.listen()
+with open(sys.argv[1] + ".tmp", "w") as pid_file:
+    pid_file.write(str(os.getpid()))
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(120)' "$ROOT_PORT_80_HOLDER_PID_FILE" &
+  local deadline=$((SECONDS + 10))
+  until [ -s "$ROOT_PORT_80_HOLDER_PID_FILE" ]; do
+    [ "$SECONDS" -le "$deadline" ] || return 1
+    sleep 0.2
+  done
+  ROOT_PORT_80_HOLDER_PID=$(cat "$ROOT_PORT_80_HOLDER_PID_FILE")
+  printf 'pid: %s\n' "$ROOT_PORT_80_HOLDER_PID"
+}
+
+stop_root_port_80_holder() {
+  sudo kill "$ROOT_PORT_80_HOLDER_PID"
+}
+
+gateway_failed_on_port_80() {
+  pv status --json > "$PV_RC_EVIDENCE_DIR/root-holder-status.json"
+  python3 -c 'import json, sys
+runtimes = json.load(open(sys.argv[1], encoding="utf-8"))["runtimes"]
+gateway = next(runtime for runtime in runtimes if runtime["subject"] == "gateway")
+print(gateway)
+sys.exit(0 if gateway["status"] == "failed" and "Port 80" in (gateway["message"] or "") else 1)' "$PV_RC_EVIDENCE_DIR/root-holder-status.json"
+}
+
 preserve_rc_binary() {
   install -d "$(dirname "$PV_RC_BIN")" && install -m 755 "$HOME/.pv/bin/pv" "$PV_RC_BIN"
 }
@@ -284,7 +327,9 @@ Privileged macOS RC evidence checklist:
 - System keychain CA trust installed and removed
 - root helper executable, launchd registration, metadata, and socket installed and removed
 - root helper replacement transaction completed and cleaned its temporary files
-- LaunchAgent installed, printed, restarted, and uninstalled
+- LaunchAgent installed, printed with its GatewayHttp and GatewayHttps sockets, restarted, and uninstalled
+- Gateway serves ports 80 and 443 from launchd's sockets
+- a root listener on port 80 fails the Gateway with the port named, doctor names its pid, and daemon:restart recovers
 - Project linked and served through .test
 - PV placeholder TLS leaf recorded and verified with macOS system policy without an explicit anchor
 - Gateway HTTPS verified through installed system trust without --cacert
@@ -318,7 +363,7 @@ record_status resolver-status required pv dns:status
 record_status ca-status required pv ca:status
 record_status ca-verify evidence security verify-cert -c "$HOME/.pv/certificates/ca.pem" -p ssl -L
 collect_file launch-agent-plist "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
-record_status launch-agent-print required launchctl print "gui/$(id -u)/com.prvious.pv.daemon"
+record_status launch-agent-print required launch_agent_lists_gateway_sockets
 
 record_status link required pv link "$PV_RC_PROJECT"
 record_status link-reconciliation-idle required wait_for_pv_jobs_idle
@@ -336,6 +381,19 @@ record_status restart-reconciliation-idle required wait_for_pv_jobs_idle
 record_status post-restart-status-json required pv status --json
 record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" http://pv-rc-project.test/ && require_output_contains post-restart-serve-http pv-privileged-rc-ok
 record_status post-restart-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains post-restart-serve-https pv-privileged-rc-ok
+record_status port-80-listener evidence sudo lsof -nP -iTCP:80 -sTCP:LISTEN
+record_status port-443-listener evidence sudo lsof -nP -iTCP:443 -sTCP:LISTEN
+record_status root-holder-daemon-disable required pv daemon:disable
+record_status root-holder-start required start_root_port_80_holder
+record_status root-holder-daemon-enable required pv daemon:enable
+record_status root-holder-reconciliation-idle required wait_for_pv_jobs_idle
+record_status root-holder-gateway-failed required gateway_failed_on_port_80
+record_status root-holder-doctor evidence pv doctor
+require_output_contains root-holder-doctor "pid $ROOT_PORT_80_HOLDER_PID"
+record_status root-holder-stop required stop_root_port_80_holder
+record_status root-holder-daemon-restart required pv daemon:restart
+record_status root-holder-reconciliation-after-restart required wait_for_pv_jobs_idle
+record_status root-holder-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains root-holder-serve-https pv-privileged-rc-ok
 record_status update-check required pv update --check --json
 record_status diagnostics required pv doctor
 record_status jobs evidence pv jobs

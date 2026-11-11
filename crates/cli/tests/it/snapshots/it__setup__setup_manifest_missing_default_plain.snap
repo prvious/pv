@@ -11,6 +11,7 @@ Prepared PV DNS resolver config
   path: <tempdir>/home/.pv/config/resolver/test
   DNS resolver port: <dns-port>
 Installed system resolver config: <tempdir>/etc/resolver/test
+Ports 80 and 443 are available to PV
 Prepared PV local CA
   certificate: <tempdir>/home/.pv/certificates/ca.pem
   private key: <tempdir>/home/.pv/certificates/ca-key.pem

@@ -49,6 +49,16 @@ impl GatewayListenerSource {
 
     /// Obtains the listeners, by launchd activation or by binding, and checks that each is bound
     /// to exactly `127.0.0.1` and its port. Launchd activation works once per process.
+    #[cfg(not(unix))]
+    pub fn open(self) -> Result<GatewayListeners, GatewayListenerError> {
+        Err(GatewayListenerError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "the Gateway's listeners need a Unix system",
+        )))
+    }
+
+    /// Obtains the listeners, by launchd activation or by binding, and checks that each is bound
+    /// to exactly `127.0.0.1` and its port. Launchd activation works once per process.
     #[cfg(unix)]
     pub fn open(self) -> Result<GatewayListeners, GatewayListenerError> {
         let listeners = match self {
@@ -81,18 +91,20 @@ impl GatewayListenerSource {
 }
 
 /// The two listening sockets the Gateway serves on. Both are close-on-exec.
-#[cfg(unix)]
 #[derive(Debug)]
 pub struct GatewayListeners {
+    #[cfg(unix)]
     pub http: OwnedFd,
+    #[cfg(unix)]
     pub https: OwnedFd,
 }
 
-#[cfg(unix)]
 impl GatewayListeners {
     pub fn try_clone(&self) -> io::Result<Self> {
         Ok(Self {
+            #[cfg(unix)]
             http: self.http.try_clone()?,
+            #[cfg(unix)]
             https: self.https.try_clone()?,
         })
     }

@@ -2094,6 +2094,7 @@ async fn system_reconciliation_upserts_and_installs_caddy_for_existing_state() -
 #[tokio::test]
 async fn system_reconciliation_job_records_missing_gateway_when_caddy_install_fails() -> Result<()>
 {
+    let gateway_listeners = test_gateway_listeners()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
 
@@ -2103,6 +2104,7 @@ async fn system_reconciliation_job_records_missing_gateway_when_caddy_install_fa
     catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
     let result = crate::jobs::run_background_reconciliation_job(
         paths.clone(),
+        &gateway_listeners,
         ReconciliationQueue::new(),
         ReconciliationScope::System,
         Some(&catalog),
@@ -2217,6 +2219,7 @@ async fn system_reconciliation_rejects_incomplete_php_default_pair_without_parti
 #[tokio::test]
 async fn system_reconciliation_job_fails_unsupported_manifest_track_without_partial_install()
 -> Result<()> {
+    let gateway_listeners = test_gateway_listeners()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mysql_fixture = setup_default_fixture("mysql")?;
@@ -2232,6 +2235,7 @@ async fn system_reconciliation_job_fails_unsupported_manifest_track_without_part
     catalog.install_options.manifest_url = OFFLINE_TEST_MANIFEST_URL.to_string();
     let result = crate::jobs::run_background_reconciliation_job(
         paths.clone(),
+        &gateway_listeners,
         ReconciliationQueue::new(),
         ReconciliationScope::System,
         Some(&catalog),
@@ -2719,6 +2723,7 @@ async fn rustfs_allocation_failure_preserves_project_env_and_records_failed_runt
 
 #[tokio::test]
 async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh() -> Result<()> {
+    let gateway_listeners = test_gateway_listeners()?;
     let mut checks = Vec::new();
     for mode in ["targeted", "project", "recording"] {
         let tempdir = tempdir()?;
@@ -2828,7 +2833,7 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
                 crate::project_env::reconcile_project_env_with_catalog(&paths, &broken.id, &catalog)
                     .await.map(|_| ())
             } else {
-                crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
+                crate::jobs::run_background_reconciliation_job(paths.clone(), &gateway_listeners, ReconciliationQueue::new(),
                     ReconciliationScope::resource("rustfs", RUSTFS_TRACK)?, Some(&catalog)).await
             };
             let failure = capture()?;
@@ -2927,7 +2932,7 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             })?;
             write_project_config(&broken, &config.replace("REVISION: initial", "REVISION: changed"))?;
             let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
-            crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
+            crate::jobs::run_background_reconciliation_job(paths.clone(), &gateway_listeners, ReconciliationQueue::new(),
                 ReconciliationScope::resource("mailpit", FAKE_MAILPIT_TRACK)?, Some(&catalog)).await?;
             let mailpit = capture()?;
             let mailpit_job = capture_job(&before_ids, "resource:mailpit:1.0")?;
@@ -2951,7 +2956,7 @@ async fn failed_ready_allocation_rechecks_block_unrelated_resource_env_refresh()
             // this reconciliation must repair it.
             seed_rustfs_fixture_artifact(&paths, RUSTFS_TRACK)?;
             let before_ids = database.recent_jobs()?.into_iter().map(|job| job.id).collect();
-            crate::jobs::run_background_reconciliation_job(paths.clone(), ReconciliationQueue::new(),
+            crate::jobs::run_background_reconciliation_job(paths.clone(), &gateway_listeners, ReconciliationQueue::new(),
                 ReconciliationScope::resource("rustfs", RUSTFS_TRACK)?, Some(&catalog)).await?;
             let repaired = capture()?;
             let repaired_job = capture_job(&before_ids, "resource:rustfs:1.0")?;
@@ -5811,4 +5816,17 @@ fn regex_literal(value: &str) -> String {
     }
 
     literal
+}
+
+/// Two test ports for the Gateway, shared by every reconciliation in a test, as the daemon
+/// shares its listeners.
+fn test_gateway_listeners() -> anyhow::Result<crate::GatewayListenerHolder> {
+    let [http_port, https_port] = pv_fake::ports()?;
+
+    Ok(crate::GatewayListenerHolder::new(
+        platform::GatewayListenerSource::Bind {
+            http_port,
+            https_port,
+        },
+    ))
 }

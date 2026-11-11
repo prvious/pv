@@ -444,7 +444,7 @@ fn daemon_disable_waits_for_process_death_after_its_socket_is_gone() -> anyhow::
         .enable_all()
         .build()?;
     assert!(
-        matches!(bootstrap_runtime.block_on(daemon::RunningDaemon::start(paths.clone())),
+        matches!(bootstrap_runtime.block_on(daemon::RunningDaemon::start(paths.clone(), crate::support::test_host()?)),
         Err(daemon::DaemonError::RuntimeCleanupUnproven { pid: recorded_pid, .. }) if recorded_pid == pid)
     );
     assert_eq!(

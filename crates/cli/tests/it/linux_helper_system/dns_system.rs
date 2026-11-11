@@ -222,7 +222,10 @@ impl DnsFixture {
 
     fn start_daemon(&mut self) -> Result<()> {
         self.daemon = Some(self.runtime.block_on(
-            RunningDaemon::start_without_managed_resource_adapters(self.paths.clone()),
+            RunningDaemon::start_without_managed_resource_adapters(
+                self.paths.clone(),
+                crate::support::test_host()?,
+            ),
         )?);
         Ok(())
     }

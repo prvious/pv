@@ -7,7 +7,9 @@ use platform::{
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
-use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, StateError};
+use state::{
+    Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError,
+};
 
 use crate::args::DoctorArgs;
 use crate::environment::Environment;
@@ -73,6 +75,7 @@ impl DoctorReport {
                 title: "Routing",
                 checks: vec![
                     dns_check(environment, &paths)?,
+                    ports_check(environment, database.as_ref())?,
                     ca_check(environment, &paths),
                 ],
             },
@@ -683,6 +686,89 @@ fn repair_for_job_subject(subject: &JobDiagnosticSubject) -> String {
         | JobDiagnosticSubject::Resource { .. }
         | JobDiagnosticSubject::Other { .. } => "pv daemon:restart".to_owned(),
     }
+}
+
+/// Whether the Gateway has ports 80 and 443, from its latest observation. On Linux it also needs
+/// PV's kernel setting.
+fn ports_check(
+    environment: &impl Environment,
+    database: Option<&Database>,
+) -> Result<DoctorCheck, ExecuteError> {
+    const NAME: &str = "Ports 80 and 443";
+    #[cfg(target_os = "linux")]
+    match environment.inspect_unprivileged_ports() {
+        platform::UnprivilegedPortsState::Current => {}
+        platform::UnprivilegedPortsState::Missing => {
+            return Ok(DoctorCheck::fail(
+                NAME,
+                "PV's kernel setting for ports 80 and 443 is missing",
+                "pv setup",
+            ));
+        }
+        platform::UnprivilegedPortsState::Overridden { value, files } => {
+            return Ok(DoctorCheck::fail(
+                NAME,
+                format!("the kernel still keeps ports below {value} from PV"),
+                "remove or change those files, then run `pv setup`",
+            )
+            .with_detail(format!(
+                "set by: {}",
+                files
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        platform::UnprivilegedPortsState::Unreadable { message } => {
+            return Ok(DoctorCheck::warn(
+                NAME,
+                format!("PV's kernel setting could not be read: {message}"),
+                None,
+            ));
+        }
+    }
+    // The Gateway's own failure shows under "Runtime states"; this check only names the programs
+    // holding the ports, and only when the Gateway couldn't start. A running Gateway holds them
+    // itself.
+    let gateway_failed = match database {
+        Some(database) => database
+            .runtime_observed_states()?
+            .into_iter()
+            .any(|observation| {
+                observation.subject == RuntimeSubject::Gateway
+                    && observation.status == RuntimeObservedStatus::Failed
+            }),
+        None => false,
+    };
+    if !gateway_failed {
+        return Ok(DoctorCheck::pass(NAME, "no conflict reported"));
+    }
+    let conflicts = match environment.inspect_low_ports() {
+        Ok(inspection) => inspection
+            .ports
+            .iter()
+            .filter(|port| !port.available)
+            .map(platform::LowPortState::conflict_message)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return Ok(DoctorCheck::warn(
+                NAME,
+                format!("the programs holding them are unknown: {error}"),
+                Some("pv setup"),
+            ));
+        }
+    };
+    if conflicts.is_empty() {
+        return Ok(DoctorCheck::pass(NAME, "no other program holds them"));
+    }
+
+    Ok(DoctorCheck::fail(
+        NAME,
+        "another program holds them; free them, then restart PV's daemon",
+        "pv daemon:restart",
+    )
+    .with_detail(conflicts.join(" ")))
 }
 
 fn runtime_states_check(database: Option<&Database>) -> Result<DoctorCheck, ExecuteError> {

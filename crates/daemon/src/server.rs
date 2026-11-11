@@ -8,7 +8,6 @@ use tokio::io::AsyncRead;
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::{JoinHandle, JoinSet};
 
-use crate::DaemonError;
 use crate::health::{
     RUNTIME_HEALTH_SCAN, RuntimeHealthScan, RuntimeRecoveryBackoff, scan_runtime_health,
 };
@@ -23,6 +22,7 @@ use crate::managed_resources::ManagedResourceRuntimeCatalog;
 use crate::reconciliation::{EnqueueResult, ReconciliationQueue, ReconciliationScope};
 use crate::structured_log;
 use crate::watcher::{ProjectConfigWatcher, WatchMessage};
+use crate::{DaemonError, GatewayListenerHolder};
 use protocol::{
     DaemonCommand, DaemonRequest, DaemonResponse, DaemonTransport, PROTOCOL_VERSION, write_line,
 };
@@ -37,6 +37,7 @@ pub(crate) async fn serve(
     listener: LocalListener,
     mut shutdown: oneshot::Receiver<()>,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
+    gateway_listeners: Arc<GatewayListenerHolder>,
     (project_config_watcher, watch_messages): (
         ProjectConfigWatcher,
         mpsc::UnboundedReceiver<WatchMessage>,
@@ -52,11 +53,13 @@ pub(crate) async fn serve(
     let startup_paths = paths.clone();
     let startup_queue = queue.clone();
     let startup_runtime_catalog = runtime_catalog.clone();
+    let startup_gateway_listeners = Arc::clone(&gateway_listeners);
     let (startup_shutdown, startup_shutdown_receiver) = oneshot::channel();
     let mut startup_shutdown = Some(startup_shutdown);
     let mut startup_task = Some(tokio::spawn(async move {
         run_startup_reconciliation_job(
             startup_paths,
+            &startup_gateway_listeners,
             startup_queue,
             startup_runtime_catalog.as_deref(),
             startup_shutdown_receiver,
@@ -167,9 +170,12 @@ pub(crate) async fn serve(
                                     Ok(Some(EnqueueResult::Queued(queued))) => {
                                         let completion_paths = paths.clone();
                                         let completion_runtime_catalog = runtime_catalog.clone();
+                                        let completion_gateway_listeners =
+                                            Arc::clone(&gateway_listeners);
                                         background_tasks.spawn(async move {
                                             let result = complete_queued_background_reconciliation_job(
                                                 &completion_paths,
+                                                &completion_gateway_listeners,
                                                 queued,
                                                 completion_runtime_catalog.as_deref(),
                                             )
@@ -219,6 +225,7 @@ pub(crate) async fn serve(
                     health_paths,
                     health_runtime_catalog,
                     Some(hooks.clone()),
+                    gateway_listeners.source().ports(),
                 )));
             }
             scope = background_scope_receiver.recv(), if background_scopes_open => {
@@ -227,12 +234,14 @@ pub(crate) async fn serve(
                         let task_paths = paths.clone();
                         let task_queue = queue.clone();
                         let task_runtime_catalog = runtime_catalog.clone();
+                        let task_gateway_listeners = Arc::clone(&gateway_listeners);
                         let task_shutdown = background_shutdown_receiver.clone();
 
                         background_tasks.spawn(async move {
                             let scope_text = scope.to_string();
                             let result = run_debounced_reconciliation_job(
                                 task_paths.clone(),
+                                &task_gateway_listeners,
                                 task_queue,
                                 scope,
                                 task_runtime_catalog.as_deref(),
@@ -257,10 +266,12 @@ pub(crate) async fn serve(
                         let connection_paths = paths.clone();
                         let connection_queue = queue.clone();
                         let connection_runtime_catalog = runtime_catalog.clone();
+                        let connection_gateway_listeners = Arc::clone(&gateway_listeners);
 
                         connections.spawn(async move {
                             handle_connection(
                                 connection_paths,
+                                &connection_gateway_listeners,
                                 connection_queue,
                                 stream,
                                 connection_runtime_catalog,
@@ -334,6 +345,7 @@ pub(crate) async fn serve(
 
 async fn run_debounced_reconciliation_job(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -376,7 +388,14 @@ async fn run_debounced_reconciliation_job(
         running = queued.wait_for_turn() => running,
     };
 
-    complete_running_background_reconciliation_job(&paths, running, runtime_catalog, None).await
+    complete_running_background_reconciliation_job(
+        &paths,
+        gateway_listeners,
+        running,
+        runtime_catalog,
+        None,
+    )
+    .await
 }
 
 /// Resolves once daemon shutdown is requested, or once the shutdown signal can no
@@ -477,6 +496,7 @@ async fn stop_startup_task(
 
 async fn handle_connection(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     stream: LocalStream,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
@@ -506,6 +526,7 @@ async fn handle_connection(
         DaemonCommand::RunJob { kind, scope } => {
             run_job(
                 paths,
+                gateway_listeners,
                 queue,
                 transport,
                 &kind,
@@ -556,6 +577,19 @@ where
 
 #[cfg(test)]
 mod tests {
+    /// Two test ports for the Gateway, shared by every reconciliation in a test, as the daemon
+    /// shares its listeners.
+    fn test_gateway_listeners() -> anyhow::Result<crate::GatewayListenerHolder> {
+        let [http_port, https_port] = pv_fake::ports()?;
+
+        Ok(crate::GatewayListenerHolder::new(
+            platform::GatewayListenerSource::Bind {
+                http_port,
+                https_port,
+            },
+        ))
+    }
+
     #[cfg(unix)]
     use std::sync::Arc;
     use std::time::Duration;
@@ -597,6 +631,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn runtime_recovery_backoff_counts_only_new_queue_jobs() -> Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project_path = tempdir.path().join("project");
@@ -625,6 +660,7 @@ mod tests {
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await?;
         let queue = ReconciliationQueue::new();
@@ -735,6 +771,7 @@ mod tests {
 
     #[tokio::test]
     async fn watcher_reconciliation_retries_after_jobs_lock_contention() -> Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project = link_health_project(
@@ -750,6 +787,7 @@ mod tests {
         let task = tokio::spawn(async move {
             run_debounced_reconciliation_job(
                 task_paths,
+                &gateway_listeners,
                 ReconciliationQueue::new(),
                 scope,
                 None,
@@ -774,6 +812,7 @@ mod tests {
 
     #[tokio::test]
     async fn watcher_reconciliation_stops_retrying_when_shutdown_is_requested() -> Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project = link_health_project(
@@ -789,6 +828,7 @@ mod tests {
         let task = tokio::spawn(async move {
             run_debounced_reconciliation_job(
                 task_paths,
+                &gateway_listeners,
                 ReconciliationQueue::new(),
                 scope,
                 None,

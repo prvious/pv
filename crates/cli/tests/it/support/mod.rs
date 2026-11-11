@@ -16,6 +16,19 @@ pub(crate) struct RunOutput {
     pub(crate) stderr: String,
 }
 
+/// The daemon's host for a test: two test ports for the Gateway instead of ports 80 and 443.
+#[cfg(unix)]
+pub(crate) fn test_host() -> anyhow::Result<daemon::HostIntegration> {
+    let [http_port, https_port] = pv_fake::ports()?;
+
+    Ok(daemon::HostIntegration {
+        gateway_listeners: platform::GatewayListenerSource::Bind {
+            http_port,
+            https_port,
+        },
+    })
+}
+
 pub(crate) fn run_pv(args: &[&str], environment: &impl Environment) -> anyhow::Result<RunOutput> {
     let mut stdout = Vec::new();
     let mut stderr = Vec::new();

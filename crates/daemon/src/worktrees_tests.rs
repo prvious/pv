@@ -502,21 +502,35 @@ async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -
     let catalog = std::sync::Arc::new(
         crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?,
     );
+    let gateway_ports = test_gateway_listeners()?.source().ports();
 
-    let before =
-        crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()), None)
-            .await?
-            .maintenance_scopes;
+    let before = crate::health::scan_runtime_health(
+        fixture.paths.clone(),
+        Some(catalog.clone()),
+        None,
+        gateway_ports,
+    )
+    .await?
+    .maintenance_scopes;
     discover_worktrees(&fixture.paths)?;
-    let after =
-        crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog.clone()), None)
-            .await?
-            .maintenance_scopes;
+    let after = crate::health::scan_runtime_health(
+        fixture.paths.clone(),
+        Some(catalog.clone()),
+        None,
+        gateway_ports,
+    )
+    .await?
+    .maintenance_scopes;
     // An entry without `gitdir` makes the source unreadable, which every scan reports.
     state::fs::ensure_user_dir(&repo.join(".git/worktrees/new"))?;
-    let unreadable = crate::health::scan_runtime_health(fixture.paths.clone(), Some(catalog), None)
-        .await?
-        .errors;
+    let unreadable = crate::health::scan_runtime_health(
+        fixture.paths.clone(),
+        Some(catalog),
+        None,
+        gateway_ports,
+    )
+    .await?
+    .errors;
 
     assert!(before.contains(&crate::ReconciliationScope::System));
     assert!(!after.contains(&crate::ReconciliationScope::System));
@@ -559,6 +573,7 @@ async fn the_health_scan_leaves_pending_prepares_alone_and_ordinary_links_forget
             crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?,
         )),
         Some(hooks.clone()),
+        test_gateway_listeners()?.source().ports(),
     )
     .await?;
     assert!(
@@ -617,4 +632,18 @@ fn hook_approvals_use_the_folder_in_the_main_checkout() -> Result<()> {
     )?;
     assert_eq!(hook_approval_folder(&symlinked), symlinked);
     Ok(())
+}
+
+/// Two test ports for the Gateway, shared by every reconciliation in a test, as the daemon
+/// shares its listeners.
+#[cfg(target_os = "macos")]
+fn test_gateway_listeners() -> anyhow::Result<crate::GatewayListenerHolder> {
+    let [http_port, https_port] = pv_fake::ports()?;
+
+    Ok(crate::GatewayListenerHolder::new(
+        platform::GatewayListenerSource::Bind {
+            http_port,
+            https_port,
+        },
+    ))
 }

@@ -76,6 +76,10 @@ pub enum DaemonError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    /// The Gateway has no listeners for ports 80 and 443; the message says why and what to do.
+    #[error("{message}")]
+    GatewayListeners { message: String },
+
     #[error(
         "{source}; additionally failed to remove daemon socket during startup cleanup: {cleanup}"
     )]

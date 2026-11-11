@@ -1123,6 +1123,7 @@ checksum = "1b60b5124979fccd9addd89d8b97a1d6eebb4950694520c75ddd722535ea443f"
 dependencies = [
  "nix 0.31.3",
  "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -1342,6 +1343,7 @@ dependencies = [
  "bytes",
  "camino",
  "camino-tempfile",
+ "command-fds",
  "config",
  "futures-util",
  "getrandom 0.4.2",

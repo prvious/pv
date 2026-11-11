@@ -12,7 +12,7 @@ curl -fsSL <installer-url> | bash
 
 The installer downloads separate `pv` and `pv-helper` binaries, verifies both SHA-256 checksums, installs them under `~/.pv/bin/releases/<version>/`, updates the active `~/.pv/bin/pv` symlink, and runs `pv setup` unless `--no-setup` is used.
 
-On first setup, macOS asks for administrator authentication to register PV's small privileged helper. Later DNS, low-port redirect, and local-CA repairs use that on-demand helper without repeated `sudo` prompts, including after reboot. PV's daemon, Gateway, DNS resolver, and Managed Resources remain unprivileged. The helper supports one macOS account per machine. The original owning account must uninstall/remove its helper before the replacement account runs setup; if that account is unavailable, manual administrator recovery is required.
+On first setup, macOS asks for administrator authentication to register PV's small privileged helper. Later DNS and local-CA repairs use that on-demand helper without repeated `sudo` prompts, including after reboot. PV's daemon, Gateway, DNS resolver, and Managed Resources remain unprivileged. The helper supports one macOS account per machine. The original owning account must uninstall/remove its helper before the replacement account runs setup; if that account is unavailable, manual administrator recovery is required.
 
 Installer flags mirror setup behavior:
 

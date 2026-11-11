@@ -12,8 +12,6 @@ use crate::{PvPaths, StateError, fs, migrations};
 const BUSY_TIMEOUT: Duration = Duration::from_millis(250);
 const RECENT_JOB_LIMIT: i64 = 100;
 pub const DNS_PREFERRED_PORT: u16 = 15353;
-pub const GATEWAY_HTTP_PREFERRED_PORT: u16 = 48080;
-pub const GATEWAY_HTTPS_PREFERRED_PORT: u16 = 48443;
 pub const RUNTIME_PORT_FALLBACK_START: u16 = 15000;
 pub const RUNTIME_PORT_FALLBACK_END: u16 = 18999;
 const PROJECT_ID_LENGTH: usize = 10;
@@ -177,16 +175,9 @@ pub struct PortRequest {
     fallback_end: u16,
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum GatewayPort {
-    Http,
-    Https,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PortOwner {
     Dns,
-    Gateway(GatewayPort),
     PhpWorker {
         php_runtime_key: String,
     },
@@ -202,12 +193,6 @@ pub struct PortAssignment {
     pub owner: PortOwner,
     pub port: u16,
     pub updated_at: String,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct GatewayPortAssignments {
-    pub http: PortAssignment,
-    pub https: PortAssignment,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2761,31 +2746,6 @@ impl Database {
         })
     }
 
-    pub fn assign_gateway_ports(
-        &mut self,
-        mut is_available: impl FnMut(u16) -> bool,
-    ) -> Result<GatewayPortAssignments, StateError> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let mut assigned_ports = assigned_port_numbers_in_transaction(&transaction)?;
-        let http = assign_port_in_transaction(
-            &transaction,
-            PortRequest::pv_gateway_http(),
-            &mut assigned_ports,
-            &mut is_available,
-        )?;
-        let https = assign_port_in_transaction(
-            &transaction,
-            PortRequest::pv_gateway_https(),
-            &mut assigned_ports,
-            &mut is_available,
-        )?;
-        transaction.commit()?;
-
-        Ok(GatewayPortAssignments { http, https })
-    }
-
     pub fn assign_php_worker_port(
         &mut self,
         php_runtime_key: impl Into<String>,
@@ -3127,38 +3087,6 @@ impl PortRequest {
         )
     }
 
-    pub fn gateway(
-        gateway_port: GatewayPort,
-        preferred_port: u16,
-        fallback_start: u16,
-        fallback_end: u16,
-    ) -> Self {
-        Self::new(
-            PortOwner::Gateway(gateway_port),
-            preferred_port,
-            fallback_start,
-            fallback_end,
-        )
-    }
-
-    pub fn pv_gateway_http() -> Self {
-        Self::gateway(
-            GatewayPort::Http,
-            GATEWAY_HTTP_PREFERRED_PORT,
-            RUNTIME_PORT_FALLBACK_START,
-            RUNTIME_PORT_FALLBACK_END,
-        )
-    }
-
-    pub fn pv_gateway_https() -> Self {
-        Self::gateway(
-            GatewayPort::Https,
-            GATEWAY_HTTPS_PREFERRED_PORT,
-            RUNTIME_PORT_FALLBACK_START,
-            RUNTIME_PORT_FALLBACK_END,
-        )
-    }
-
     pub fn php_worker(
         php_runtime_key: impl Into<String>,
         preferred_port: u16,
@@ -3252,12 +3180,6 @@ impl PortOwner {
                 owner_track: String::new(),
                 owner_port: String::new(),
             }),
-            Self::Gateway(gateway_port) => Ok(PortIdentity {
-                owner_kind: "gateway",
-                owner_id: gateway_port.as_str().to_string(),
-                owner_track: String::new(),
-                owner_port: String::new(),
-            }),
             Self::PhpWorker { php_runtime_key } => {
                 validate_php_runtime_key(php_runtime_key)?;
 
@@ -3297,13 +3219,6 @@ impl PortOwner {
                 owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
                 reason: "dns ports must use owner id `dns` with empty owner track and port",
             }),
-            "gateway" if owner_track.is_empty() && owner_port.is_empty() => {
-                GatewayPort::from_database(&owner_id).map(Self::Gateway)
-            }
-            "gateway" => Err(StateError::InvalidPortOwner {
-                owner: describe_port_identity(&owner_kind, &owner_id, &owner_track, &owner_port),
-                reason: "gateway ports must use owner id `http` or `https` with empty owner track and port",
-            }),
             "php_worker"
                 if owner_id == "php" && !owner_track.is_empty() && owner_port.is_empty() =>
             {
@@ -3341,33 +3256,12 @@ impl PortOwner {
     fn display_name(&self) -> String {
         match self {
             Self::Dns => "dns".to_string(),
-            Self::Gateway(gateway_port) => format!("gateway {}", gateway_port.as_str()),
             Self::PhpWorker { php_runtime_key } => {
                 format!("php worker {php_runtime_key:?}")
             }
             Self::Resource { name, track, port } => {
                 format!("resource {name:?} track {track:?} port {port:?}")
             }
-        }
-    }
-}
-
-impl GatewayPort {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::Http => "http",
-            Self::Https => "https",
-        }
-    }
-
-    fn from_database(owner_id: &str) -> Result<Self, StateError> {
-        match owner_id {
-            "http" => Ok(Self::Http),
-            "https" => Ok(Self::Https),
-            _ => Err(StateError::InvalidPortOwner {
-                owner: format!("gateway:{owner_id}:"),
-                reason: "gateway ports must use owner id `http` or `https` and an empty owner track",
-            }),
         }
     }
 }

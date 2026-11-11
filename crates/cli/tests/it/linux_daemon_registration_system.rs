@@ -12,8 +12,8 @@ use platform::{DaemonRegistrationConfig, PlatformError};
 use pv_fake::{FakeSettings, Persona, Scenario};
 use serde_json::Value;
 use state::{
-    AppReleaseLayout, Database, GatewayPort, JobStatus, LinkProjectInput, MonitorReservation,
-    PortRequest, ProjectMode, PvPaths, fs,
+    AppReleaseLayout, Database, JobStatus, LinkProjectInput, MonitorReservation, PortRequest,
+    ProjectMode, PvPaths, fs,
 };
 
 const REDIS_SUBJECT: &str = "resources/redis/7.2";
@@ -142,44 +142,25 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
 
 fn seed_resources(paths: &PvPaths) -> Result<()> {
     let mut database = Database::open(paths)?;
-    for (resource, track, version, binary, persona) in [
-        (
-            "redis",
-            "7.2",
-            "7.2.5-pv1",
-            "redis-server",
-            Persona::RedisServer,
-        ),
-        ("caddy", "2", "2.11.4-pv1", "caddy", Persona::Caddy),
-    ] {
-        let track_path = paths.resources().join(resource).join(track);
-        let release = track_path.join("releases").join(version);
-        pv_fake::install_with(
-            &pv_fake::binary()?,
-            &release.join("bin").join(binary),
-            &Scenario {
-                persona,
-                lifeline_fd: None,
-                settings: FakeSettings::default(),
-            },
-        )?;
-        fs::symlink_file(
-            Utf8Path::new(&format!("releases/{version}")),
-            &track_path.join("current"),
-        )?;
-        database.record_managed_resource_track_installed(resource, track, version, &release)?;
-    }
+    let track_path = paths.resources().join("redis/7.2");
+    let release = track_path.join("releases/7.2.5-pv1");
+    pv_fake::install_with(
+        &pv_fake::binary()?,
+        &release.join("bin/redis-server"),
+        &Scenario {
+            persona: Persona::RedisServer,
+            lifeline_fd: None,
+            settings: FakeSettings::default(),
+        },
+    )?;
+    fs::symlink_file(
+        Utf8Path::new("releases/7.2.5-pv1"),
+        &track_path.join("current"),
+    )?;
+    database.record_managed_resource_track_installed("redis", "7.2", "7.2.5-pv1", &release)?;
     let ca = platform::generate_local_ca()?;
     fs::write_sensitive_file(&paths.ca_certificate(), &ca.certificate_pem)?;
     fs::write_sensitive_file(&paths.ca_private_key(), &ca.private_key_pem)?;
-    for (gateway_port, port) in [GatewayPort::Http, GatewayPort::Https]
-        .into_iter()
-        .zip(pv_fake::ports::<2>()?)
-    {
-        database.assign_port(PortRequest::gateway(gateway_port, port, port, port), |_| {
-            true
-        })?;
-    }
     let project = paths.root().join("system-test-project");
     let config = project.join("pv.yml");
     fs::write_sensitive_file(&config, "serve: false\nredis:\n  version: \"7.2\"\n")?;

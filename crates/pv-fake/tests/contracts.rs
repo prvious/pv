@@ -55,6 +55,7 @@ fn long_running_fake_records_its_lifecycle_and_exits_cleanly_on_sigterm() -> Res
             persona: Persona::LongRunning,
             argv: vec![fake.executable().to_string()],
             lifeline_armed: false,
+            inherited_sockets: Vec::new(),
         })
     );
     assert_eq!(event_names(&fake)?, ["started", "signal SIGTERM", "exit 0"]);
@@ -246,6 +247,10 @@ fn gateway_fake_serves_an_inherited_listener_and_keeps_it_through_loads() -> Res
     assert_eq!(after_first_load, (200, "first load".to_owned()));
     assert_eq!(second_load.0, 200);
     assert_eq!(after_second_load, (200, "second load".to_owned()));
+    assert!(matches!(
+        fake.events()?.first().map(|event| &event.kind),
+        Some(EventKind::Started { inherited_sockets, .. }) if inherited_sockets == &[3]
+    ));
 
     Ok(())
 }

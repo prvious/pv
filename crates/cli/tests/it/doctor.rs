@@ -17,10 +17,7 @@ use platform::{
     DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
     PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig,
 };
-use state::{
-    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PvPaths,
-    RuntimeObservedStatus, RuntimeSubject,
-};
+use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject};
 
 #[derive(Debug)]
 struct TestEnvironment {
@@ -82,8 +79,25 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    /// Another web server holds port 80.
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
-        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+        Ok(platform::LowPortInspection {
+            ports: vec![
+                platform::LowPortState {
+                    port: 80,
+                    available: false,
+                    owners: vec![platform::PortOwner {
+                        pid: 4242,
+                        command: "nginx".to_owned(),
+                    }],
+                },
+                platform::LowPortState {
+                    port: 443,
+                    available: true,
+                    owners: Vec::new(),
+                },
+            ],
+        })
     }
 
     fn var_os(&self, _key: &str) -> Option<OsString> {
@@ -378,10 +392,7 @@ fn seed_required_checks(
     environment: &TestEnvironment,
     include_manifest_cache: bool,
 ) -> anyhow::Result<()> {
-    let mut database = Database::open(paths)?;
-    database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
-    })?;
+    Database::open(paths)?;
 
     let launch_agent = DaemonRegistrationConfig::new(
         "/bin/pv",

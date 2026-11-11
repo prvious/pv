@@ -151,6 +151,24 @@ pub trait Environment {
 
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError>;
 
+    /// Linux: PV's kernel setting for ports 80 and 443.
+    #[cfg(target_os = "linux")]
+    fn inspect_unprivileged_ports(&self) -> platform::UnprivilegedPortsState {
+        platform::UnprivilegedPortsState::Unreadable {
+            message: "unavailable in this environment".to_owned(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_unprivileged_ports(&self) -> Result<(), platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
+
+    #[cfg(target_os = "linux")]
+    fn remove_unprivileged_ports(&self) -> Result<(), platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+    }
+
     // This is probably temporary. We should remember to remove it on the next release.
     /// Whether an older PV left its pf port redirect on this Mac.
     fn legacy_pf_present(&self) -> Result<bool, platform::PlatformError> {
@@ -292,6 +310,21 @@ impl Environment for ProcessEnvironment {
 
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
         platform::PrivilegedHelperClient.inspect_low_ports()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn inspect_unprivileged_ports(&self) -> platform::UnprivilegedPortsState {
+        platform::inspect_unprivileged_ports()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn apply_unprivileged_ports(&self) -> Result<(), platform::PlatformError> {
+        platform::PrivilegedHelperClient.apply_unprivileged_ports()
+    }
+
+    #[cfg(target_os = "linux")]
+    fn remove_unprivileged_ports(&self) -> Result<(), platform::PlatformError> {
+        platform::PrivilegedHelperClient.remove_unprivileged_ports()
     }
 
     // This is probably temporary. We should remember to remove it on the next release.

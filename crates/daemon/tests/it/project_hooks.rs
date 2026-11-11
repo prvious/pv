@@ -14,8 +14,7 @@ use pv_fake::{EventKind, FakeSettings, InstalledFake, Pause, Persona};
 use rustix::io::Errno;
 use rustix::process::{Pid, test_kill_process};
 use state::{
-    Database, GatewayPort, JobRecord, JobStatus, LinkProjectInput, PortRequest, ProjectRecord,
-    PvPaths,
+    Database, JobRecord, JobStatus, LinkProjectInput, PortRequest, ProjectRecord, PvPaths,
 };
 
 struct Fixture {
@@ -58,10 +57,6 @@ impl Fixture {
             "fake-caddy-pv1",
             &release,
         )?;
-        for kind in [GatewayPort::Http, GatewayPort::Https] {
-            let port = pv_fake::port()?;
-            database.assign_port(PortRequest::gateway(kind, port, port, port), |_port| true)?;
-        }
         Ok(Self {
             _tempdir: tempdir,
             root,
@@ -104,9 +99,13 @@ impl Fixture {
     }
 
     async fn start(&self) -> Result<daemon::RunningDaemon> {
+        let host = crate::host::test_host()?;
         Ok(
-            daemon::RunningDaemon::start_without_managed_resource_adapters(self.paths.clone())
-                .await?,
+            daemon::RunningDaemon::start_without_managed_resource_adapters(
+                self.paths.clone(),
+                host,
+            )
+            .await?,
         )
     }
 
@@ -692,7 +691,8 @@ async fn allocation_cleanup_observes_a_stopped_hook_before_dropping_its_database
             "{config}postgres:\n  version: '18'\n  allocations:\n    app-db:\n      env:\n        DATABASE_URL: '${{url}}'\n"
         ),
     )?;
-    let daemon = daemon::RunningDaemon::start(fixture.paths.clone()).await?;
+    let daemon =
+        daemon::RunningDaemon::start(fixture.paths.clone(), crate::host::test_host()?).await?;
     shutdown_after(daemon, &fixture.paths, async {
         file_exists(&path.join("started")).await?;
         let project = Database::open(&fixture.paths)?.project_by_path(&path)?.ok_or_else(|| anyhow!("worktree Project missing"))?;

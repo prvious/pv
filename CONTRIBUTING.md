@@ -82,6 +82,13 @@ Daemons started with
 `RunningDaemon::start_without_managed_resource_adapters` fetch the artifact
 manifest from a closed loopback port, so the fetch fails at once.
 
+Every daemon a test starts takes a `HostIntegration` whose Gateway listeners
+are `GatewayListenerSource::Bind` on two `pv_fake::ports()`; each test crate's
+`test_host()` builds one. Only `pv daemon:run` passes
+`HostIntegration::production()`, because launchd's sockets and ports 80 and 443
+belong to the machine's own PV. A fake's `started` event lists the sockets it
+inherited, so a test can check that only the Gateway gets the listeners.
+
 A port a test hands to a fake, a runtime, or `pv.db` comes from
 `pv_fake::port()` (or `pv_fake::ports::<N>()` for several), never from binding
 port 0 and closing the listener, which lets another test take the port before it

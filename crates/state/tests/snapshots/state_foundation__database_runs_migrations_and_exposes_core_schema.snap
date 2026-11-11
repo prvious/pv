@@ -24,6 +24,7 @@ DatabaseInspection {
         "015:project_first_reconciled_at",
         "016:pending_cleanups",
         "017:hook_approvals",
+        "018:remove_gateway_ports",
     ],
     tables: [
         "global_php_default_track",

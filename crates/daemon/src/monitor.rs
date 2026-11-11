@@ -28,13 +28,13 @@ use crate::supervisor::PrivateEnvironmentDebug;
 pub use unix::{
     live_runtime, monitor_from_earlier_boot, monitor_state, recorded_monitor_instance,
     recorded_monitor_subjects, recover_monitor, release_monitor, run_monitor_blocking,
-    run_monitor_gate, start_monitor, stop_monitor,
+    run_monitor_gate, start_monitor, start_monitor_with_listeners, stop_monitor,
 };
 #[cfg(not(unix))]
 pub use unsupported::{
     live_runtime, monitor_from_earlier_boot, monitor_state, recorded_monitor_instance,
     recorded_monitor_subjects, recover_monitor, release_monitor, run_monitor_blocking,
-    run_monitor_gate, start_monitor, stop_monitor,
+    run_monitor_gate, start_monitor, start_monitor_with_listeners, stop_monitor,
 };
 
 /// A monitor's runtime that is still running; see [`live_runtime`].
@@ -235,6 +235,17 @@ mod unsupported {
 
     pub fn run_monitor_gate(_hooks: &MonitorHooks) -> Result<(), DaemonError> {
         require_process_containment()
+    }
+
+    pub async fn start_monitor_with_listeners(
+        _paths: &PvPaths,
+        _executable: &Utf8Path,
+        start: MonitorStart,
+        _listeners: Option<&platform::GatewayListeners>,
+    ) -> Result<MonitorState, DaemonError> {
+        require_process_containment()?;
+
+        Err(unavailable(&start.subject))
     }
 
     pub async fn start_monitor(

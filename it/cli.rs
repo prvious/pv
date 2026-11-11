@@ -457,7 +457,8 @@ async fn project_link_during_daemon_prepare_stays_ordinary_after_prepare_finishe
     approve_project_hooks(&project, &home)?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), test_host()?)
+            .await?;
     let outcome = async {
         real::timeout(Duration::from_secs(20), async {
             while !project.join("daemon-started").exists() {
@@ -1189,7 +1190,8 @@ async fn project_link_skip_hooks_still_runs_discovered_first_setup_in_the_daemon
     drop(database);
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), test_host()?)
+            .await?;
     let outcome = async {
         wait_for_finished_hook_fixture_job(&paths, "job_000001").await?;
         let linked = Database::open(&paths)?.link_discovered_project(input)?;
@@ -1876,4 +1878,17 @@ fn path_exists(path: &Utf8Path) -> Result<bool> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(source) => Err(source.into()),
     }
+}
+
+/// The daemon's host for a test: two test ports for the Gateway instead of ports 80 and 443.
+#[cfg(unix)]
+fn test_host() -> Result<daemon::HostIntegration> {
+    let [http_port, https_port] = pv_fake::ports()?;
+
+    Ok(daemon::HostIntegration {
+        gateway_listeners: platform::GatewayListenerSource::Bind {
+            http_port,
+            https_port,
+        },
+    })
 }
