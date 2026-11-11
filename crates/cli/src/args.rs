@@ -83,15 +83,6 @@ pub(crate) enum Command {
     #[command(name = "dns:status", about = "Show PV .test resolver status")]
     DnsStatus,
 
-    #[command(
-        name = "dns:install",
-        about = "Install or repair PV .test resolver config"
-    )]
-    DnsInstall,
-
-    #[command(name = "dns:uninstall", about = "Remove PV .test resolver config")]
-    DnsUninstall,
-
     #[command(name = "ca:status", about = "Show PV local CA trust status")]
     CaStatus,
 

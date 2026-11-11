@@ -70,7 +70,7 @@ pub use process::{
 };
 pub use resolver::{
     DNS_LISTEN_ADDRESS, ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH,
-    inspect_resolver_file, install_resolver_config, remove_resolver_config,
+    apply_system_resolver, inspect_system_resolver, remove_system_resolver,
 };
 #[cfg(target_os = "linux")]
 pub use resolver::{start_resolver_link, stop_resolver_link};

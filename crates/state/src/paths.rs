@@ -207,10 +207,6 @@ impl PvPaths {
         &self.config
     }
 
-    pub fn resolver_config(&self) -> Utf8PathBuf {
-        self.config().join("resolver/test")
-    }
-
     pub fn gateway_root_config(&self) -> Utf8PathBuf {
         self.config().join("gateway/Caddyfile")
     }

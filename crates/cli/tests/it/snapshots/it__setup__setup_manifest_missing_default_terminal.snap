@@ -18,11 +18,9 @@ expression: output.stdout
 │  ↳ fish  pv env --shell fish | source
 │
 ✓  .test domains configured
-│  ✓ Prepared PV DNS resolver config
-│    path: <tempdir>/home/.pv/config/resolver/test
-│    DNS resolver port: <dns-port>
 │  ✓ .test domain routing configured
 │    <tempdir>/etc/resolver/test
+│    DNS resolver port: <dns-port>
 │
 ✓  Ports 80 and 443 ready
 │  ✓ Ports 80 and 443 are available to PV

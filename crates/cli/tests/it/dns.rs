@@ -2,41 +2,33 @@
 
 use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
-use std::io::{self, BufRead, BufReader, Write as _};
-use std::net::{Ipv4Addr, TcpListener, UdpSocket};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::io;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::sync::{Arc, Mutex, MutexGuard};
-use std::thread;
-use std::time::Duration;
 
-use crate::support::run_pv;
 use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::assert_debug_snapshot;
-use platform::ResolverConfig;
-use platform::clock::{self, real};
-use serde_json::json;
-use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
+use platform::{ResolverFileState, SYSTEM_RESOLVER_TEST_PATH};
+use state::{Database, PortRequest, PvPaths};
+
+use crate::support::run_pv;
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
-    current_dir: RefCell<PathBuf>,
-    resolver_path: PathBuf,
-    operations: RefCell<Vec<String>>,
+    resolver: RefCell<ResolverFileState>,
     terminal_width: Cell<Option<usize>>,
 }
 
 impl TestEnvironment {
-    fn new(home: &Utf8Path, current_dir: &Utf8Path, resolver_path: &Utf8Path) -> Self {
+    fn new(home: &Utf8Path) -> Self {
         Self {
             home: home.as_std_path().to_path_buf(),
-            current_dir: RefCell::new(current_dir.as_std_path().to_path_buf()),
-            resolver_path: resolver_path.as_std_path().to_path_buf(),
-            operations: RefCell::new(Vec::new()),
+            resolver: RefCell::new(ResolverFileState::Missing {
+                path: SYSTEM_RESOLVER_TEST_PATH.into(),
+            }),
             terminal_width: Cell::new(None),
         }
     }
@@ -56,7 +48,7 @@ impl Environment for TestEnvironment {
     }
 
     fn current_dir(&self) -> io::Result<PathBuf> {
-        Ok(self.current_dir.borrow().clone())
+        Ok(self.home.clone())
     }
 
     fn current_exe(&self) -> io::Result<PathBuf> {
@@ -79,501 +71,56 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn resolver_test_path(&self) -> PathBuf {
-        self.resolver_path.clone()
-    }
-
-    fn install_resolver_config(
+    fn inspect_system_resolver(
         &self,
-        prepared_path: &Utf8Path,
-        system_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        let content = state::fs::read_to_string(prepared_path)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        write_file(system_path, &content)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        self.operations
-            .borrow_mut()
-            .push(format!("install resolver {prepared_path} -> {system_path}"));
-
-        Ok(())
-    }
-
-    fn remove_resolver_config(
-        &self,
-        system_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        delete_optional_file(system_path)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        self.operations
-            .borrow_mut()
-            .push(format!("remove resolver {system_path}"));
-
-        Ok(())
+        _expected: Option<&platform::ResolverConfig>,
+    ) -> ResolverFileState {
+        self.resolver.borrow().clone()
     }
 }
 
 #[test]
-fn dns_install_writes_prepared_and_system_resolver_config() -> anyhow::Result<()> {
+fn dns_status_reports_the_dns_port_and_the_system_resolver() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let daemon = DaemonFixture::start(&pv_paths(&home))?;
+    let environment = TestEnvironment::new(&home);
+    let set_resolver = |state| *environment.resolver.borrow_mut() = state;
 
-    let output = run_pv(&["dns:install"], &environment)?;
-    let daemon_requests = daemon.finish()?;
-    let prepared_path = pv_paths(&home).resolver_config();
-    let prepared_config = read_required_file(&prepared_path)?;
-    let parsed_config = ResolverConfig::parse(&prepared_config)
-        .ok_or_else(|| anyhow::anyhow!("prepared resolver config did not parse"))?;
-    let system_resolver_config = read_required_file(&system_resolver_path)?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(!output.stdout.is_empty());
-    assert_no_manual_guidance(&output.stdout);
-    assert!(output.stderr.is_empty());
-    assert_eq!(system_resolver_config, prepared_config);
-    assert_eq!(
-        daemon_requests,
-        vec![format!(
-            r#"{{"protocol_version":{},"command":"health"}}"#,
-            daemon::PROTOCOL_VERSION
-        )]
-    );
-    with_normalized_tempdir(tempdir.path(), || {
-        let mut settings = insta::Settings::clone_current();
-        settings.add_filter(
-            r"DNS resolver port: [0-9]+",
-            "DNS resolver port: <dns-port>",
-        );
-        settings.add_filter(r"port [0-9]+", "port <dns-port>");
-        settings.add_filter(r"port: [0-9]+", "port: <dns-port>");
-        settings.bind(|| {
-            assert_debug_snapshot!((
-                output,
-                prepared_path,
-                prepared_config,
-                parsed_config,
-                system_resolver_config,
-                environment.operations.borrow().clone(),
-                daemon_requests,
-            ));
-        });
-    });
-
-    Ok(())
-}
-
-#[test]
-fn dns_install_reports_missing_daemon_without_installing_resolver_config() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-
-    let output = run_pv(&["dns:install"], &environment)?;
-    let prepared_path = pv_paths(&home).resolver_config();
-    let prepared_config = read_required_file(&prepared_path)?;
-    let system_resolver_config = read_optional_file(&system_resolver_path)?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert!(output.stdout.contains("PV daemon is not running"));
-    assert!(system_resolver_config.is_none());
-    assert!(environment.operations.borrow().is_empty());
-
-    with_normalized_tempdir(tempdir.path(), || {
-        let mut settings = insta::Settings::clone_current();
-        settings.add_filter(
-            r"DNS resolver port: [0-9]+",
-            "DNS resolver port: <dns-port>",
-        );
-        settings.add_filter(r"port [0-9]+", "port <dns-port>");
-        settings.bind(|| {
-            assert_debug_snapshot!((
-                output,
-                prepared_path,
-                prepared_config,
-                system_resolver_config,
-                environment.operations.borrow().clone(),
-            ));
-        });
-    });
-
-    Ok(())
-}
-
-#[test]
-fn dns_install_reports_non_pv_owned_system_resolver_conflict() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let conflict_config = "nameserver 127.0.0.1\nport 35353\n";
-    write_file(&system_resolver_path, conflict_config)?;
-
-    let output = run_pv(&["dns:install"], &environment)?;
-    let prepared_path = pv_paths(&home).resolver_config();
-    let prepared_config = read_required_file(&prepared_path)?;
-    let system_after_install = read_required_file(&system_resolver_path)?;
-    let assignments = Database::open(&pv_paths(&home))?.assigned_ports()?;
-
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    assert_no_manual_guidance(&output.stdout);
-    assert!(output.stderr.is_empty());
-    assert_eq!(system_after_install, conflict_config);
-    assert!(
-        !assignments
-            .iter()
-            .any(|assignment| assignment.owner == PortOwner::Dns)
-    );
-    assert!(environment.operations.borrow().is_empty());
-    with_normalized_tempdir(tempdir.path(), || {
-        let mut settings = insta::Settings::clone_current();
-        settings.add_filter(
-            r"DNS resolver port: [0-9]+",
-            "DNS resolver port: <dns-port>",
-        );
-        settings.add_filter(r"port [0-9]+", "port <dns-port>");
-        settings.bind(|| {
-            assert_debug_snapshot!((
-                output,
-                prepared_path,
-                prepared_config,
-                system_resolver_path,
-                system_after_install,
-            ));
-        });
-    });
-
-    Ok(())
-}
-
-#[test]
-fn dns_status_reports_prepared_and_system_resolver_states() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let prepared_path = pv_paths(&home).resolver_config();
-    let current_config = ResolverConfig::new(35353).render();
-    let stale_config = ResolverConfig::new(45000).render();
-    let conflict_config = "nameserver 127.0.0.1\nport 35353\n";
-
+    let unassigned = run_pv(&["dns:status"], &environment)?;
+    Database::open(&PvPaths::for_home(home.clone()))?
+        .assign_port(PortRequest::dns(35353, 35353, 35353), |_port| true)?;
     let missing = run_pv(&["dns:status"], &environment)?;
-    let prepared_after_missing = read_optional_file(&prepared_path)?;
-    let system_after_missing = read_optional_file(&system_resolver_path)?;
-
-    write_file(&prepared_path, &current_config)?;
-    let prepared_only = run_pv(&["dns:status"], &environment)?;
-
-    write_file(&system_resolver_path, &current_config)?;
+    set_resolver(ResolverFileState::Current {
+        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+        port: 35353,
+    });
     let current = run_pv(&["dns:status"], &environment)?;
-
-    write_file(&system_resolver_path, &stale_config)?;
+    set_resolver(ResolverFileState::Stale {
+        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+        expected_port: Some(35353),
+        actual_port: Some(45000),
+    });
     let stale = run_pv(&["dns:status"], &environment)?;
     environment.terminal_width.set(Some(80));
     let stale_on_terminal = run_pv(&["dns:status", "--no-color"], &environment)?;
     environment.terminal_width.set(None);
-
-    write_file(&system_resolver_path, conflict_config)?;
+    set_resolver(ResolverFileState::Conflict {
+        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+    });
     let conflict = run_pv(&["dns:status"], &environment)?;
 
-    assert_eq!(missing.exit_code, ExitCode::SUCCESS);
-    assert_eq!(prepared_only.exit_code, ExitCode::SUCCESS);
-    assert_eq!(current.exit_code, ExitCode::SUCCESS);
-    assert_eq!(stale.exit_code, ExitCode::SUCCESS);
-    assert_eq!(conflict.exit_code, ExitCode::SUCCESS);
-    assert!(missing.stderr.is_empty());
-    assert!(prepared_only.stderr.is_empty());
-    assert!(current.stderr.is_empty());
-    assert!(stale.stderr.is_empty());
-    assert!(conflict.stderr.is_empty());
-    assert!(prepared_after_missing.is_none());
-    assert!(system_after_missing.is_none());
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((
-            missing,
-            prepared_after_missing,
-            system_after_missing,
-            prepared_only,
-            current,
-            stale,
-            stale_on_terminal,
-            conflict,
-        ));
-    });
+    for output in [&unassigned, &missing, &current, &stale, &conflict] {
+        assert_eq!(output.exit_code, ExitCode::SUCCESS);
+        assert!(output.stderr.is_empty());
+    }
+    assert_debug_snapshot!((
+        unassigned,
+        missing,
+        current,
+        stale,
+        stale_on_terminal,
+        conflict
+    ));
 
     Ok(())
-}
-
-#[test]
-fn dns_uninstall_removes_prepared_and_pv_owned_system_resolver_config() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let prepared_path = pv_paths(&home).resolver_config();
-    let paths = pv_paths(&home);
-    let resolver_config = ResolverConfig::new(35353).render();
-    let mut database = Database::open(&paths)?;
-    database.assign_port(PortRequest::dns(35353, 35353, 35353), |candidate| {
-        candidate == 35353
-    })?;
-    drop(database);
-    write_file(&prepared_path, &resolver_config)?;
-    write_file(&system_resolver_path, &resolver_config)?;
-
-    let output = run_pv(&["dns:uninstall"], &environment)?;
-    let prepared_after_uninstall = read_optional_file(&prepared_path)?;
-    let system_after_uninstall = read_optional_file(&system_resolver_path)?;
-    let operations = environment.operations.borrow().clone();
-    // With nothing left to remove, uninstall still succeeds and keeps the port.
-    let again = run_pv(&["dns:uninstall"], &environment)?;
-    let assignments = Database::open(&paths)?.assigned_ports()?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert_eq!(again.exit_code, ExitCode::SUCCESS);
-    assert_no_manual_guidance(&output.stdout);
-    assert!(output.stderr.is_empty());
-    assert!(prepared_after_uninstall.is_none());
-    assert!(system_after_uninstall.is_none());
-    assert!(
-        assignments
-            .iter()
-            .any(|assignment| assignment.owner == PortOwner::Dns && assignment.port == 35353)
-    );
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((
-            output,
-            prepared_path,
-            prepared_after_uninstall,
-            system_resolver_path,
-            system_after_uninstall,
-            operations,
-        ));
-    });
-
-    Ok(())
-}
-
-#[test]
-fn dns_install_after_uninstall_reuses_the_port_the_running_daemon_holds() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let home = tempdir.path().join("home");
-    let current_dir = tempdir.path().join("work");
-    let system_resolver_path = tempdir.path().join("etc/resolver/test");
-    let environment = TestEnvironment::new(&home, &current_dir, &system_resolver_path);
-    let paths = pv_paths(&home);
-    // The running daemon binds its DNS port only at start, so it keeps holding
-    // this port across the uninstall and reinstall.
-    let (dns_port, _tcp_listener, _udp_socket) = bind_loopback_tcp_udp_pair()?;
-    let mut database = Database::open(&paths)?;
-    database.assign_port(
-        PortRequest::dns(dns_port, dns_port, dns_port),
-        |candidate| candidate == dns_port,
-    )?;
-    drop(database);
-    let daemon = DaemonFixture::start(&paths)?;
-    let install = run_pv(&["dns:install"], &environment)?;
-    daemon.finish()?;
-
-    let uninstall = run_pv(&["dns:uninstall"], &environment)?;
-    let daemon = DaemonFixture::start(&paths)?;
-    let reinstall = run_pv(&["dns:install"], &environment)?;
-    daemon.finish()?;
-    let system_resolver_config = read_required_file(&system_resolver_path)?;
-    let parsed_config = ResolverConfig::parse(&system_resolver_config)
-        .ok_or_else(|| anyhow::anyhow!("system resolver config did not parse"))?;
-    let dns_assignment = Database::open(&paths)?
-        .assigned_ports()?
-        .into_iter()
-        .find(|assignment| assignment.owner == PortOwner::Dns)
-        .ok_or_else(|| anyhow::anyhow!("missing DNS port assignment"))?;
-
-    assert_eq!(install.exit_code, ExitCode::SUCCESS);
-    assert_eq!(parsed_config.port, dns_port);
-    assert_eq!(dns_assignment.port, dns_port);
-    with_normalized_tempdir(tempdir.path(), || {
-        let mut settings = insta::Settings::clone_current();
-        settings.add_filter(&format!(r"\b{dns_port}\b"), "<dns-port>");
-        settings.bind(|| {
-            assert_debug_snapshot!((
-                uninstall,
-                reinstall,
-                system_resolver_config,
-                environment.operations.borrow().clone(),
-            ));
-        });
-    });
-
-    Ok(())
-}
-
-#[derive(Debug)]
-struct DaemonFixture {
-    requests: Arc<Mutex<Vec<String>>>,
-    thread: thread::JoinHandle<anyhow::Result<()>>,
-}
-
-impl DaemonFixture {
-    fn start(paths: &PvPaths) -> anyhow::Result<Self> {
-        state::fs::ensure_layout(paths)?;
-        delete_optional_file(&paths.daemon_socket())?;
-        let listener = UnixListener::bind(paths.daemon_socket().as_std_path())?;
-
-        listener.set_nonblocking(true)?;
-
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let thread_requests = Arc::clone(&requests);
-        let thread = spawn_daemon_fixture_thread(move || {
-            let (mut stream, _address) = accept_with_timeout(&listener)?;
-            let mut request = String::new();
-            let mut reader = BufReader::new(stream.try_clone()?);
-
-            reader.read_line(&mut request)?;
-            lock(&thread_requests).push(request.trim().to_string());
-            write_daemon_line(
-                &mut stream,
-                json!({
-                    "type": "response",
-                    "protocol_version": daemon::PROTOCOL_VERSION,
-                    "status": "ok",
-                    "message": "daemon healthy",
-                }),
-            )?;
-
-            Ok(())
-        });
-
-        Ok(Self { requests, thread })
-    }
-
-    fn finish(self) -> anyhow::Result<Vec<String>> {
-        self.thread
-            .join()
-            .map_err(|_error| anyhow::anyhow!("daemon fixture thread panicked"))??;
-
-        Ok(lock(&self.requests).clone())
-    }
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "CLI DNS tests run a synchronous fixture daemon on a short-lived thread"
-)]
-fn spawn_daemon_fixture_thread(
-    operation: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
-) -> thread::JoinHandle<anyhow::Result<()>> {
-    thread::spawn(operation)
-}
-
-fn accept_with_timeout(
-    listener: &UnixListener,
-) -> anyhow::Result<(UnixStream, std::os::unix::net::SocketAddr)> {
-    let started_at = real::now();
-
-    loop {
-        match listener.accept() {
-            Ok((stream, address)) => {
-                stream.set_nonblocking(false)?;
-
-                return Ok((stream, address));
-            }
-            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                if real::elapsed(started_at) > Duration::from_secs(3) {
-                    return Err(anyhow::anyhow!(
-                        "timed out waiting for daemon client request"
-                    ));
-                }
-                clock::poll_blocking(Duration::from_millis(10));
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
-}
-
-fn write_daemon_line(stream: &mut UnixStream, value: serde_json::Value) -> anyhow::Result<()> {
-    writeln!(stream, "{value}")?;
-
-    Ok(())
-}
-
-fn pv_paths(home: &Utf8Path) -> PvPaths {
-    PvPaths::for_home(home.to_path_buf())
-}
-
-fn read_required_file(path: &Utf8Path) -> anyhow::Result<String> {
-    read_optional_file(path)?
-        .ok_or_else(|| anyhow::anyhow!("expected fixture file to exist: {path}"))
-}
-
-fn read_optional_file(path: &Utf8Path) -> anyhow::Result<Option<String>> {
-    match state::fs::read_to_string(path) {
-        Ok(content) => Ok(Some(content)),
-        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-            Ok(None)
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn write_file(path: &Utf8Path, content: &str) -> anyhow::Result<()> {
-    state::fs::write_sensitive_file(path, content)?;
-
-    Ok(())
-}
-
-fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
-    match state::fs::delete_file(path) {
-        Ok(()) => Ok(()),
-        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-            Ok(())
-        }
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-}
-
-fn bind_loopback_tcp_udp_pair() -> anyhow::Result<(u16, TcpListener, UdpSocket)> {
-    let port = pv_fake::port()?;
-
-    Ok((
-        port,
-        TcpListener::bind((Ipv4Addr::LOCALHOST, port))?,
-        UdpSocket::bind((Ipv4Addr::LOCALHOST, port))?,
-    ))
-}
-
-fn assert_no_manual_guidance(output: &str) {
-    for pattern in [
-        "sudo",
-        "Move or remove",
-        "move ",
-        "remove it manually",
-        "sudo rm",
-        "sudo install",
-    ] {
-        assert!(
-            !output.contains(pattern),
-            "output contains unsafe manual guidance `{pattern}`: {output}"
-        );
-    }
-}
-
-fn with_normalized_tempdir(tempdir: &Utf8Path, assertion: impl FnOnce()) {
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(tempdir.as_str(), "<tempdir>");
-    settings.add_filter("/private<tempdir>", "<tempdir>");
-    settings.bind(assertion);
 }

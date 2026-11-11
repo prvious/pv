@@ -18,9 +18,6 @@ expression: decorated.stdout
 │  ↳ fish  pv env --shell fish | source
 │
 ✗  DNS resolver setup
-│  ✓ Prepared PV DNS resolver config
-│    path: <tempdir>/home/.pv/config/resolver/test
-│    DNS resolver port: <dns-port>
 │  ✗ System resolver config is not PV-owned: <tempdir>/etc/resolver/test
 │    Leaving it in place.
 │

@@ -23,9 +23,7 @@ use sha2::{Digest, Sha256};
 
 #[cfg(target_os = "macos")]
 use crate::clock::{self, Deadline, Limit};
-use crate::{
-    KeychainCertificate, LowPortInspection, PlatformError, ResolverConfig, ResolverFileState,
-};
+use crate::{LowPortInspection, PlatformError, ResolverConfig};
 
 pub const HELPER_PROTOCOL_VERSION: u32 = 3;
 pub const PRIVILEGED_HELPER_VERSION: &str = "3.0.0";
@@ -167,13 +165,11 @@ struct HelperRequest {
 )]
 enum HelperOperation {
     Status,
-    DnsInspect { expected_port: Option<u16> },
     DnsApply { port: u16 },
     DnsRemove,
     LowPortInspect,
     // This is probably temporary. We should remember to remove it on the next release.
     PfRemove,
-    CaInspect,
     CaApply { fingerprint: String },
     CaRemove { fingerprint: String },
     UnprivilegedPortsApply,
@@ -217,9 +213,7 @@ enum HelperErrorCode {
 enum HelperPayload {
     Empty,
     Status(PrivilegedHelperStatus),
-    ResolverState(ResolverFileState),
     LowPorts(LowPortInspection),
-    CaCertificates(Vec<KeychainCertificate>),
 }
 
 #[derive(Clone, Debug)]
@@ -236,17 +230,6 @@ impl PrivilegedHelperClient {
         match self.call(HelperOperation::Status)? {
             HelperPayload::Status(status) => Ok(status),
             payload => Err(unexpected_payload("status", &payload)),
-        }
-    }
-
-    pub fn inspect_dns(
-        &self,
-        expected: Option<&ResolverConfig>,
-    ) -> Result<ResolverFileState, PlatformError> {
-        let expected_port = expected.map(|config| config.port);
-        match self.call(HelperOperation::DnsInspect { expected_port })? {
-            HelperPayload::ResolverState(state) => Ok(state),
-            payload => Err(unexpected_payload("DNS inspection", &payload)),
         }
     }
 
@@ -269,13 +252,6 @@ impl PrivilegedHelperClient {
     /// macOS: removes the pf port redirect an older PV installed.
     pub fn remove_legacy_pf(&self) -> Result<(), PlatformError> {
         expect_empty(self.call(HelperOperation::PfRemove)?)
-    }
-
-    pub fn inspect_ca(&self) -> Result<Vec<KeychainCertificate>, PlatformError> {
-        match self.call(HelperOperation::CaInspect)? {
-            HelperPayload::CaCertificates(certificates) => Ok(certificates),
-            payload => Err(unexpected_payload("CA inspection", &payload)),
-        }
     }
 
     pub fn apply_ca(&self, fingerprint: &str) -> Result<(), PlatformError> {
@@ -1224,9 +1200,6 @@ fn call_helper(
             HelperOperation::DnsApply { .. } | HelperOperation::DnsRemove => {
                 crate::resolver::DNS_MUTATION_TIMEOUT + HELPER_IO_TIMEOUT
             }
-            HelperOperation::DnsInspect { .. } => {
-                crate::resolver::DNS_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
-            }
             HelperOperation::CaApply { .. } | HelperOperation::CaRemove { .. } => {
                 crate::trust::linux::COMMAND_TIMEOUT + HELPER_IO_TIMEOUT
             }
@@ -1637,13 +1610,6 @@ fn dispatch_request(
             protocol_version: HELPER_PROTOCOL_VERSION,
             owner_uid: metadata.owner_uid,
         })),
-        HelperOperation::DnsInspect { expected_port } => {
-            let expected = expected_port.map(ResolverConfig::new);
-            Ok(HelperPayload::ResolverState(crate::inspect_resolver_file(
-                Utf8Path::new(crate::SYSTEM_RESOLVER_TEST_PATH),
-                expected.as_ref(),
-            )))
-        }
         HelperOperation::DnsApply { port } => {
             validate_high_port("DNS", port)?;
             crate::resolver::apply_resolver_config_privileged(&ResolverConfig::new(port))?;
@@ -1661,13 +1627,6 @@ fn dispatch_request(
         HelperOperation::PfRemove => {
             crate::legacy_pf::remove_legacy_pf_privileged()?;
             Ok(HelperPayload::Empty)
-        }
-        #[cfg(target_os = "macos")]
-        HelperOperation::CaInspect => {
-            use crate::SystemTrustInspector as _;
-
-            let certificates = crate::NativeSystemTrustInspector.trusted_certificates()?;
-            Ok(HelperPayload::CaCertificates(certificates))
         }
         #[cfg(target_os = "macos")]
         HelperOperation::CaApply { fingerprint } => {
@@ -1720,10 +1679,6 @@ fn dispatch_request(
             capability: crate::PlatformCapability::LowPortFrontend,
             target: crate::PlatformTarget::Linux,
         }),
-        #[cfg(target_os = "linux")]
-        HelperOperation::CaInspect => Ok(HelperPayload::CaCertificates(
-            crate::trust::linux::trusted_certificates()?,
-        )),
         #[cfg(target_os = "linux")]
         HelperOperation::CaApply { fingerprint } => {
             crate::trust::linux::apply_system_ca_privileged(metadata.owner_uid, &fingerprint)?;

@@ -3,28 +3,29 @@
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, Write as _};
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::support::run_pv;
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
     DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
-    PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig,
+    PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
+    SYSTEM_RESOLVER_TEST_PATH,
 };
-use state::{Database, PvPaths, RuntimeObservedStatus, RuntimeSubject};
+use state::{Database, PortRequest, PvPaths, RuntimeObservedStatus, RuntimeSubject};
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     daemon_registration_path: PathBuf,
-    resolver_path: PathBuf,
+    resolver: std::cell::RefCell<ResolverFileState>,
     trusted_certificates: std::cell::RefCell<Vec<KeychainCertificate>>,
     helper_status: std::cell::RefCell<Option<PrivilegedHelperStatus>>,
     helper_authentication_error: std::cell::Cell<bool>,
@@ -40,7 +41,9 @@ impl TestEnvironment {
                 .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
                 .as_std_path()
                 .to_path_buf(),
-            resolver_path: home.join("etc/resolver/test").as_std_path().to_path_buf(),
+            resolver: std::cell::RefCell::new(ResolverFileState::Missing {
+                path: SYSTEM_RESOLVER_TEST_PATH.into(),
+            }),
             trusted_certificates: std::cell::RefCell::new(Vec::new()),
             helper_status: std::cell::RefCell::new(Some(PrivilegedHelperStatus {
                 version: PRIVILEGED_HELPER_VERSION.to_string(),
@@ -55,10 +58,6 @@ impl TestEnvironment {
     fn launch_agent_path_utf8(&self) -> anyhow::Result<camino::Utf8PathBuf> {
         camino::Utf8PathBuf::from_path_buf(self.daemon_registration_path.clone())
             .map_err(|path| anyhow::anyhow!("launch agent path is not UTF-8: {}", path.display()))
-    }
-
-    fn resolver_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
-        utf8_path_buf(&self.resolver_path, "resolver path")
     }
 
     fn set_helper_missing(&self) {
@@ -136,8 +135,8 @@ impl Environment for TestEnvironment {
         self.daemon_registration_path.clone()
     }
 
-    fn resolver_test_path(&self) -> PathBuf {
-        self.resolver_path.clone()
+    fn inspect_system_resolver(&self, _expected: Option<&ResolverConfig>) -> ResolverFileState {
+        self.resolver.borrow().clone()
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
@@ -305,7 +304,12 @@ fn doctor_fails_one_check_and_continues_the_others() -> anyhow::Result<()> {
     let cases: [(&'static str, BreakCheck); 4] = [
         (
             "doctor_fails_when_system_resolver_is_missing",
-            |environment| delete_optional_file(&environment.resolver_path_utf8()?),
+            |environment| {
+                environment.resolver.replace(ResolverFileState::Missing {
+                    path: SYSTEM_RESOLVER_TEST_PATH.into(),
+                });
+                Ok(())
+            },
         ),
         (
             "doctor_fails_when_system_ca_trust_is_missing",
@@ -394,7 +398,7 @@ fn seed_required_checks(
     environment: &TestEnvironment,
     include_manifest_cache: bool,
 ) -> anyhow::Result<()> {
-    Database::open(paths)?;
+    Database::open(paths)?.assign_port(PortRequest::dns(35353, 35353, 35353), |_port| true)?;
 
     let launch_agent = DaemonRegistrationConfig::new(
         "/bin/pv",
@@ -405,14 +409,10 @@ fn seed_required_checks(
         &environment.launch_agent_path_utf8()?,
         &launch_agent,
     )?;
-    state::fs::write_sensitive_file(
-        &paths.resolver_config(),
-        &ResolverConfig::new(35353).render(),
-    )?;
-    state::fs::write_sensitive_file(
-        &environment.resolver_path_utf8()?,
-        &ResolverConfig::new(35353).render(),
-    )?;
+    environment.resolver.replace(ResolverFileState::Current {
+        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+        port: 35353,
+    });
     let ca = platform::generate_local_ca()?;
     state::fs::write_sensitive_file(&paths.ca_certificate(), &ca.certificate_pem)?;
     state::fs::write_sensitive_file(&paths.ca_private_key(), &ca.private_key_pem)?;
@@ -435,11 +435,6 @@ fn seed_required_checks(
     }
 
     Ok(())
-}
-
-fn utf8_path_buf(path: &Path, label: &str) -> anyhow::Result<Utf8PathBuf> {
-    Utf8PathBuf::from_path_buf(path.to_path_buf())
-        .map_err(|path| anyhow::anyhow!("{label} is not UTF-8: {}", path.display()))
 }
 
 #[expect(
@@ -502,18 +497,6 @@ fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
     std::fs::write(path, contents)?;
 
     Ok(())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "CLI doctor tests delete fixture files"
-)]
-fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn assert_doctor_snapshot(name: &'static str, tempdir: &Utf8Path, snapshot: impl std::fmt::Debug) {

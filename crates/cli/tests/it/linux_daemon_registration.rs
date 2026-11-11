@@ -109,10 +109,6 @@ impl Environment for TestEnvironment {
         ))
     }
 
-    fn resolver_test_path(&self) -> PathBuf {
-        self.home.join("etc/resolver/test").into_std_path_buf()
-    }
-
     fn os_release_path(&self) -> PathBuf {
         self.home.join("etc/os-release").into_std_path_buf()
     }

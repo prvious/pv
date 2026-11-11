@@ -74,7 +74,7 @@ impl DoctorReport {
             DoctorSection {
                 title: "Routing",
                 checks: vec![
-                    dns_check(environment, &paths)?,
+                    dns_check(environment, database.as_ref())?,
                     ports_check(environment, database.as_ref())?,
                     ca_check(environment, &paths),
                 ],
@@ -462,70 +462,49 @@ fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileSta
     }
 }
 
-fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCheck, ExecuteError> {
-    let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
-    let expected = resolver_config_from_state(&prepared);
-    let system_path = resolver_test_path(environment)?;
-    let system = environment.inspect_resolver_file(&system_path, expected.as_ref());
+fn dns_check(
+    environment: &impl Environment,
+    database: Option<&Database>,
+) -> Result<DoctorCheck, ExecuteError> {
+    let dns_port = match database {
+        Some(database) => super::dns::assigned_dns_port(database)?,
+        None => None,
+    };
+    let Some(dns_port) = dns_port else {
+        return Ok(DoctorCheck::fail(
+            "DNS config",
+            "no DNS port is assigned",
+            "pv setup",
+        ));
+    };
+    let system = environment.inspect_system_resolver(Some(&ResolverConfig::new(dns_port)));
 
-    let check = match (&prepared, &system) {
-        (ResolverFileState::Current { port, .. }, ResolverFileState::Current { .. }) => {
+    let check = match &system {
+        ResolverFileState::Current { port, .. } => {
             DoctorCheck::pass("DNS config", format!("system resolver uses port {port}"))
         }
-        (ResolverFileState::Current { .. }, ResolverFileState::Missing { path }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config is missing",
-                "pv dns:install",
-            )
-            .with_detail(format!("path: {path}"))
-        }
-        (ResolverFileState::Current { .. }, ResolverFileState::Stale { path, .. }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config is PV-owned but stale",
-                "pv dns:install",
-            )
-            .with_detail(format!("path: {path}"))
-        }
-        (ResolverFileState::Current { .. }, ResolverFileState::Conflict { path }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config is not PV-owned",
-                "pv dns:install",
-            )
-            .with_detail(format!("path: {path}"))
-        }
-        (ResolverFileState::Current { .. }, ResolverFileState::Unreadable { path, message }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config could not be inspected",
-                "pv dns:install",
-            )
-            .with_detail(format!("{path}: {message}"))
-        }
-        (ResolverFileState::Missing { path }, _) => DoctorCheck::fail(
+        ResolverFileState::Missing { path } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config is missing",
-            "pv dns:install",
+            "system resolver config is missing",
+            "pv setup",
         )
         .with_detail(format!("path: {path}")),
-        (ResolverFileState::Stale { path, .. }, _) => DoctorCheck::fail(
+        ResolverFileState::Stale { path, .. } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config is PV-owned but stale",
-            "pv dns:install",
+            "system resolver config is PV-owned but stale",
+            "pv setup",
         )
         .with_detail(format!("path: {path}")),
-        (ResolverFileState::Conflict { path }, _) => DoctorCheck::fail(
+        ResolverFileState::Conflict { path } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config is not PV-owned",
-            "pv dns:install",
+            "system resolver config is not PV-owned",
+            "pv setup",
         )
         .with_detail(format!("path: {path}")),
-        (ResolverFileState::Unreadable { path, message }, _) => DoctorCheck::fail(
+        ResolverFileState::Unreadable { path, message } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config could not be inspected",
-            "pv dns:install",
+            "system resolver config could not be inspected",
+            "pv setup",
         )
         .with_detail(format!("{path}: {message}")),
     };
@@ -859,16 +838,6 @@ fn runtime_status_label(status: RuntimeObservedStatus) -> &'static str {
     }
 }
 
-fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
-    match state {
-        ResolverFileState::Current { port, .. } => Some(ResolverConfig::new(*port)),
-        ResolverFileState::Missing { .. }
-        | ResolverFileState::Stale { .. }
-        | ResolverFileState::Conflict { .. }
-        | ResolverFileState::Unreadable { .. } => None,
-    }
-}
-
 fn metadata_from_local_ca(state: &CaFileState) -> Option<LocalCaMetadata> {
     match state {
         CaFileState::Current { metadata, .. } => Some(metadata.clone()),
@@ -908,9 +877,4 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
-}
-
-fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.resolver_test_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
 }

@@ -20,7 +20,8 @@ use platform::clock::{self, real};
 use platform::{
     DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION,
     KeychainCertificate, KeychainTrustResult, LocalCaMetadata, LowPortInspection, LowPortState,
-    PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig, generate_local_ca,
+    PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
+    generate_local_ca,
 };
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use serde_json::json;
@@ -285,31 +286,64 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn resolver_test_path(&self) -> PathBuf {
-        self.resolver_path.clone()
+    /// The system resolver is a file in the fixture, read as macOS reads `/etc/resolver/test`.
+    fn inspect_system_resolver(&self, expected: Option<&ResolverConfig>) -> ResolverFileState {
+        let Some(path) = Utf8Path::from_path(&self.resolver_path) else {
+            return ResolverFileState::Unreadable {
+                path: self.resolver_path.display().to_string().into(),
+                message: "not UTF-8".to_owned(),
+            };
+        };
+        let path = path.to_path_buf();
+        let content = match read_optional_file(&path) {
+            Ok(Some(content)) => content,
+            Ok(None) => return ResolverFileState::Missing { path },
+            Err(error) => {
+                return ResolverFileState::Unreadable {
+                    path,
+                    message: error.to_string(),
+                };
+            }
+        };
+        if !content.lines().any(|line| line == "# Managed by PV") {
+            return ResolverFileState::Conflict { path };
+        }
+
+        match (ResolverConfig::parse(&content), expected) {
+            (Some(actual), Some(expected)) if &actual == expected => ResolverFileState::Current {
+                path,
+                port: actual.port,
+            },
+            (Some(actual), None) => ResolverFileState::Current {
+                path,
+                port: actual.port,
+            },
+            (actual, expected) => ResolverFileState::Stale {
+                path,
+                expected_port: expected.map(|config| config.port),
+                actual_port: actual.map(|config| config.port),
+            },
+        }
     }
 
-    fn install_resolver_config(
-        &self,
-        prepared_path: &Utf8Path,
-        system_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        let content = state::fs::read_to_string(prepared_path)
+    fn apply_system_resolver(&self, port: u16) -> Result<(), platform::PlatformError> {
+        let path = Utf8Path::from_path(&self.resolver_path).ok_or_else(|| {
+            platform::PlatformError::SystemIntegration("resolver path is not UTF-8".to_owned())
+        })?;
+        write_file(path, &ResolverConfig::new(port).render())
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        write_file(system_path, &content)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        lock(&self.operations).push(format!("install resolver {prepared_path} -> {system_path}"));
+        lock(&self.operations).push("apply resolver".to_owned());
 
         Ok(())
     }
 
-    fn remove_resolver_config(
-        &self,
-        system_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        delete_optional_file(system_path)
+    fn remove_system_resolver(&self) -> Result<(), platform::PlatformError> {
+        let path = Utf8Path::from_path(&self.resolver_path).ok_or_else(|| {
+            platform::PlatformError::SystemIntegration("resolver path is not UTF-8".to_owned())
+        })?;
+        delete_optional_file(path)
             .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        lock(&self.operations).push(format!("remove resolver {system_path}"));
+        lock(&self.operations).push("remove resolver".to_owned());
 
         Ok(())
     }
@@ -442,16 +476,19 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
             )
         })
         .collect::<Vec<_>>();
-    let prepared_resolver = read_required_file(&fixture.paths.resolver_config())?;
     let system_resolver = read_required_file(&fixture.system_resolver_path)?;
+    let dns_port = Database::open(&fixture.paths)?
+        .assigned_ports()?
+        .into_iter()
+        .find(|assignment| assignment.owner == PortOwner::Dns)
+        .map(|assignment| assignment.port);
     let launch_agent = read_required_file(&fixture.daemon_registration_path)?;
-    let parsed_resolver = ResolverConfig::parse(&prepared_resolver);
+    let parsed_resolver = ResolverConfig::parse(&system_resolver);
     let parsed_launch_agent = DaemonRegistrationConfig::parse(&launch_agent);
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
     assert!(!output.stderr.contains("error:"));
-    assert!(parsed_resolver.is_some());
-    assert_eq!(system_resolver, prepared_resolver);
+    assert_eq!(parsed_resolver.map(|config| config.port), dns_port);
     assert_eq!(fixture.environment.certificates().len(), 1);
     assert!(output.stdout.contains("PV setup complete"));
     assert!(daemon_requests.iter().any(|request| {
@@ -768,7 +805,6 @@ fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result
     let generated = generate_local_ca()?;
 
     seed_online_setup_manifest(&fixture)?;
-    write_file(&fixture.paths.resolver_config(), &resolver_config)?;
     write_file(&fixture.system_resolver_path, &resolver_config)?;
     write_file(&fixture.paths.ca_certificate(), &generated.certificate_pem)?;
     write_file(&fixture.paths.ca_private_key(), &generated.private_key_pem)?;

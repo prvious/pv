@@ -7,10 +7,8 @@ Ensured PV state layout: <tempdir>/home/.pv
 Privileged helper: current 3.0.0 (protocol 3)
 Shell profile integration skipped by --no-path.
 Run `pv env --shell zsh`, `pv env --shell bash`, or `pv env --shell fish` for manual shell integration.
-Prepared PV DNS resolver config
-  path: <tempdir>/home/.pv/config/resolver/test
-  DNS resolver port: <dns-port>
 Installed system resolver config: <tempdir>/etc/resolver/test
+  DNS resolver port: <dns-port>
 Ports 80 and 443 are available to PV
 Prepared PV local CA
   certificate: <tempdir>/home/.pv/certificates/ca.pem

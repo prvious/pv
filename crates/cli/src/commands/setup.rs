@@ -149,7 +149,7 @@ pub(crate) fn setup(
         "DNS resolver setup",
         streams,
         &mut replay_error,
-        |streams| dns::install_config_only(environment, streams),
+        |streams| dns::configure(environment, streams),
     )? {
         return Ok(ExitCode::FAILURE);
     }
@@ -406,12 +406,11 @@ pub(crate) fn uninstall(
         "DNS resolver removal",
         streams,
         &mut replay_error,
-        |streams| dns::uninstall(environment, streams),
+        |streams| dns::remove(environment, streams),
     )? {
         return Ok(ExitCode::FAILURE);
     }
-    // `pv dns:uninstall` keeps the DNS port because a running daemon still
-    // listens on it. The daemon is stopped by now, so the port can go.
+    // The daemon that listened on the DNS port is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
     // This is probably temporary. We should remember to remove it on the next release.
     remove_legacy_pf_or_warn(environment, streams)?;

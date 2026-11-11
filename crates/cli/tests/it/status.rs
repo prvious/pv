@@ -11,12 +11,12 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
+use platform::KeychainCertificate;
 use platform::{DaemonRegistrationConfig, KeychainTrustResult};
-use platform::{KeychainCertificate, ResolverConfig};
 use state::{
     Database, JobDiagnosticSubject, LinkProjectInput, ManagedResourceTrackInstallInput,
-    ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, RuntimeObservedStatus,
-    RuntimeSubject,
+    PortRequest, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths,
+    RuntimeObservedStatus, RuntimeSubject,
 };
 
 #[derive(Debug)]
@@ -24,7 +24,6 @@ struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     daemon_registration_path: PathBuf,
-    resolver_path: PathBuf,
     trusted_certificates: Vec<KeychainCertificate>,
     terminal_width: Option<usize>,
 }
@@ -38,7 +37,6 @@ impl TestEnvironment {
                 .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
                 .as_std_path()
                 .to_path_buf(),
-            resolver_path: home.join("etc/resolver/test").as_std_path().to_path_buf(),
             trusted_certificates: Vec::new(),
             terminal_width: None,
         }
@@ -94,10 +92,6 @@ impl Environment for TestEnvironment {
 
     fn daemon_registration_path(&self) -> PathBuf {
         self.daemon_registration_path.clone()
-    }
-
-    fn resolver_test_path(&self) -> PathBuf {
-        self.resolver_path.clone()
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
@@ -210,11 +204,8 @@ fn status_reports_dns_repair_required_as_failure() -> anyhow::Result<()> {
     let paths = PvPaths::for_home(home.clone());
     let trusted_certificate = seed_current_local_ca(&paths)?;
     let environment = TestEnvironment::new(&home).with_trusted_certificate(trusted_certificate);
-    Database::open(&paths)?;
-    write_file(
-        &paths.resolver_config(),
-        &ResolverConfig::new(35353).render(),
-    )?;
+    // PV has a DNS port, and the test environment's system resolver is missing.
+    Database::open(&paths)?.assign_port(PortRequest::dns(35353, 35353, 35353), |_port| true)?;
 
     let output = run_pv(&["status"], &environment)?;
 

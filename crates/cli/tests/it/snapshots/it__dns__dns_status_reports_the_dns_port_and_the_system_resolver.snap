@@ -1,0 +1,60 @@
+---
+source: crates/cli/tests/it/dns.rs
+expression: "(unassigned, missing, current, stale, stale_on_terminal, conflict)"
+---
+(
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nDNS port: not assigned\n  Run `pv setup`.\nSystem resolver config: missing\n  path: /etc/resolver/test\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nDNS port: 35353\nSystem resolver config: missing\n  path: /etc/resolver/test\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nDNS port: 35353\nSystem resolver config: current\n  path: /etc/resolver/test\n  port: 35353\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nDNS port: 35353\nSystem resolver config: stale\n  path: /etc/resolver/test\n  expected port: 35353\n  actual port: 45000\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "[pv] dns:status\n────────────────────────────────────────────────────────────────────────────────\n✓  DNS port: 35353\n⚠  System resolver config: stale\n   path: /etc/resolver/test\n   expected port: 35353\n   actual port: 45000\n",
+        stderr: "",
+    },
+    RunOutput {
+        exit_code: ExitCode(
+            unix_exit_status(
+                0,
+            ),
+        ),
+        stdout: "DNS resolver status\nDNS port: 35353\nSystem resolver config: not PV-owned\n  path: /etc/resolver/test\n",
+        stderr: "",
+    },
+)

@@ -74,7 +74,7 @@ fn preflight() -> Result<()> {
     );
     ensure!(
         matches!(
-            platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None),
+            platform::inspect_system_resolver(None),
             ResolverFileState::Missing { .. }
         ),
         "DNS routing must initially be missing without conflicts"
@@ -198,10 +198,7 @@ impl DnsFixture {
         root(&["/usr/bin/resolvectl", "domain", FOREIGN_LINK, "~test"])?;
         let domains = text(checked("/usr/bin/resolvectl", &["domain", FOREIGN_LINK])?)?;
         assert!(matches!(
-            platform::inspect_resolver_file(
-                Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH),
-                Some(&config)
-            ),
+            platform::inspect_system_resolver(Some(&config)),
             ResolverFileState::Conflict { .. }
         ));
         assert!(matches!(
@@ -293,13 +290,11 @@ impl Drop for DnsFixture {
 
 fn require_current(port: u16) -> Result<()> {
     let expected = ResolverConfig::new(port);
-    let state =
-        platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), Some(&expected));
+    let state = platform::inspect_system_resolver(Some(&expected));
     ensure!(
         matches!(state, ResolverFileState::Current { port: observed, .. } if observed == port),
         "{state:?}"
     );
-    assert_eq!(PrivilegedHelperClient.inspect_dns(Some(&expected))?, state);
     Ok(())
 }
 
@@ -326,7 +321,7 @@ fn wait_until_current(port: u16) -> Result<()> {
 }
 
 fn require_missing() -> Result<()> {
-    let state = platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), None);
+    let state = platform::inspect_system_resolver(None);
     ensure!(
         matches!(state, ResolverFileState::Missing { .. }),
         "{state:?}"
@@ -342,8 +337,7 @@ fn require_missing() -> Result<()> {
 
 fn require_conflict(port: u16) -> Result<()> {
     let config = ResolverConfig::new(port);
-    let state =
-        platform::inspect_resolver_file(Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH), Some(&config));
+    let state = platform::inspect_system_resolver(Some(&config));
     ensure!(
         matches!(state, ResolverFileState::Conflict { .. }),
         "{state:?}"

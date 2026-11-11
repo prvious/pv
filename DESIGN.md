@@ -160,11 +160,11 @@ macOS is configured once to send `.test` lookups to PV's resolver. The resolver 
 
 PV configures macOS with `/etc/resolver/test`, pointing `.test` lookups at PV's internal resolver. Creating or removing this file requires admin privileges, but the resolver itself listens on high loopback ports so the PV daemon does not need to run as root. PV prefers DNS port `15353`. If that port is occupied by another process, PV chooses an available high port, stores it in `pv.db`, and writes that port into `/etc/resolver/test`.
 
-If `/etc/resolver/test` already exists and is not PV-owned, `pv dns:install` and `pv setup` fail safely, report the resolver conflict, and print manual repair instructions instead of overwriting it.
+If `/etc/resolver/test` already exists and is not PV-owned, `pv setup` fails safely, report the resolver conflict, and print manual repair instructions instead of overwriting it.
 
 PV marks `/etc/resolver/test` with a clear ownership comment such as `# Managed by PV`. PV only repairs or removes the resolver file when the ownership marker is present.
 
-On Linux, PV owns `pv-dns.service` and the dummy link `pv0`, marked `Managed by PV`, and routes `~test` through systemd-resolved to PV's high DNS port. PV checks the unit marker, loaded fragment and link ownership before mutations, as macOS checks its resolver file's marker, and refuses another link that claims the `test` domain itself, as macOS refuses a foreign `/etc/resolver/test`. Subdomains such as `corp.test` on other links don't conflict. Removal preserves foreign configuration and keeps the DNS port reserved until full uninstall. Linux listens on `127.0.0.2` because systemd-resolved gives an address-less `pv0` no DNS scope and `127.0.0.1` belongs to `lo`; prepared files carry only the port through the existing localhost format.
+On Linux, PV owns `pv-dns.service` and the dummy link `pv0`, marked `Managed by PV`, and routes `~test` through systemd-resolved to PV's high DNS port. PV checks the unit marker, loaded fragment and link ownership before mutations, as macOS checks its resolver file's marker, and refuses another link that claims the `test` domain itself, as macOS refuses a foreign `/etc/resolver/test`. Subdomains such as `corp.test` on other links don't conflict. Removal preserves foreign configuration and keeps the DNS port reserved until full uninstall. Linux listens on `127.0.0.2` because systemd-resolved gives an address-less `pv0` no DNS scope and `127.0.0.1` belongs to `lo`.
 
 The internal DNS resolver supports both UDP and TCP DNS on the chosen DNS port.
 
@@ -322,7 +322,7 @@ When a Project's PHP track or optional extension set changes, PV reconfigures on
 
 `pv daemon:disable` stops the registered daemon and waits up to 10 seconds for the verified daemon process to exit before stopping recorded PV-managed child processes. Each Gateway or PHP worker gets up to 1 second for graceful termination; each other Managed Resource gets up to 10 seconds. PV then force-kills remaining verified PV-owned process groups when needed, reports what happened, and removes the registration file after successful cleanup so it does not start on next login. Uninstall uses the same stop policy before removing installed state.
 
-`pv daemon:disable` does not remove DNS resolver config or CA trust. Those integrations are managed by `pv dns:*`, `pv ca:*`, `pv setup`, and `pv uninstall`.
+`pv daemon:disable` does not remove DNS resolver config or CA trust. Those integrations are managed by `pv setup`, `pv ca:*`, and `pv uninstall`.
 
 `pv ca:*` commands remain available as lower-level trust inspection and repair commands even though `pv setup` handles first-time CA trust.
 
@@ -334,13 +334,9 @@ PV's local CA files are user-specific and live under `~/.pv/certificates/`. Trus
 
 On Linux, the helper installs PV's public CA as a fingerprint-named anchor in the distribution's system trust store and runs `update-ca-certificates` or `update-ca-trust`. Inspection verifies that the generated CA bundle contains the certificate. The CLI runs `certutil` as the user to add, inspect, repair trust flags, and remove PV's nickname in each browser NSS database: `~/.pki/nssdb`, existing Chromium databases under `~/.local/share/pki/nssdb` and Snap, and existing Firefox profiles under `$XDG_CONFIG_HOME/mozilla/firefox` (default `~/.config/mozilla/firefox`), `~/.mozilla/firefox` and Snap. Trust creates the primary NSS database when absent; inspection does not create files. Every external trust command uses the existing bounded platform command runner. `pv ca:*`, `pv doctor`, and `pv status` report browser trust per database. Rerunning trust repairs browser entries even when system trust is already current. Untrust removes PV entries from both stores while retaining local CA files and unrelated certificates.
 
-`pv dns:*` commands remain available as lower-level resolver inspection and repair commands even though `pv setup` handles first-time resolver configuration.
+DNS is always on while PV is installed. `pv setup` assigns the DNS port when `pv.db` has none and applies the system resolver configuration through the helper; `pv uninstall` removes it after stopping the daemon and then releases the port. The DNS port in `pv.db` is the only expected value; PV keeps no prepared copy of the resolver configuration. `pv dns:status` reports that port and the system resolver configuration.
 
-`pv dns:install` installs or repairs `/etc/resolver/test` and ensures the PV daemon is running so the resolver can answer `.test` lookups. If the LaunchAgent is not registered, it tells the user to run `pv setup` or `pv daemon:enable`.
-
-`pv dns:uninstall` keeps the DNS port stored in `pv.db`, because the running daemon still listens on it, so a later `pv dns:install` points `/etc/resolver/test` at the same port. `pv uninstall` releases the port after stopping the daemon.
-
-Privileged repair happens only from foreground commands such as `pv setup` and `pv dns:install`. Port reservations and their failure handling follow the DNS rules above. The daemon may report drift but does not ask the helper to mutate system state.
+Privileged repair happens only from foreground commands such as `pv setup`. Port reservations and their failure handling follow the DNS rules above. The daemon may report drift but does not ask the helper to mutate system state.
 
 PV uses a separate minimal `pv-helper` executable registered as the system launchd job `com.prvious.pv.helper`. Launchd creates the restricted `/var/run/com.prvious.pv.helper.sock` and activates the helper on demand. Once activated, the helper serves sequential connections until launchd stops it, avoiding launchd restart throttling between related operations. Its LaunchDaemon writes startup and uncaptured child-process diagnostics to `/var/log/com.prvious.pv.helper.err.log`. The daemon, Gateway, DNS resolver, and all Managed Resources remain unprivileged. The helper supports one installing macOS account per machine. Helper removal is restricted to the original installing UID, so that account must remove it before setup by a replacement account; an unavailable owner requires manual administrator recovery.
 
@@ -348,7 +344,7 @@ On Linux, the same protocol 3 helper is socket-activated by `pv-helper.socket` a
 
 Linux install stages a root-owned candidate with sudo, checks its owner, mode and checksum, as macOS checks its staged helper, and runs that candidate's hidden root lifecycle command. The helper holds `/usr/local/libexec/.pv-helper-lifecycle.lock`, installs over system-bus systemd calls, and restores the previous installation on failure, like macOS. The lock stays outside the removable executable directory. After a failed fresh installation restores the prior absence, cleanup removes only empty helper directories; unexpected contents remain for recovery. Once installation has verified the new helper is ready, transaction-file cleanup failures are reported through the successful installation outcome as warnings. Removal works like macOS removal: it checks the socket unit belongs to the account, stops and disables the units with sudo `systemctl`, and deletes every helper file, leftover candidate and rollback files included. Read-only helper operations never invoke sudo.
 
-The helper accepts only versioned typed requests for status, DNS inspection/apply/removal, removal of an older PV's `pf` redirect (temporary), loopback port 80/443 inspection, CA trust inspection/apply/removal, and, on Linux, applying and removing PV's unprivileged-port setting. Requests cannot provide commands, executable paths, destination paths, raw configuration, environment behavior, or network operations. DNS content is generated internally for fixed system destinations. `CaApply` reads only the installing account's fixed PV CA path, validates PV CA metadata and the requested fingerprint, stages that exact certificate in the fixed root work path, revalidates it, and trusts it. The helper revalidates ownership, conflicts, arguments, and expected state before each mutation. `pv.db` remains the only desired-state source of truth; root-owned helper metadata contains only the installing UID, helper version, and protocol version.
+The helper accepts only versioned typed requests for status, DNS apply/removal, removal of an older PV's `pf` redirect (temporary), loopback port 80/443 inspection, CA trust apply/removal, and, on Linux, applying and removing PV's unprivileged-port setting. Requests cannot provide commands, executable paths, destination paths, raw configuration, environment behavior, or network operations. DNS content is generated internally for fixed system destinations. `CaApply` reads only the installing account's fixed PV CA path, validates PV CA metadata and the requested fingerprint, stages that exact certificate in the fixed root work path, revalidates it, and trusts it. The helper revalidates ownership, conflicts, arguments, and expected state before each mutation. `pv.db` remains the only desired-state source of truth; root-owned helper metadata contains only the installing UID, helper version, and protocol version.
 
 The socket is restricted to the installing account, and the helper verifies the Unix peer UID before decoding and dispatching a bounded request. Protocol version is validated independently from app and helper versions. Install and replacement readiness uses a small protocol-neutral lifecycle probe, separate from the versioned operational request schema, so an app may verify a newly installed helper before activating a matching protocol update. Missing or incompatible helpers produce repair guidance to run `pv setup`; `pv doctor` reports cross-account authentication failures with guidance to use the original installing account or perform manual administrator recovery. Normal DNS, PF, and CA commands never fall back to `sudo`.
 
@@ -356,7 +352,7 @@ The socket is restricted to the installing account, and the helper verifies the 
 
 Helper install, replacement, and removal hold a persistent-file advisory lock under `/Library/PrivilegedHelperTools` for the full root-owned lifecycle transaction. This machine-wide lock serializes the fixed candidate, rollback, executable, metadata, plist, and launchd paths across macOS accounts. After registering or restoring the launchd job, the lifecycle operation waits up to five seconds for its control socket to become available before failing. Authentication and invalid-response errors fail immediately. Setup, update, and uninstall also hold a persistent per-account lock at `~/.pv-helper-lifecycle.lock` across helper-dependent integration and state changes; keeping it outside `~/.pv` lets `pv uninstall --prune` remain serialized while removing that tree.
 
-`pv doctor` remains unprivileged and read-only. It reports helper availability, helper version, and helper protocol, uses narrowly scoped helper inspections when direct DNS or CA inspection is blocked, and continues reporting all other checks when the helper is unavailable.
+`pv doctor` remains unprivileged and read-only. It reports helper availability, helper version, and helper protocol, reads the resolver configuration and the trust store directly as the user, reports a read that fails, and continues reporting all other checks when the helper is unavailable.
 
 # More Info
 
@@ -1761,7 +1757,7 @@ Failure deduplication applies only within one continuous unresolved episode. A r
 
 A background reconciliation failure before a job is admitted is recorded as a synthetic failed job. After a job starts, its execution failure is finalized on the originating job and is not inserted again by delayed background-task completion handling. If that finalization fails, the server logs the failure against the originating job ID.
 
-`pv status` and `pv doctor` select repair advice from the current failure's typed subject and condition. They prefer the narrowest command that can repair and then verify that subject, such as `pv daemon:restart`, `pv dns:install`, `pv ca:trust`, or an applicable Managed Resource command. They use broader `pv restart` or `pv setup` guidance only when no focused command covers the failure. Historical failures remain visible through `pv jobs` but do not make aggregate status fail after their subjects have newer successful verification.
+`pv status` and `pv doctor` select repair advice from the current failure's typed subject and condition. They prefer the narrowest command that can repair and then verify that subject, such as `pv daemon:restart`, `pv ca:trust`, or an applicable Managed Resource command. They use broader `pv restart` or `pv setup` guidance only when no focused command covers the failure. Historical failures remain visible through `pv jobs` but do not make aggregate status fail after their subjects have newer successful verification.
 
 `hooks` jobs record foreground runs for linked Projects and queued daemon prepare/setup runs. Hook failures remain current until newer success for the same subject; status ignores failures whose Project (or pre-link worktree's source Project) is no longer linked, and a pre-link worktree's failure once that worktree is linked. `pv status` shows hook failures and `pv jobs` lists hook runs, with log paths for daemon runs.
 
@@ -1801,7 +1797,7 @@ If `pv logs --resource <name>` is used without `--track`, PV infers the track on
 
 `pv logs --resource` accepts the same aliases as resource command namespaces, such as `pg`, `mail`, and `s3`, and normalizes them internally to canonical names: `postgres`, `mailpit`, and `rustfs`.
 
-`pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, `pv dns:install`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
+`pv doctor` is a deeper read-only diagnostic than `pv status`. It checks expected files, permissions, ports, resolver behavior, LaunchAgent registration, manifest cache, and common conflicts, then suggests repair commands. Failed checks should prefer one focused repair command where a command exists, such as `pv daemon:enable`, `pv daemon:restart`, or `pv ca:trust`; otherwise PV may suggest `pv setup` as the broad repair.
 
 On Linux, `pv doctor` reports `Linux distribution: <PRETTY_NAME>` from `/etc/os-release` as information outside health checks, so bug reports name the distribution. Its JSON report includes the same name. Missing, unreadable or malformed names fall back to `Linux` without changing health counts, overall status or exit status.
 
@@ -1999,13 +1995,6 @@ Run pv as a background LaunchAgent that starts on login. This daemon is responsi
 | command          | what it does                                      |
 | ---------------- | ------------------------------------------------- |
 | pv dns:status    | Show PV `.test` resolver configuration status     |
-| pv dns:install   | Install or repair `/etc/resolver/test`            |
-| pv dns:uninstall | Remove PV's `/etc/resolver/test` configuration    |
-
-## Ports
-
-| command            | what it does                                          |
-| ------------------ | ----------------------------------------------------- |
 
 ## PHP + Frankenphp
 

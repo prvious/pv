@@ -97,43 +97,26 @@ pub trait Environment {
         platform::restart_daemon_registration()
     }
 
-    fn resolver_test_path(&self) -> PathBuf {
-        PathBuf::from(platform::SYSTEM_RESOLVER_TEST_PATH)
-    }
-
     fn os_release_path(&self) -> PathBuf {
         PathBuf::from("/etc/os-release")
     }
 
-    fn inspect_resolver_file(
+    /// The system's `.test` resolver configuration. Only [`ProcessEnvironment`] reads the host's.
+    fn inspect_system_resolver(
         &self,
-        path: &Utf8Path,
-        expected: Option<&platform::ResolverConfig>,
+        _expected: Option<&platform::ResolverConfig>,
     ) -> platform::ResolverFileState {
-        let state = platform::inspect_resolver_file(path, expected);
-        if matches!(state, platform::ResolverFileState::Unreadable { .. })
-            && path == Utf8Path::new(platform::SYSTEM_RESOLVER_TEST_PATH)
-            && let Ok(helper_state) = platform::PrivilegedHelperClient.inspect_dns(expected)
-        {
-            return helper_state;
+        platform::ResolverFileState::Missing {
+            path: platform::SYSTEM_RESOLVER_TEST_PATH.into(),
         }
-
-        state
     }
 
-    fn install_resolver_config(
-        &self,
-        prepared_path: &Utf8Path,
-        system_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        platform::install_resolver_config(prepared_path, system_path)
+    fn apply_system_resolver(&self, _port: u16) -> Result<(), platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
     }
 
-    fn remove_resolver_config(
-        &self,
-        system_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        platform::remove_resolver_config(system_path)
+    fn remove_system_resolver(&self) -> Result<(), platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
     }
 
     fn platform_target(&self) -> Result<platform::PlatformTarget, platform::PlatformError> {
@@ -184,7 +167,6 @@ pub trait Environment {
         &self,
     ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
         platform::SystemTrustInspector::trusted_certificates(&platform::NativeSystemTrustInspector)
-            .or_else(|_error| platform::PrivilegedHelperClient.inspect_ca())
     }
 
     fn privileged_helper_status(
@@ -310,6 +292,21 @@ impl Environment for ProcessEnvironment {
 
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
         platform::PrivilegedHelperClient.inspect_low_ports()
+    }
+
+    fn inspect_system_resolver(
+        &self,
+        expected: Option<&platform::ResolverConfig>,
+    ) -> platform::ResolverFileState {
+        platform::inspect_system_resolver(expected)
+    }
+
+    fn apply_system_resolver(&self, port: u16) -> Result<(), platform::PlatformError> {
+        platform::apply_system_resolver(port)
+    }
+
+    fn remove_system_resolver(&self) -> Result<(), platform::PlatformError> {
+        platform::remove_system_resolver()
     }
 
     #[cfg(target_os = "linux")]

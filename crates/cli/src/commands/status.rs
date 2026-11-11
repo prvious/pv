@@ -14,7 +14,7 @@ use state::{
 
 use crate::args::StatusArgs;
 use crate::environment::Environment;
-use crate::error::{CliError, ExecuteError};
+use crate::error::ExecuteError;
 use crate::output::{Line, Mark, Output, Streams, Table, Tone};
 
 pub(crate) fn run(
@@ -70,7 +70,7 @@ impl StatusSnapshot {
         let paths = pv_paths(environment)?;
         let database = Database::open_read_only(&paths)?;
         let daemon = DaemonStatus::read(environment, &paths)?;
-        let integrations = IntegrationStatuses::read(environment, &paths)?;
+        let integrations = IntegrationStatuses::read(environment, &paths, database.as_ref())?;
         let runtime_states = match &database {
             Some(database) => database.runtime_observed_states()?,
             None => Vec::new(),
@@ -478,13 +478,18 @@ struct IntegrationStatuses {
 }
 
 impl IntegrationStatuses {
-    fn read(environment: &impl Environment, paths: &PvPaths) -> Result<Self, ExecuteError> {
-        let prepared_resolver = platform::inspect_resolver_file(&paths.resolver_config(), None);
-        let expected_resolver = resolver_config_from_state(&prepared_resolver);
-        let system_resolver_path = resolver_test_path(environment)?;
+    fn read(
+        environment: &impl Environment,
+        paths: &PvPaths,
+        database: Option<&Database>,
+    ) -> Result<Self, ExecuteError> {
+        let dns_port = match database {
+            Some(database) => super::dns::assigned_dns_port(database)?,
+            None => None,
+        };
         let system_resolver =
-            environment.inspect_resolver_file(&system_resolver_path, expected_resolver.as_ref());
-        let (dns, dns_mark) = resolver_status(&prepared_resolver, &system_resolver);
+            environment.inspect_system_resolver(dns_port.map(ResolverConfig::new).as_ref());
+        let (dns, dns_mark) = resolver_status(dns_port, &system_resolver);
 
         let local_ca =
             platform::inspect_local_ca_files(&paths.ca_certificate(), &paths.ca_private_key());
@@ -726,22 +731,15 @@ fn daemon_registration_file_status(state: &DaemonRegistrationFileState) -> &'sta
     }
 }
 
-fn resolver_status(
-    prepared: &ResolverFileState,
-    system: &ResolverFileState,
-) -> (&'static str, Mark) {
-    match prepared {
-        ResolverFileState::Missing { .. } => ("missing", Mark::Idle),
-        ResolverFileState::Current { .. } => match system {
-            ResolverFileState::Current { .. } => ("current", Mark::Success),
-            ResolverFileState::Missing { .. } => ("prepared-only", Mark::Failure),
-            ResolverFileState::Stale { .. } => ("stale", Mark::Failure),
-            ResolverFileState::Conflict { .. } => ("conflict", Mark::Failure),
-            ResolverFileState::Unreadable { .. } => ("unreadable", Mark::Failure),
-        },
-        ResolverFileState::Stale { .. } => ("stale", Mark::Failure),
-        ResolverFileState::Conflict { .. } => ("conflict", Mark::Failure),
-        ResolverFileState::Unreadable { .. } => ("unreadable", Mark::Failure),
+/// The resolver's state against `pv.db`'s DNS port. Before setup assigns one, nothing is expected.
+fn resolver_status(dns_port: Option<u16>, system: &ResolverFileState) -> (&'static str, Mark) {
+    match (dns_port, system) {
+        (None, _) => ("missing", Mark::Idle),
+        (Some(_), ResolverFileState::Current { .. }) => ("current", Mark::Success),
+        (Some(_), ResolverFileState::Missing { .. }) => ("missing", Mark::Failure),
+        (Some(_), ResolverFileState::Stale { .. }) => ("stale", Mark::Failure),
+        (Some(_), ResolverFileState::Conflict { .. }) => ("conflict", Mark::Failure),
+        (Some(_), ResolverFileState::Unreadable { .. }) => ("unreadable", Mark::Failure),
     }
 }
 
@@ -798,16 +796,6 @@ fn project_env_status_label(status: ProjectEnvObservedStatus) -> &'static str {
     }
 }
 
-fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
-    match state {
-        ResolverFileState::Current { port, .. } => Some(ResolverConfig::new(*port)),
-        ResolverFileState::Missing { .. }
-        | ResolverFileState::Stale { .. }
-        | ResolverFileState::Conflict { .. }
-        | ResolverFileState::Unreadable { .. } => None,
-    }
-}
-
 fn metadata_from_local_ca(state: &CaFileState) -> Option<LocalCaMetadata> {
     match state {
         CaFileState::Current { metadata, .. } => Some(metadata.clone()),
@@ -842,11 +830,6 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
-}
-
-fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.resolver_test_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
 }
 
 #[cfg(test)]

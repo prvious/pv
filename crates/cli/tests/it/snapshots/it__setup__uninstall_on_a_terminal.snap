@@ -11,7 +11,6 @@ expression: uninstall.stdout
 │  ✓ LaunchAgent removed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist
 │
 ✓  DNS resolver removal
-│  ✓ Deleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test
 │  ✓ .test domain routing removed
 │    <tempdir>/etc/resolver/test
 │

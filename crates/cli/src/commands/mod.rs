@@ -74,8 +74,6 @@ where
         Command::ShimPhp(args) => php::shim(args, environment, runtime_lifecycle_lock),
         Command::ShimComposer(args) => composer::shim(args, environment, runtime_lifecycle_lock),
         Command::DnsStatus => dns::status(environment, streams),
-        Command::DnsInstall => dns::install(environment, streams),
-        Command::DnsUninstall => dns::uninstall(environment, streams),
         Command::CaStatus => ca::status(environment, streams),
         Command::CaTrust => ca::trust(environment, streams),
         Command::CaUntrust => ca::untrust(environment, streams),
@@ -190,11 +188,9 @@ fn require_command_capability(command: &Command) -> Result<(), ExecuteError> {
 
 fn required_capability(command: &Command) -> Option<PlatformCapability> {
     match command {
-        Command::Setup(_)
-        | Command::Uninstall(_)
-        | Command::DnsStatus
-        | Command::DnsInstall
-        | Command::DnsUninstall => Some(PlatformCapability::ResolverIntegration),
+        Command::Setup(_) | Command::Uninstall(_) | Command::DnsStatus => {
+            Some(PlatformCapability::ResolverIntegration)
+        }
         Command::DaemonEnable
         | Command::DaemonDisable
         | Command::DaemonRestart
@@ -295,8 +291,6 @@ fn command_blocked_during_update(command: &Command) -> bool {
                 | Command::DaemonEnable
                 | Command::DaemonDisable
                 | Command::DaemonRestart
-                | Command::DnsInstall
-                | Command::DnsUninstall
                 | Command::CaTrust
                 | Command::CaUntrust
                 | Command::Link(_)
