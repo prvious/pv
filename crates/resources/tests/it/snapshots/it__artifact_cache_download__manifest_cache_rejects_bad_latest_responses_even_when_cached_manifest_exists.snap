@@ -43,7 +43,7 @@ expression: results
         Err(
             RequiresNewerPv {
                 minimum_pv_version: "999.0.0",
-                current_pv_version: "0.2.9",
+                current_pv_version: "0.3.0",
             },
         ),
     ),
