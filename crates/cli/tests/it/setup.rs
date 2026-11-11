@@ -758,10 +758,10 @@ fn setup_installs_missing_helper_before_system_integrations() -> anyhow::Result<
     let operations = fixture.environment.operations();
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.contains("Installed privileged helper 2.0.0"));
+    assert!(output.stdout.contains("Installed privileged helper 3.0.0"));
     assert!(operations.first().is_some_and(|operation| {
         operation == &format!(
-            "install helper {}/bin/pv-helper prepared {}/home/.pv/config/helper version 2.0.0 protocol 2 sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install helper {}/bin/pv-helper prepared {}/home/.pv/config/helper version 3.0.0 protocol 3 sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             tempdir.path(),
             tempdir.path()
         )
@@ -801,7 +801,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     let fixture = Fixture::new(tempdir.path());
     seed_online_setup_manifest(&fixture)?;
     fixture.environment.set_helper_missing();
-    let helper_bytes = b"pv helper 2.1.0\n";
+    let helper_bytes = b"pv helper 3.1.0\n";
     let helper_sha256 = format!("{:x}", Sha256::digest(helper_bytes));
     let release_version = env!("CARGO_PKG_VERSION");
     let app_source = tempdir.path().join("release-pv");
@@ -813,7 +813,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     state::fs::write_sensitive_file(
         &release_helper.with_file_name("pv-helper.json"),
         &format!(
-            "{{\n  \"version\": \"2.1.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"{helper_sha256}\"\n}}\n"
+            "{{\n  \"version\": \"3.1.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"{helper_sha256}\"\n}}\n"
         ),
     )?;
     layout.activate_release(release_version)?;
@@ -830,7 +830,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     assert_eq!(
         operations.first(),
         Some(&format!(
-            "install helper {release_helper} prepared {}/config/helper version 2.1.0 protocol 2 sha256 {helper_sha256}",
+            "install helper {release_helper} prepared {}/config/helper version 3.1.0 protocol 3 sha256 {helper_sha256}",
             fixture.paths.root()
         ))
     );
@@ -1456,7 +1456,7 @@ fn seed_bundled_helper_metadata(fixture: &Fixture) -> anyhow::Result<()> {
         .with_file_name("pv-helper.json");
     write_file(
         &path,
-        "{\n  \"version\": \"2.0.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+        "{\n  \"version\": \"3.0.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
     )
 }
 

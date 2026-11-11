@@ -229,12 +229,12 @@ fn doctor_accepts_helper_only_version_from_active_release_metadata() -> anyhow::
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let environment = TestEnvironment::new(paths.home());
     seed_required_checks(&paths, &environment, true)?;
-    environment.set_helper_status("2.1.0", 2);
+    environment.set_helper_status("3.1.0", 3);
     write_file(
         &paths
             .app_release_helper(env!("CARGO_PKG_VERSION"))
             .with_file_name("pv-helper.json"),
-        "{\n  \"version\": \"2.1.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+        "{\n  \"version\": \"3.1.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
     )?;
     let health_server = spawn_health_server(&paths.daemon_socket())?;
 
@@ -245,7 +245,7 @@ fn doctor_accepts_helper_only_version_from_active_release_metadata() -> anyhow::
     assert!(
         output
             .stdout
-            .contains("available at version 2.1.0 with protocol 2")
+            .contains("available at version 3.1.0 with protocol 3")
     );
 
     Ok(())
@@ -483,7 +483,7 @@ fn seed_required_checks(
     state::fs::write_sensitive_file(&release_helper, "pv helper\n")?;
     state::fs::write_sensitive_file(
         &release_helper.with_file_name("pv-helper.json"),
-        "{\n  \"version\": \"2.0.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+        "{\n  \"version\": \"3.0.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
     )?;
 
     if include_manifest_cache {

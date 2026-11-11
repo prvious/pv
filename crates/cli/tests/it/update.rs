@@ -408,12 +408,12 @@ mod update_tests {
         let unavailable_app = serde_json::to_string(&unavailable_app)?;
         let older_app = app_manifest("0.1.0", &"a".repeat(64), 12_345_678);
         let helper_protocol_change = app_manifest(CURRENT_APP_VERSION, &"a".repeat(64), 12_345_678)
-            .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+            .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
             .replace(
                 &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
                 &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
             )
-            .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+            .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let update_available = || {
             (
                 "update_available",
@@ -723,8 +723,8 @@ mod update_tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             12_345_678,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
             .with_missing_helper();
 
@@ -742,7 +742,7 @@ mod update_tests {
         assert!(
             output
                 .stdout
-                .contains("Privileged helper: updated to 2.1.0 (protocol 2)")
+                .contains("Privileged helper: updated to 3.1.0 (protocol 3)")
         );
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&state::fs::read_to_string(
@@ -751,7 +751,7 @@ mod update_tests {
                     .with_file_name("pv-helper.json"),
             )?)?,
             json!({
-                "version": "2.1.0",
+                "version": "3.1.0",
                 "protocol_version": HELPER_PROTOCOL_VERSION,
                 "sha256": HELPER_BINARY_SHA256,
             })
@@ -774,12 +774,12 @@ mod update_tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             12_345_678,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
         .replace(
             &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
             &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
         )
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
 
         let output = run_pv(&["update"], &environment)?;
@@ -862,8 +862,8 @@ mod update_tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             12_345_678,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
             .with_helper_replacement_error("authentication cancelled");
 
@@ -879,7 +879,7 @@ mod update_tests {
                 .app_release_helper(CURRENT_APP_VERSION)
                 .with_file_name("pv-helper.json"),
         )?;
-        assert!(metadata.contains("\"version\": \"2.0.0\""));
+        assert!(metadata.contains("\"version\": \"3.0.0\""));
         assert_eq!(environment.operations().len(), 1);
 
         Ok(())
@@ -899,8 +899,8 @@ mod update_tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             12_345_678,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let release_helper = paths.app_release_helper(CURRENT_APP_VERSION);
         let release_helper_parent = release_helper
             .parent()
@@ -931,7 +931,7 @@ mod update_tests {
             state::fs::path_is_file(&metadata_path)?,
             "output: {output:?}; operations: {operations:?}"
         );
-        assert!(state::fs::read_to_string(&metadata_path)?.contains("\"version\": \"2.0.0\""));
+        assert!(state::fs::read_to_string(&metadata_path)?.contains("\"version\": \"3.0.0\""));
         assert_eq!(operations.len(), 2);
         assert!(
             state::fs::read_dir_paths(paths.downloads())?
@@ -967,7 +967,7 @@ mod update_tests {
             &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
         );
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest))
-            .with_helper_status("2.0.0", 2);
+            .with_helper_status("3.0.0", 3);
 
         let output = run_pv(&["update"], &environment)?;
         let _daemon_requests = daemon.join()?;
@@ -976,7 +976,7 @@ mod update_tests {
         assert!(
             output
                 .stdout
-                .contains("Privileged helper: retained 2.0.0 (protocol 2)")
+                .contains("Privileged helper: retained 3.0.0 (protocol 3)")
         );
         assert!(output.stdout.contains("app manifest 0.1.0 is older"));
         assert!(environment.operations().is_empty());
@@ -1004,8 +1004,8 @@ mod update_tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             12_345_678,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(&home, ScriptedClient::new().with_text(&manifest));
 
         let output = run_pv(&["update"], &environment)?;
@@ -1018,7 +1018,7 @@ mod update_tests {
         );
         let operations = environment.operations();
         assert_eq!(operations.len(), 1);
-        assert!(operations[0].contains("downloads/pv-helper-2.1.0-"));
+        assert!(operations[0].contains("downloads/pv-helper-3.1.0-"));
         assert!(operations[0].ends_with(&format!("sha256 {HELPER_BINARY_SHA256}")));
         assert!(
             state::fs::read_to_string(
@@ -1026,7 +1026,7 @@ mod update_tests {
                     .app_release_helper(CURRENT_APP_VERSION)
                     .with_file_name("pv-helper.json")
             )?
-            .contains("\"version\": \"2.1.0\"")
+            .contains("\"version\": \"3.1.0\"")
         );
         assert!(output.stdout.contains("app manifest 0.1.0 is older"));
 
@@ -1181,12 +1181,12 @@ mod update_tests {
             APP_BINARY_SHA256,
             u64::try_from(APP_BINARY.len())?,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
         .replace(
             &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
             &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
         )
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -1210,7 +1210,7 @@ mod update_tests {
                     .with_file_name("pv-helper.json")
             )?)?,
             json!({
-                "version": "2.1.0",
+                "version": "3.1.0",
                 "protocol_version": HELPER_PROTOCOL_VERSION + 1,
                 "sha256": HELPER_BINARY_SHA256,
             })
@@ -1235,7 +1235,7 @@ mod update_tests {
             })]
         );
         assert!(output.stdout.contains(&format!(
-            "Privileged helper: updated to 2.1.0 (protocol {})",
+            "Privileged helper: updated to 3.1.0 (protocol {})",
             HELPER_PROTOCOL_VERSION + 1
         )));
 
@@ -1510,8 +1510,8 @@ mod update_tests {
         let size = u64::try_from(APP_BINARY.len())?;
         let with_newer_helper = |sha256: &str| {
             app_manifest("99.0.0", sha256, size)
-                .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-                .replace("pv-helper-2.0.0", "pv-helper-2.1.0")
+                .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+                .replace("pv-helper-3.0.0", "pv-helper-3.1.0")
         };
         let cases = [
             (
@@ -1779,8 +1779,8 @@ mod update_tests {
             APP_BINARY_SHA256,
             u64::try_from(APP_BINARY.len())?,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -1846,8 +1846,8 @@ mod update_tests {
             APP_BINARY_SHA256,
             u64::try_from(APP_BINARY.len())?,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -1926,12 +1926,12 @@ mod update_tests {
             APP_BINARY_SHA256,
             u64::try_from(APP_BINARY.len())?,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
         .replace(
             &format!("\"protocol_version\": {HELPER_PROTOCOL_VERSION}"),
             &format!("\"protocol_version\": {}", HELPER_PROTOCOL_VERSION + 1),
         )
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -1952,7 +1952,7 @@ mod update_tests {
         assert_eq!(
             environment.helper_status.borrow().as_ref(),
             Some(&PrivilegedHelperStatus {
-                version: "2.1.0".to_string(),
+                version: "3.1.0".to_string(),
                 protocol_version: HELPER_PROTOCOL_VERSION + 1,
                 owner_uid: 501,
             })
@@ -1995,8 +1995,8 @@ mod update_tests {
             APP_BINARY_SHA256,
             u64::try_from(APP_BINARY.len())?,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0");
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0");
         let environment = TestEnvironment::new(
             &home,
             ScriptedClient::new()
@@ -2677,9 +2677,9 @@ mod update_tests {
       "sha256": "{sha256}",
       "size": {size},
       "helper": {{
-        "version": "2.0.0",
+        "version": "3.0.0",
         "protocol_version": {HELPER_PROTOCOL_VERSION},
-        "url": "https://downloads.example.test/pv/{version}/pv-helper-2.0.0-darwin-arm64",
+        "url": "https://downloads.example.test/pv/{version}/pv-helper-3.0.0-darwin-arm64",
         "sha256": "{HELPER_BINARY_SHA256}",
         "size": {}
       }}
@@ -2690,9 +2690,9 @@ mod update_tests {
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "size": {size},
       "helper": {{
-        "version": "2.0.0",
+        "version": "3.0.0",
         "protocol_version": {HELPER_PROTOCOL_VERSION},
-        "url": "https://downloads.example.test/pv/{version}/pv-helper-2.0.0-darwin-amd64",
+        "url": "https://downloads.example.test/pv/{version}/pv-helper-3.0.0-darwin-amd64",
         "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "size": {}
       }}
@@ -2711,8 +2711,8 @@ mod update_tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             12_345_678,
         )
-        .replace("\"version\": \"2.0.0\"", "\"version\": \"2.1.0\"")
-        .replace("pv-helper-2.0.0", "pv-helper-2.1.0")
+        .replace("\"version\": \"3.0.0\"", "\"version\": \"3.1.0\"")
+        .replace("pv-helper-3.0.0", "pv-helper-3.1.0")
     }
 
     const APP_MANIFEST: &str = r#"
@@ -2729,9 +2729,9 @@ mod update_tests {
       "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "size": 12345678,
       "helper": {
-        "version": "2.0.0",
-        "protocol_version": 2,
-        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-2.0.0-darwin-arm64",
+        "version": "3.0.0",
+        "protocol_version": 3,
+        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-3.0.0-darwin-arm64",
         "sha256": "f15b9ec9f06fc9e7e92af6e7cdfe82ae574bdc11f09bf796e44280989b1378d2",
         "size": 16
       }
@@ -2742,9 +2742,9 @@ mod update_tests {
       "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "size": 12345678,
       "helper": {
-        "version": "2.0.0",
-        "protocol_version": 2,
-        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-2.0.0-darwin-amd64",
+        "version": "3.0.0",
+        "protocol_version": 3,
+        "url": "https://downloads.example.test/pv/99.0.0/pv-helper-3.0.0-darwin-amd64",
         "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
         "size": 16
       }

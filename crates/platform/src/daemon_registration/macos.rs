@@ -1,12 +1,16 @@
 #[cfg(target_os = "macos")]
 use std::{io, process::Output};
 
+use std::collections::BTreeMap;
+
 #[cfg(target_os = "macos")]
 use camino::Utf8Path;
 use camino::Utf8PathBuf;
 use serde::{Deserialize, Serialize};
 
-use crate::PlatformError;
+use crate::{
+    GATEWAY_HTTP_PORT, GATEWAY_HTTP_SOCKET, GATEWAY_HTTPS_PORT, GATEWAY_HTTPS_SOCKET, PlatformError,
+};
 
 pub const DAEMON_REGISTRATION_LABEL: &str = "com.prvious.pv.daemon";
 pub const DAEMON_REGISTRATION_FILE_NAME: &str = "com.prvious.pv.daemon.plist";
@@ -76,6 +80,46 @@ struct LaunchAgentPlist {
     stdout_path: String,
     #[serde(rename = "StandardErrorPath")]
     stderr_path: String,
+    /// launchd opens these as root and hands them to the daemon, which passes them to the
+    /// Gateway. A plist from before they existed doesn't parse, so it is stale.
+    #[serde(rename = "Sockets")]
+    sockets: BTreeMap<String, LaunchSocket>,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct LaunchSocket {
+    #[serde(rename = "SockNodeName")]
+    node_name: String,
+    #[serde(rename = "SockServiceName")]
+    service_name: String,
+    #[serde(rename = "SockFamily")]
+    family: String,
+    #[serde(rename = "SockType")]
+    socket_type: String,
+}
+
+impl LaunchSocket {
+    fn loopback(port: u16) -> Self {
+        Self {
+            node_name: "127.0.0.1".to_owned(),
+            service_name: port.to_string(),
+            family: "IPv4".to_owned(),
+            socket_type: "stream".to_owned(),
+        }
+    }
+}
+
+fn gateway_sockets() -> BTreeMap<String, LaunchSocket> {
+    BTreeMap::from([
+        (
+            GATEWAY_HTTP_SOCKET.to_owned(),
+            LaunchSocket::loopback(GATEWAY_HTTP_PORT),
+        ),
+        (
+            GATEWAY_HTTPS_SOCKET.to_owned(),
+            LaunchSocket::loopback(GATEWAY_HTTPS_PORT),
+        ),
+    ])
 }
 
 impl From<&DaemonRegistrationConfig> for LaunchAgentPlist {
@@ -87,13 +131,18 @@ impl From<&DaemonRegistrationConfig> for LaunchAgentPlist {
             run_at_load: true,
             stdout_path: config.stdout_path.to_string(),
             stderr_path: config.stderr_path.to_string(),
+            sockets: gateway_sockets(),
         }
     }
 }
 
 impl DaemonRegistrationConfig {
     fn try_from_plist(plist: LaunchAgentPlist) -> Option<Self> {
-        if plist.label != DAEMON_REGISTRATION_LABEL || !plist.keep_alive || !plist.run_at_load {
+        if plist.label != DAEMON_REGISTRATION_LABEL
+            || !plist.keep_alive
+            || !plist.run_at_load
+            || plist.sockets != gateway_sockets()
+        {
             return None;
         }
 

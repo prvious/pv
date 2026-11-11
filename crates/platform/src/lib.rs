@@ -6,6 +6,7 @@ pub mod clock;
 mod command;
 mod daemon_registration;
 mod error;
+mod gateway_listeners;
 mod helper;
 pub mod hooks;
 #[cfg(target_os = "linux")]
@@ -19,6 +20,8 @@ mod resolver;
 mod systemd;
 mod target;
 mod trust;
+#[cfg(target_os = "linux")]
+mod unprivileged_ports;
 
 #[cfg(target_os = "linux")]
 pub use process::inspect_process_comm;
@@ -38,6 +41,12 @@ pub use daemon_registration::{
     write_daemon_registration_file,
 };
 pub use error::PlatformError;
+#[cfg(unix)]
+pub use gateway_listeners::GatewayListeners;
+pub use gateway_listeners::{
+    GATEWAY_HTTP_PORT, GATEWAY_HTTP_SOCKET, GATEWAY_HTTPS_PORT, GATEWAY_HTTPS_SOCKET,
+    GatewayListenerError, GatewayListenerSource,
+};
 #[cfg(target_os = "linux")]
 pub use helper::run_privileged_helper_lifecycle;
 
@@ -80,6 +89,10 @@ pub use trust::{
     TrustDomainState, browser_ca_databases, inspect_browser_ca_trust, inspect_system_ca_trust,
     trust_browser_ca, trust_system_ca, trusted_pv_ca_fingerprints, untrust_browser_ca,
     untrust_system_ca,
+};
+#[cfg(target_os = "linux")]
+pub use unprivileged_ports::{
+    UNPRIVILEGED_PORTS_PATH, UnprivilegedPortsState, inspect_unprivileged_ports,
 };
 
 #[cfg(test)]

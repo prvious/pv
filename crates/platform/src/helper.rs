@@ -28,8 +28,8 @@ use crate::{
     PlatformError, ResolverConfig, ResolverFileState,
 };
 
-pub const HELPER_PROTOCOL_VERSION: u32 = 2;
-pub const PRIVILEGED_HELPER_VERSION: &str = "2.0.0";
+pub const HELPER_PROTOCOL_VERSION: u32 = 3;
+pub const PRIVILEGED_HELPER_VERSION: &str = "3.0.0";
 #[cfg(not(target_os = "linux"))]
 pub const HELPER_EXECUTABLE_PATH: &str = "/Library/PrivilegedHelperTools/com.prvious.pv.helper";
 #[cfg(target_os = "linux")]
@@ -178,6 +178,8 @@ enum HelperOperation {
     CaInspect,
     CaApply { fingerprint: String },
     CaRemove { fingerprint: String },
+    UnprivilegedPortsApply,
+    UnprivilegedPortsRemove,
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -303,6 +305,16 @@ impl PrivilegedHelperClient {
         expect_empty(self.call(HelperOperation::CaRemove {
             fingerprint: fingerprint.to_string(),
         })?)
+    }
+
+    /// Linux: lets PV open ports 80 and 443, now and after every boot.
+    pub fn apply_unprivileged_ports(&self) -> Result<(), PlatformError> {
+        expect_empty(self.call(HelperOperation::UnprivilegedPortsApply)?)
+    }
+
+    /// Linux: removes PV's port setting, leaving any other tool's alone.
+    pub fn remove_unprivileged_ports(&self) -> Result<(), PlatformError> {
+        expect_empty(self.call(HelperOperation::UnprivilegedPortsRemove)?)
     }
 
     fn call(&self, operation: HelperOperation) -> Result<HelperPayload, PlatformError> {
@@ -1794,6 +1806,23 @@ fn dispatch_request(
             crate::trust::linux::untrust_system_ca_privileged(&fingerprint)?;
             Ok(HelperPayload::Empty)
         }
+        #[cfg(target_os = "linux")]
+        HelperOperation::UnprivilegedPortsApply => {
+            crate::unprivileged_ports::apply_unprivileged_ports_privileged()?;
+            Ok(HelperPayload::Empty)
+        }
+        #[cfg(target_os = "linux")]
+        HelperOperation::UnprivilegedPortsRemove => {
+            crate::unprivileged_ports::remove_unprivileged_ports_privileged()?;
+            Ok(HelperPayload::Empty)
+        }
+        #[cfg(target_os = "macos")]
+        HelperOperation::UnprivilegedPortsApply | HelperOperation::UnprivilegedPortsRemove => {
+            Err(PlatformError::Unsupported {
+                capability: crate::PlatformCapability::LowPortFrontend,
+                target: crate::PlatformTarget::Macos,
+            })
+        }
     }
 }
 
@@ -2141,13 +2170,13 @@ mod tests {
     fn lifecycle_response_is_independent_from_the_operational_protocol_schema() -> anyhow::Result<()>
     {
         let status =
-            parse_helper_lifecycle_response(b"PV-HELPER-LIFECYCLE-READY\t2.0.0\t9\t501\n")?;
+            parse_helper_lifecycle_response(b"PV-HELPER-LIFECYCLE-READY\t3.0.0\t9\t501\n")?;
 
-        assert_eq!(status.version, "2.0.0");
+        assert_eq!(status.version, "3.0.0");
         assert_eq!(status.protocol_version, 9);
         assert_eq!(status.owner_uid, 501);
         assert!(
-            parse_helper_lifecycle_response(b"PV-HELPER-LIFECYCLE-READY\t2.0.0\t9\t501\textra\n")
+            parse_helper_lifecycle_response(b"PV-HELPER-LIFECYCLE-READY\t3.0.0\t9\t501\textra\n")
                 .is_err()
         );
 
@@ -2313,7 +2342,7 @@ mod tests {
     #[test]
     fn protocol_rejects_unknown_fields() {
         let mut message = Cursor::new(
-            br#"{"protocol_version":2,"operation":{"name":"status"},"command":"/bin/sh"}
+            br#"{"protocol_version":3,"operation":{"name":"status"},"command":"/bin/sh"}
 "#,
         );
 
