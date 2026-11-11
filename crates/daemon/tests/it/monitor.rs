@@ -92,6 +92,32 @@ async fn monitor_runs_a_runtime_through_stop_and_release() -> Result<()> {
     Ok(())
 }
 
+/// A Gateway monitor that is still starting holds its reservation, and already the Gateway's
+/// listeners, before it publishes the record a stop needs. Stopping the Gateway before the
+/// LaunchAgent loads again waits for it instead of finding nothing to stop.
+#[tokio::test]
+async fn stopping_the_gateway_waits_for_a_monitor_still_starting() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let starting = MonitorReservation::acquire(&paths, SUBJECT)?;
+    let finish_starting = tokio::spawn(async move {
+        clock::poll(Duration::from_millis(200)).await;
+        drop(starting);
+    });
+
+    let stop_paths = paths.clone();
+    let stopped =
+        tokio::task::spawn_blocking(move || daemon::stop_recorded_gateway_blocking(stop_paths))
+            .await?;
+    let nothing_holds_the_reservation = MonitorReservation::acquire(&paths, SUBJECT).is_ok();
+    finish_starting.await?;
+
+    stopped?;
+    assert!(nothing_holds_the_reservation);
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn monitor_requests_follow_the_frozen_contract() -> Result<()> {
     let harness = Harness::new()?;

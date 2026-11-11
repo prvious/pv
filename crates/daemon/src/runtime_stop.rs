@@ -18,6 +18,9 @@ pub const DAEMON_EXIT_GRACE: Limit = Limit::new("daemon exit", Duration::from_se
 #[cfg(unix)]
 const DAEMON_CONNECT_FOR_STOP_TIMEOUT: Limit =
     Limit::new("daemon connect for stop", Duration::from_secs(3));
+/// How long stopping the Gateway waits for a monitor that is still starting to publish its record.
+const GATEWAY_MONITOR_START: Limit = Limit::new("Gateway monitor startup", Duration::from_secs(10));
+const MONITOR_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 /// Captured process identity to wait on after unloading the LaunchAgent.
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
@@ -225,9 +228,20 @@ async fn stop_recorded_gateway(paths: PvPaths) -> Result<(), DaemonError> {
     }
     let metadata_path = paths.gateway_runtime_metadata();
     let subject = monitor_subject(&paths, &metadata_path)?;
-    ProcessSupervisor::new(paths.clone())
-        .stop_monitored_for_shutdown(&subject)
-        .await?;
+    let supervisor = ProcessSupervisor::new(paths.clone());
+    // A monitor that is still starting holds the listeners and its reservation before it publishes
+    // the record a stop needs, so stop until no monitor holds the reservation.
+    let deadline = Deadline::after(&GATEWAY_MONITOR_START);
+    loop {
+        supervisor.stop_monitored_for_shutdown(&subject).await?;
+        match state::MonitorReservation::acquire(&paths, &subject) {
+            Ok(_reservation) => break,
+            Err(state::StateError::CoordinationLockHeld { .. }) if !deadline.is_expired() => {
+                clock::poll(MONITOR_POLL_INTERVAL).await;
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 
     remove_record_without_monitor(&paths, &metadata_path)
 }
