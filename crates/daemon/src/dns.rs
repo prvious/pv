@@ -202,7 +202,12 @@ fn resolver_repair(state: &ResolverFileState) -> ResolverRepair {
 /// the helper. Another tool's configuration and a failed read are only logged. The next tick tries
 /// again; `pv status` and `pv doctor` keep reporting what's wrong.
 pub(crate) async fn keep_system_resolver(paths: &PvPaths) {
-    let port = match assigned_dns_port(paths) {
+    // Read-only, so the tick never takes the write lock a migration check would.
+    let assigned = Database::open_read_only(paths).and_then(|database| match database {
+        Some(database) => dns_port(&database),
+        None => Ok(None),
+    });
+    let port = match assigned {
         Ok(Some(port)) => port,
         Ok(None) => return,
         Err(error) => {
@@ -241,13 +246,15 @@ pub(crate) async fn keep_system_resolver(paths: &PvPaths) {
 }
 
 fn assigned_dns_port(paths: &PvPaths) -> Result<Option<u16>, DaemonError> {
-    let database = Database::open(paths)?;
-    let assignment = database
+    Ok(dns_port(&Database::open(paths)?)?)
+}
+
+fn dns_port(database: &Database) -> Result<Option<u16>, state::StateError> {
+    Ok(database
         .assigned_ports()?
         .into_iter()
-        .find(|assignment| assignment.owner == PortOwner::Dns);
-
-    Ok(assignment.map(|assignment| assignment.port))
+        .find(|assignment| assignment.owner == PortOwner::Dns)
+        .map(|assignment| assignment.port))
 }
 
 async fn bind_dns_sockets(port: u16) -> Result<(TokioUdpSocket, TokioTcpListener), DaemonError> {

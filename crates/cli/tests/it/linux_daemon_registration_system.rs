@@ -198,7 +198,11 @@ fn seed_resources(paths: &PvPaths) -> Result<()> {
 fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result<(String, Value)> {
     let deadline = real::now() + Duration::from_secs(15);
     loop {
-        let jobs = Database::open(paths)?.recent_jobs()?;
+        // Read-only, so polling never contends with the daemon's writes.
+        let jobs = match Database::open_read_only(paths)? {
+            Some(database) => database.recent_jobs()?,
+            None => Vec::new(),
+        };
         if let Some(job) = jobs.iter().find(|job| job.scope == "system")
             && Some(job.id.as_str()) != previous_job
         {
