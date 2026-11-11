@@ -90,6 +90,36 @@ fn apply_and_remove(fixture: &HelperFixture) -> Result<()> {
     assert!(fs::path_entry_exists(Utf8Path::new(OTHER_FILE))?);
     assert_eq!(live_value()?, "80");
 
+    // Without PV's file, an administrator's live value is theirs.
+    root(&["/usr/bin/rm", "-f", "--", OTHER_FILE])?;
+    PrivilegedHelperClient.remove_unprivileged_ports()?;
+    assert_eq!(live_value()?, "80");
+
+    // A lower value another tool chose survives PV's setup and removal, and PV's file keeps it.
+    fixture.root_file(
+        "other-ports.conf",
+        "net.ipv4.ip_unprivileged_port_start = 0\n",
+        OTHER_FILE,
+        "0644",
+    )?;
+    root(&[
+        "/usr/sbin/sysctl",
+        "-q",
+        "-w",
+        "net.ipv4.ip_unprivileged_port_start=0",
+    ])?;
+    PrivilegedHelperClient.apply_unprivileged_ports()?;
+    assert_eq!(
+        fs::read_to_string(Utf8Path::new(UNPRIVILEGED_PORTS_PATH))?,
+        "# Managed by PV\nnet.ipv4.ip_unprivileged_port_start=0\n"
+    );
+    assert_eq!(live_value()?, "0");
+    PrivilegedHelperClient.remove_unprivileged_ports()?;
+    assert!(!fs::path_entry_exists(Utf8Path::new(
+        UNPRIVILEGED_PORTS_PATH
+    ))?);
+    assert_eq!(live_value()?, "0");
+
     Ok(())
 }
 

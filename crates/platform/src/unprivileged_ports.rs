@@ -8,7 +8,6 @@ use crate::systemd::{read_owned_unit, remove_leftover_candidate, write_owned_uni
 
 pub const UNPRIVILEGED_PORTS_PATH: &str = "/etc/sysctl.d/99-pv-ports.conf";
 const SETTING: &str = "net.ipv4.ip_unprivileged_port_start";
-const CONTENT: &str = "# Managed by PV\nnet.ipv4.ip_unprivileged_port_start=80\n";
 const LIVE_PATH: &str = "/proc/sys/net/ipv4/ip_unprivileged_port_start";
 const PV_PORT_START: u32 = 80;
 const KERNEL_DEFAULT_PORT_START: u32 = 1024;
@@ -64,26 +63,33 @@ pub fn inspect_unprivileged_ports() -> UnprivilegedPortsState {
     })
 }
 
-/// Writes PV's file and applies it now, without raising a value that is already low enough.
+/// Writes PV's file and applies it now. A value that is already lower, such as one a rootless
+/// container setup chose, is kept now and persisted, since PV's file sorts last at boot.
 pub(crate) fn apply_unprivileged_ports_privileged() -> Result<(), PlatformError> {
-    write_owned_unit(Utf8Path::new(UNPRIVILEGED_PORTS_PATH), CONTENT)?;
-    if live_value()? > PV_PORT_START {
+    let live = live_value()?;
+    let persisted = live.min(PV_PORT_START);
+    write_owned_unit(
+        Utf8Path::new(UNPRIVILEGED_PORTS_PATH),
+        &format!("# Managed by PV\n{SETTING}={persisted}\n"),
+    )?;
+    if live > PV_PORT_START {
         write_live_value(PV_PORT_START)?;
     }
 
     Ok(())
 }
 
-/// Deletes PV's file, and restores the kernel default only when nothing else sets the value and
-/// it is still PV's.
+/// Deletes PV's file, and restores the kernel default only when PV's file was there, nothing
+/// else sets the value, and it is still PV's. A value an administrator set without PV stays.
 pub(crate) fn remove_unprivileged_ports_privileged() -> Result<(), PlatformError> {
     let path = Utf8Path::new(UNPRIVILEGED_PORTS_PATH);
-    if read_owned_unit(path)?.is_some() {
+    let owned = read_owned_unit(path)?.is_some();
+    if owned {
         state::fs::remove_file_if_exists(path)
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
     }
     remove_leftover_candidate(path)?;
-    if other_files_setting_ports()?.is_empty() && live_value()? == PV_PORT_START {
+    if owned && other_files_setting_ports()?.is_empty() && live_value()? == PV_PORT_START {
         write_live_value(KERNEL_DEFAULT_PORT_START)?;
     }
 
