@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use camino_tempfile::tempdir;
-use daemon::{DaemonError, RunningDaemon, run_blocking};
+use daemon::{DaemonError, HostIntegration, RunningDaemon, run_blocking};
 use platform::{PlatformCapability, PlatformError};
 use state::PvPaths;
 
@@ -15,12 +15,16 @@ async fn public_daemon_starts_reject_unsupported_platform_without_side_effects()
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let client = RecordingClient::default();
+    let host = HostIntegration::production();
 
     let results = [
-        ("start", RunningDaemon::start(paths.clone()).await.map(drop)),
+        (
+            "start",
+            RunningDaemon::start(paths.clone(), host).await.map(drop),
+        ),
         (
             "start_without_managed_resource_adapters",
-            RunningDaemon::start_without_managed_resource_adapters(paths.clone())
+            RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await
                 .map(drop),
         ),
@@ -28,6 +32,7 @@ async fn public_daemon_starts_reject_unsupported_platform_without_side_effects()
             "start_without_managed_resource_adapters_with_manifest_client",
             RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
                 paths.clone(),
+                host,
                 "https://artifacts.example.test/manifest.json",
                 client.clone(),
             )
@@ -35,7 +40,7 @@ async fn public_daemon_starts_reject_unsupported_platform_without_side_effects()
             .map(drop),
         ),
         // The platform check comes before `run_blocking` builds its own runtime.
-        ("run_blocking", run_blocking(paths.clone())),
+        ("run_blocking", run_blocking(paths.clone(), host)),
     ];
 
     for (name, result) in results {

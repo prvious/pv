@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
@@ -907,16 +907,15 @@ async fn only_the_gateway_inherits_the_listeners_and_serves_them_through_reloads
     let (started_pid, reloaded_pid) = propagate_after_cleanup(result, cleanup_result)?;
     let caddy = inherited_sockets(&caddy)?;
     let worker = inherited_sockets(&worker)?;
+    let baseline = caddy.baseline()?;
 
     assert_eq!(reloaded_pid, started_pid);
-    assert_eq!(caddy.runs, [vec![3, 4]]);
+    assert_eq!(beyond(&caddy.runs, baseline), [vec![3, 4]]);
     assert!(!worker.runs.is_empty());
     assert!(
-        caddy
-            .others
+        beyond(&worker.runs, baseline)
             .iter()
-            .chain(&worker.runs)
-            .chain(&worker.others)
+            .chain(&beyond(&worker.others, baseline))
             .all(Vec::is_empty)
     );
 
@@ -962,7 +961,9 @@ async fn startup_replaces_a_gateway_started_without_inherited_listeners() -> Res
     .await;
     let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
     propagate_after_cleanup(result, cleanup_result)?;
-    assert_eq!(inherited_sockets(&caddy)?.runs, [vec![], vec![3, 4]]);
+    let caddy = inherited_sockets(&caddy)?;
+
+    assert_eq!(beyond(&caddy.runs, caddy.baseline()?), [vec![], vec![3, 4]]);
 
     Ok(())
 }
@@ -1023,6 +1024,38 @@ async fn a_held_gateway_port_fails_the_gateway_and_still_starts_the_worker() -> 
 struct InheritedSockets {
     runs: Vec<Vec<i32>>,
     others: Vec<Vec<i32>>,
+}
+
+impl InheritedSockets {
+    /// The sockets this test process hands every child, such as a CI runner's own descriptors.
+    /// `validate` runs, which the daemon starts itself, inherit only those.
+    fn baseline(&self) -> Result<&[i32]> {
+        let baseline = self
+            .others
+            .first()
+            .context("the fake never validated a config")?;
+        ensure!(
+            self.others.iter().all(|sockets| sockets == baseline),
+            "validate runs inherited different sockets: {:?}",
+            self.others
+        );
+
+        Ok(baseline)
+    }
+}
+
+/// Each start's sockets without the ones every child of this test process inherits.
+fn beyond(starts: &[Vec<i32>], baseline: &[i32]) -> Vec<Vec<i32>> {
+    starts
+        .iter()
+        .map(|sockets| {
+            sockets
+                .iter()
+                .copied()
+                .filter(|fd| !baseline.contains(fd))
+                .collect()
+        })
+        .collect()
 }
 
 fn inherited_sockets(fake: &InstalledFake) -> Result<InheritedSockets> {

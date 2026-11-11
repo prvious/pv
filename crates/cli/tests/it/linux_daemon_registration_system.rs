@@ -17,6 +17,7 @@ use state::{
 };
 
 const REDIS_SUBJECT: &str = "resources/redis/7.2";
+const GATEWAY_WITHOUT_PORTS: &str = "Ports 80 and 443 are not available to PV";
 
 #[test]
 #[ignore = "requires PV_LINUX_SYSTEM_TESTS=1, PV_LINUX_SYSTEM_PV and a disposable user's systemd manager"]
@@ -142,22 +143,34 @@ fn exercise_registration(fixture: &mut RegistrationFixture, binary: &Utf8Path) -
 
 fn seed_resources(paths: &PvPaths) -> Result<()> {
     let mut database = Database::open(paths)?;
-    let track_path = paths.resources().join("redis/7.2");
-    let release = track_path.join("releases/7.2.5-pv1");
-    pv_fake::install_with(
-        &pv_fake::binary()?,
-        &release.join("bin/redis-server"),
-        &Scenario {
-            persona: Persona::RedisServer,
-            lifeline_fd: None,
-            settings: FakeSettings::default(),
-        },
-    )?;
-    fs::symlink_file(
-        Utf8Path::new("releases/7.2.5-pv1"),
-        &track_path.join("current"),
-    )?;
-    database.record_managed_resource_track_installed("redis", "7.2", "7.2.5-pv1", &release)?;
+    // Caddy is installed so the daemon doesn't try to install it as a default resource.
+    for (resource, track, version, binary, persona) in [
+        (
+            "redis",
+            "7.2",
+            "7.2.5-pv1",
+            "redis-server",
+            Persona::RedisServer,
+        ),
+        ("caddy", "2", "2.11.4-pv1", "caddy", Persona::Caddy),
+    ] {
+        let track_path = paths.resources().join(resource).join(track);
+        let release = track_path.join("releases").join(version);
+        pv_fake::install_with(
+            &pv_fake::binary()?,
+            &release.join("bin").join(binary),
+            &Scenario {
+                persona,
+                lifeline_fd: None,
+                settings: FakeSettings::default(),
+            },
+        )?;
+        fs::symlink_file(
+            Utf8Path::new(&format!("releases/{version}")),
+            &track_path.join("current"),
+        )?;
+        database.record_managed_resource_track_installed(resource, track, version, &release)?;
+    }
     let ca = platform::generate_local_ca()?;
     fs::write_sensitive_file(&paths.ca_certificate(), &ca.certificate_pem)?;
     fs::write_sensitive_file(&paths.ca_private_key(), &ca.private_key_pem)?;
@@ -189,12 +202,18 @@ fn wait_for_redis_monitor(paths: &PvPaths, previous_job: Option<&str>) -> Result
         if let Some(job) = jobs.iter().find(|job| job.scope == "system")
             && Some(job.id.as_str()) != previous_job
         {
+            // The daemon runs as the test's user, who can't open ports 80 and 443 unless PV's
+            // port setting is applied, so only the Gateway may fail.
             ensure!(
-                job.status != JobStatus::Failed,
+                job.status != JobStatus::Failed
+                    || job
+                        .error
+                        .as_deref()
+                        .is_some_and(|error| error.contains(GATEWAY_WITHOUT_PORTS)),
                 "startup reconciliation failed: {:?}",
                 job.error
             );
-            if job.status == JobStatus::Succeeded
+            if matches!(job.status, JobStatus::Succeeded | JobStatus::Failed)
                 && daemon::live_runtime(paths, REDIS_SUBJECT)?.is_some()
             {
                 let path = paths.monitor_dir(REDIS_SUBJECT).join("monitor.json");
