@@ -508,41 +508,41 @@ async fn the_health_scan_requests_system_reconciliation_for_worktree_changes() -
     let repo = fixture.main_checkout("repo")?;
     fixture.link("repo", "repo.test")?;
     fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
+    // This branch's config predates `root:`, so it can't be linked until it's updated.
+    fixture.add_worktree(&repo, "old", "worktrees/old")?;
+    let old_config = fixture.root.join("worktrees/old/pv.yml");
+    state::fs::write_sensitive_file(&old_config, "document_root: public\n")?;
+    let hooks = DaemonHooks::new(fixture.paths.clone());
     let catalog = std::sync::Arc::new(
         crate::managed_resources::ManagedResourceRuntimeCatalog::without_adapters()?,
     );
     let gateway_ports = test_gateway_listeners()?.source().ports();
+    let scan = || {
+        crate::health::scan_runtime_health(
+            fixture.paths.clone(),
+            Some(catalog.clone()),
+            Some(hooks.clone()),
+            gateway_ports,
+        )
+    };
+    let system = crate::ReconciliationScope::System;
 
-    let before = crate::health::scan_runtime_health(
-        fixture.paths.clone(),
-        Some(catalog.clone()),
-        None,
-        gateway_ports,
-    )
-    .await?
-    .maintenance_scopes;
-    discover_worktrees(&fixture.paths)?;
-    let after = crate::health::scan_runtime_health(
-        fixture.paths.clone(),
-        Some(catalog.clone()),
-        None,
-        gateway_ports,
-    )
-    .await?
-    .maintenance_scopes;
+    let before = scan().await?.maintenance_scopes;
+    discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
+    let while_failing = scan().await?.maintenance_scopes;
+    state::fs::write_sensitive_file(&old_config, "serve: false\n")?;
+    let after_fix = scan().await?.maintenance_scopes;
+    discover_worktrees_with_hooks(&fixture.paths, Some(&hooks))?;
+    let after = scan().await?.maintenance_scopes;
     // An entry without `gitdir` makes the source unreadable, which every scan reports.
     state::fs::ensure_user_dir(&repo.join(".git/worktrees/new"))?;
-    let unreadable = crate::health::scan_runtime_health(
-        fixture.paths.clone(),
-        Some(catalog),
-        None,
-        gateway_ports,
-    )
-    .await?
-    .errors;
+    let unreadable = scan().await?.errors;
 
-    assert!(before.contains(&crate::ReconciliationScope::System));
-    assert!(!after.contains(&crate::ReconciliationScope::System));
+    assert!(before.contains(&system));
+    assert!(!while_failing.contains(&system));
+    assert!(after_fix.contains(&system));
+    assert!(!after.contains(&system));
+    assert_eq!(fixture.discovered()?.len(), 2);
     assert!(
         unreadable.iter().any(|error| error.subject == "worktrees"),
         "unreadable source not reported: {:?}",

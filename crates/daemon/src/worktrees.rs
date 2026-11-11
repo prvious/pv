@@ -13,6 +13,7 @@ use state::{
 };
 
 use crate::hooks::DaemonHooks;
+use crate::watcher::{ConfigModifiedTimes, config_modified_times};
 use crate::{DaemonError, structured_log};
 
 /// The PV-owned file in a worktree's Git entry directory that holds its worktree ID.
@@ -143,9 +144,9 @@ pub(crate) fn discover_worktrees(paths: &PvPaths) -> Result<(), DaemonError> {
 }
 
 /// Applies discovery's changes while system reconciliation holds the jobs lock. Commands are
-/// handed to the independent runner; a discovery change that fails is logged and retried.
-// ponytail: a change that keeps failing, such as an unwritable `.git` directory, makes every
-// health scan request system reconciliation; give failed changes a backoff if that shows up.
+/// handed to the independent runner; a discovery change that fails is logged, remembered in
+/// `hooks` so the health scan doesn't keep requesting it, and retried by every system
+/// reconciliation.
 pub(crate) fn discover_worktrees_with_hooks(
     paths: &PvPaths,
     hooks: Option<&DaemonHooks>,
@@ -153,14 +154,32 @@ pub(crate) fn discover_worktrees_with_hooks(
     let mut database = Database::open(paths)?;
     // The health scan reports skipped sources every 30 seconds.
     let plan = plan_worktree_changes_with_hooks(&database, hooks)?;
+    let mut failed = Vec::new();
     for change in plan.changes {
         let subject = change_subject(&change).to_string();
+        let attempt = change_attempt(&change);
         if let Err(error) = apply_change(paths, &mut database, change, hooks) {
             structured_log::worktree_discovery_failed(paths, &subject, &error.to_string());
+            failed.push(attempt);
         }
+    }
+    if let Some(hooks) = hooks {
+        hooks.remember_failed_worktree_changes(failed);
     }
 
     Ok(())
+}
+
+/// A discovery change and, for a link, the modified times of the worktree's config files. A
+/// failed change is worth retrying once this differs.
+pub(crate) type ChangeAttempt = (WorktreeChange, Option<ConfigModifiedTimes>);
+
+pub(crate) fn change_attempt(change: &WorktreeChange) -> ChangeAttempt {
+    let config = match change {
+        WorktreeChange::Link { path, .. } => Some(config_modified_times(path)),
+        _ => None,
+    };
+    (change.clone(), config)
 }
 
 pub(crate) fn registered_worktree_path(
@@ -459,14 +478,15 @@ fn apply_change(
             worktree_name,
             path,
         } => {
+            // Linking needs the worktree's Project config, and the env copy needs the source's too.
+            // If either can't be read, the entry stays as it is, so the next scan plans the same
+            // change and the health scan knows it already failed.
+            let config_file = ProjectConfigFile::read_from_root(&path)?;
+            copy_source_env_file(database, &source_project_id, &path, &config_file)?;
             let worktree_id = match worktree_id {
                 Some(worktree_id) => worktree_id,
                 None => write_new_worktree_id(&entry_dir)?,
             };
-            // Linking needs the worktree's Project config, and the env copy needs the source's too.
-            // If either can't be read, the worktree waits for the next scan.
-            let config_file = ProjectConfigFile::read_from_root(&path)?;
-            copy_source_env_file(database, &source_project_id, &path, &config_file)?;
             // Linking never waits for approval: unapproved hooks are skipped, not the worktree.
             let hooks_approved = crate::hooks::hooks_approved(
                 database,

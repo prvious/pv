@@ -51,7 +51,7 @@ struct WatchedProject {
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-struct ConfigModifiedTimes {
+pub(crate) struct ConfigModifiedTimes {
     preferred: Option<SystemTime>,
     alternate: Option<SystemTime>,
 }
@@ -376,7 +376,7 @@ fn link_target(config_path: &Utf8Path) -> Option<Utf8PathBuf> {
 }
 
 /// An unreadable config counts as missing; reconciliation reports why it can't be read.
-fn config_modified_times(project_path: &Utf8Path) -> ConfigModifiedTimes {
+pub(crate) fn config_modified_times(project_path: &Utf8Path) -> ConfigModifiedTimes {
     ConfigModifiedTimes {
         preferred: fs::modified_at(&project_path.join(PREFERRED_CONFIG_FILE))
             .ok()
