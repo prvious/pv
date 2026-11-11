@@ -34,13 +34,15 @@ pub fn legacy_pf_present() -> Result<bool, PlatformError> {
 }
 
 // This is probably temporary. We should remember to remove it on the next release.
+/// Only files that carry PV's marker are PV's; an administrator's own are left alone.
 fn legacy_pf_present_at(anchor: &Utf8Path, pf_conf: &Utf8Path) -> Result<bool, PlatformError> {
-    let anchor_present = state::fs::path_entry_exists(anchor)
-        .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
+    Ok(marked_by_pv(anchor)? || marked_by_pv(pf_conf)?)
+}
 
-    Ok(anchor_present
-        || read_optional(pf_conf)?
-            .is_some_and(|content| content.lines().any(|line| line.trim() == PV_MARKER)))
+// This is probably temporary. We should remember to remove it on the next release.
+fn marked_by_pv(path: &Utf8Path) -> Result<bool, PlatformError> {
+    Ok(read_optional(path)?
+        .is_some_and(|content| content.lines().any(|line| line.trim() == PV_MARKER)))
 }
 
 // This is probably temporary. We should remember to remove it on the next release.
@@ -59,8 +61,8 @@ pub(crate) fn remove_legacy_pf_privileged() -> Result<(), PlatformError> {
 }
 
 // This is probably temporary. We should remember to remove it on the next release.
-/// Drops PV's lines from `pf.conf` after `pfctl` accepts the result, deletes PV's anchor, and
-/// reloads pf.
+/// Drops PV's lines from a marked `pf.conf` after `pfctl` accepts the result, reloads pf, and only
+/// then deletes PV's marked anchor, so a failed reload is retried on the next run.
 #[cfg(any(target_os = "macos", test))]
 fn remove_legacy_pf_with_runner(
     anchor: &Utf8Path,
@@ -69,9 +71,7 @@ fn remove_legacy_pf_with_runner(
     run_system: &mut impl FnMut(&str, &[&str]) -> Result<(), PlatformError>,
 ) -> Result<(), PlatformError> {
     if let Some(current) = read_optional(pf_conf)?
-        && current
-            .lines()
-            .any(|line| PV_PF_CONF_LINES.contains(&line.trim()))
+        && current.lines().any(|line| line.trim() == PV_MARKER)
     {
         let candidate = current
             .lines()
@@ -92,9 +92,12 @@ fn remove_legacy_pf_with_runner(
             .map_err(|error| PlatformError::SystemIntegration(error.to_string()));
         installed.and(cleaned)?;
     }
-    run_system("/bin/rm", &["-f", anchor.as_str()])?;
+    run_system("/sbin/pfctl", &["-f", pf_conf.as_str()])?;
+    if marked_by_pv(anchor)? {
+        run_system("/bin/rm", &["-f", anchor.as_str()])?;
+    }
 
-    run_system("/sbin/pfctl", &["-f", pf_conf.as_str()])
+    Ok(())
 }
 
 // This is probably temporary. We should remember to remove it on the next release.
@@ -167,12 +170,20 @@ mod tests {
     }
 
     // This is probably temporary. We should remember to remove it on the next release.
+    /// An administrator's own anchor under PV's name, referenced without PV's marker, isn't PV's.
     #[test]
-    fn a_pf_conf_without_pvs_lines_is_left_alone() -> anyhow::Result<()> {
+    fn unmarked_pf_configuration_is_left_alone() -> anyhow::Result<()> {
         let tempdir = tempdir()?;
         let anchor = tempdir.path().join("etc/pf.anchors/com.prvious.pv");
         let pf_conf = tempdir.path().join("etc/pf.conf");
-        state::fs::write_sensitive_file(&pf_conf, "set skip on lo0\n")?;
+        state::fs::write_sensitive_file(
+            &anchor,
+            "rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 8080\n",
+        )?;
+        state::fs::write_sensitive_file(
+            &pf_conf,
+            "set skip on lo0\nrdr-anchor \"com.prvious.pv\"\nload anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"\n",
+        )?;
 
         assert!(!legacy_pf_present_at(&anchor, &pf_conf)?);
 
