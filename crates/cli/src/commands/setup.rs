@@ -415,8 +415,12 @@ pub(crate) fn uninstall(
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
     // This is probably temporary. We should remember to remove it on the next release.
     remove_legacy_pf_or_warn(environment, streams)?;
+    // An installation without setup never wrote PV's port setting, and has no helper to ask.
     #[cfg(target_os = "linux")]
-    if !run_required_step(
+    if !matches!(
+        environment.inspect_unprivileged_ports(),
+        platform::UnprivilegedPortsState::Missing
+    ) && !run_required_step(
         "port setting removal",
         streams,
         &mut replay_error,

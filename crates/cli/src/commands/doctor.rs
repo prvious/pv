@@ -729,19 +729,23 @@ fn ports_check(
         }
     }
     // The Gateway's own failure shows under "Runtime states"; this check only names the programs
-    // holding the ports, and only when the Gateway couldn't start. A running Gateway holds them
-    // itself.
-    let gateway_failed = match database {
+    // holding the ports when that failure says others hold them. Otherwise the ports are PV's: the
+    // daemon and a running or failed Gateway keep them.
+    let ports_held_by_others = match database {
         Some(database) => database
             .runtime_observed_states()?
             .into_iter()
             .any(|observation| {
                 observation.subject == RuntimeSubject::Gateway
                     && observation.status == RuntimeObservedStatus::Failed
+                    && observation
+                        .message
+                        .as_deref()
+                        .is_some_and(daemon::gateway_failure_is_port_conflict)
             }),
         None => false,
     };
-    if !gateway_failed {
+    if !ports_held_by_others {
         return Ok(DoctorCheck::pass(NAME, "no conflict reported"));
     }
     let conflicts = match environment.inspect_low_ports() {

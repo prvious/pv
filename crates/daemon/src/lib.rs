@@ -47,7 +47,7 @@ pub use client::{
 pub use dns::{dns_port_available, response_bytes};
 pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
 pub use health::RUNTIME_HEALTH_SCAN;
-pub use host::{GatewayListenerHolder, HostIntegration};
+pub use host::{GatewayListenerHolder, HostIntegration, gateway_failure_is_port_conflict};
 pub use monitor::{
     LiveRuntime, MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind,
     MonitorExit, MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, live_runtime,

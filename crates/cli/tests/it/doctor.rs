@@ -224,11 +224,13 @@ fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
     seed_required_checks(&paths, &environment, true)?;
     let mut database = Database::open(&paths)?;
     let job = database.start_job("reconcile", "system")?;
-    database.fail_job(&job.id, "Gateway failed to start")?;
+    let port_conflict =
+        "Port 80 is in use by another program; free it, then run `pv daemon:restart`.";
+    database.fail_job(&job.id, port_conflict)?;
     database.record_runtime_observed_snapshot(
         RuntimeSubject::Gateway,
         RuntimeObservedStatus::Failed,
-        Some("Gateway failed to start"),
+        Some(port_conflict),
     )?;
 
     let output = run_pv(&["doctor"], &environment)?;

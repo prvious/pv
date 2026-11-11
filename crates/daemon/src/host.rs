@@ -80,15 +80,24 @@ impl GatewayListenerHolder {
     }
 }
 
+const IN_USE_BY_ANOTHER_PROGRAM: &str = "is in use by another program";
+const IN_USE_BY_OTHER_PROGRAMS: &str = "are in use by other programs";
+
+/// Whether the Gateway failed because other programs hold its ports, so `pv doctor` can name them.
+/// Any other failure leaves the ports with PV.
+pub fn gateway_failure_is_port_conflict(message: &str) -> bool {
+    message.contains(IN_USE_BY_ANOTHER_PROGRAM) || message.contains(IN_USE_BY_OTHER_PROGRAMS)
+}
+
 /// What a user sees on the Gateway when it has no listeners: why, and the command that repairs it.
 fn failure_message(error: &GatewayListenerError) -> String {
     match error {
         GatewayListenerError::Unavailable { ports } => match ports.as_slice() {
             [port] => format!(
-                "Port {port} is in use by another program; free it, then run `pv daemon:restart`."
+                "Port {port} {IN_USE_BY_ANOTHER_PROGRAM}; free it, then run `pv daemon:restart`."
             ),
             ports => format!(
-                "Ports {} are in use by other programs; free them, then run `pv daemon:restart`.",
+                "Ports {} {IN_USE_BY_OTHER_PROGRAMS}; free them, then run `pv daemon:restart`.",
                 ports
                     .iter()
                     .map(u16::to_string)
