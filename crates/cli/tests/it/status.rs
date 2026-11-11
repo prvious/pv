@@ -1,6 +1,6 @@
 #![cfg(target_os = "macos")]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
@@ -11,11 +11,8 @@ use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
-use platform::{
-    ActivePfRedirectInspection, KeychainCertificate, PfConfReference, PfRedirectConfig,
-    ResolverConfig,
-};
 use platform::{DaemonRegistrationConfig, KeychainTrustResult};
+use platform::{KeychainCertificate, ResolverConfig};
 use state::{
     Database, JobDiagnosticSubject, LinkProjectInput, ManagedResourceTrackInstallInput,
     ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, RuntimeObservedStatus,
@@ -28,8 +25,6 @@ struct TestEnvironment {
     current_dir: PathBuf,
     daemon_registration_path: PathBuf,
     resolver_path: PathBuf,
-    pf_anchor_path: PathBuf,
-    pf_conf_path: PathBuf,
     trusted_certificates: Vec<KeychainCertificate>,
     terminal_width: Option<usize>,
 }
@@ -44,11 +39,6 @@ impl TestEnvironment {
                 .as_std_path()
                 .to_path_buf(),
             resolver_path: home.join("etc/resolver/test").as_std_path().to_path_buf(),
-            pf_anchor_path: home
-                .join("etc/pf.anchors/com.prvious.pv")
-                .as_std_path()
-                .to_path_buf(),
-            pf_conf_path: home.join("etc/pf.conf").as_std_path().to_path_buf(),
             trusted_certificates: Vec::new(),
             terminal_width: None,
         }
@@ -108,32 +98,6 @@ impl Environment for TestEnvironment {
 
     fn resolver_test_path(&self) -> PathBuf {
         self.resolver_path.clone()
-    }
-
-    fn pf_anchor_path(&self) -> PathBuf {
-        self.pf_anchor_path.clone()
-    }
-
-    fn pf_conf_path(&self) -> PathBuf {
-        self.pf_conf_path.clone()
-    }
-
-    fn active_pf_redirect_config(
-        &self,
-    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
-        Ok(None)
-    }
-
-    fn inspect_active_pf_redirects_unprivileged(
-        &self,
-    ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
-        Ok(ActivePfRedirectInspection {
-            pf_enabled: true,
-            pv_config: None,
-            pv_anchor_has_unparsed_rules: false,
-            resolved_target_ports: BTreeSet::new(),
-            has_unresolved_redirect_targets: false,
-        })
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
@@ -240,7 +204,7 @@ fn status_tracks_failure_repair_and_identical_recurrence() -> anyhow::Result<()>
 }
 
 #[test]
-fn status_reports_dns_and_ports_repair_required_as_failure() -> anyhow::Result<()> {
+fn status_reports_dns_repair_required_as_failure() -> anyhow::Result<()> {
     let tempdir = tempdir()?;
     let home = tempdir.path().join("home");
     let paths = PvPaths::for_home(home.clone());
@@ -251,18 +215,13 @@ fn status_reports_dns_and_ports_repair_required_as_failure() -> anyhow::Result<(
         &paths.resolver_config(),
         &ResolverConfig::new(35353).render(),
     )?;
-    write_file(
-        &paths.pf_anchor_config(),
-        &PfRedirectConfig::new(48080, 48443).render_anchor(),
-    )?;
-    write_file(&paths.pf_conf_reference_config(), &PfConfReference.render())?;
 
     let output = run_pv(&["status"], &environment)?;
 
     assert_eq!(output.exit_code, ExitCode::FAILURE);
     assert!(output.stderr.is_empty());
     assert_status_snapshot(
-        "status_reports_dns_and_ports_repair_required_as_failure",
+        "status_reports_dns_repair_required_as_failure",
         tempdir.path(),
         output,
     );

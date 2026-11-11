@@ -46,7 +46,7 @@ Default-track matrix under validation: PHP/FrankenPHP `8.5`, Caddy `2`, Composer
 | `pv setup` fetches the artifact manifest before default-resource planning. |  |
 | Cached manifest fallback warning appears only when a cache exists. |  |
 | DNS resolver config is PV-owned and `.test` resolves locally. |  |
-| `pf` redirects route loopback `80` and `443` to Gateway high ports. |  |
+| An older PV's `pf` redirect is gone after setup. |  |
 | PV local CA is trusted in the macOS System keychain. |  |
 | LaunchAgent is registered, daemon starts, and system reconciliation installs desired default setup resources. |  |
 

@@ -1,5 +1,3 @@
-#[cfg(target_os = "linux")]
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io;
 use std::io::IsTerminal;
@@ -138,14 +136,6 @@ pub trait Environment {
         platform::remove_resolver_config(system_path)
     }
 
-    fn pf_anchor_path(&self) -> PathBuf {
-        PathBuf::from(platform::SYSTEM_PF_ANCHOR_PATH)
-    }
-
-    fn pf_conf_path(&self) -> PathBuf {
-        PathBuf::from(platform::SYSTEM_PF_CONF_PATH)
-    }
-
     fn platform_target(&self) -> Result<platform::PlatformTarget, platform::PlatformError> {
         platform::PlatformTarget::current()
     }
@@ -159,97 +149,17 @@ pub trait Environment {
         Ok(())
     }
 
-    #[cfg(target_os = "linux")]
-    fn socket_proxy_directory(&self) -> PathBuf {
-        PathBuf::from(platform::SYSTEM_SOCKET_PROXY_DIRECTORY)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn socket_proxy_files_current(
-        &self,
-        config: &platform::PfRedirectConfig,
-        prepared_directory: &Utf8Path,
-        installed_directory: &Utf8Path,
-    ) -> bool {
-        platform::socket_proxy_files_current(config, prepared_directory, installed_directory)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn repairable_socket_proxy_ports(&self) -> Result<BTreeSet<u16>, platform::PlatformError> {
-        platform::repairable_socket_proxy_ports()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn install_socket_proxy_units(
-        &self,
-        config: &platform::PfRedirectConfig,
-    ) -> Result<(), platform::PlatformError> {
-        platform::PrivilegedHelperClient.apply_pf(config)
-    }
-
-    #[cfg(target_os = "linux")]
-    fn remove_socket_proxy_units(&self) -> Result<(), platform::PlatformError> {
-        platform::PrivilegedHelperClient.remove_pf()
-    }
-
-    #[cfg(target_os = "linux")]
-    fn socket_proxy_units_absent(&self) -> Result<bool, platform::PlatformError> {
-        platform::socket_proxy_units_absent()
-    }
-
-    fn loopback_tcp_port_available(&self, port: u16) -> bool {
-        platform::loopback_tcp_port_available(port)
-    }
-
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError>;
 
-    fn install_pf_redirects(
-        &self,
-        prepared_anchor_path: &Utf8Path,
-        prepared_reference_path: &Utf8Path,
-        system_anchor_path: &Utf8Path,
-        system_pf_conf_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        platform::install_pf_redirects(
-            prepared_anchor_path,
-            prepared_reference_path,
-            system_anchor_path,
-            system_pf_conf_path,
-        )
+    // This is probably temporary. We should remember to remove it on the next release.
+    /// Whether an older PV left its pf port redirect on this Mac.
+    fn legacy_pf_present(&self) -> Result<bool, platform::PlatformError> {
+        Ok(false)
     }
 
-    fn active_pf_redirect_config(
-        &self,
-    ) -> Result<Option<platform::PfRedirectConfig>, platform::PlatformError> {
-        platform::active_pf_redirect_config()
-    }
-
-    fn inspect_active_pf_redirects_unprivileged(
-        &self,
-    ) -> Result<platform::ActivePfRedirectInspection, platform::PlatformError> {
-        platform::inspect_active_pf_redirects_unprivileged()
-            .or_else(|_error| platform::PrivilegedHelperClient.inspect_pf())
-    }
-
-    fn probe_gateway_redirects(
-        &self,
-        _expected: &platform::PfRedirectConfig,
-        _ca_certificate_path: &Utf8Path,
-    ) -> Result<(), String> {
-        Err("Gateway identity probing is unavailable in this environment".to_owned())
-    }
-
-    fn request_system_reconciliation(&self, _paths: &state::PvPaths) -> Result<(), String> {
-        Err("daemon reconciliation requests are unavailable in this environment".to_owned())
-    }
-
-    fn remove_pf_redirects(
-        &self,
-        system_anchor_path: &Utf8Path,
-        system_pf_conf_path: &Utf8Path,
-        candidate_dir: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        platform::remove_pf_redirects(system_anchor_path, system_pf_conf_path, candidate_dir)
+    // This is probably temporary. We should remember to remove it on the next release.
+    fn remove_legacy_pf(&self) -> Result<(), platform::PlatformError> {
+        Err(platform::PlatformError::PrivilegedHelperUnavailable)
     }
 
     fn trusted_ca_certificates(
@@ -384,6 +294,17 @@ impl Environment for ProcessEnvironment {
         platform::PrivilegedHelperClient.inspect_low_ports()
     }
 
+    // This is probably temporary. We should remember to remove it on the next release.
+    #[cfg(target_os = "macos")]
+    fn legacy_pf_present(&self) -> Result<bool, platform::PlatformError> {
+        platform::legacy_pf_present()
+    }
+
+    // This is probably temporary. We should remember to remove it on the next release.
+    fn remove_legacy_pf(&self) -> Result<(), platform::PlatformError> {
+        platform::PrivilegedHelperClient.remove_legacy_pf()
+    }
+
     fn var_os(&self, key: &str) -> Option<OsString> {
         process_var_os(key)
     }
@@ -430,21 +351,6 @@ impl Environment for ProcessEnvironment {
 
     fn open_url(&self, url: &str) -> io::Result<()> {
         platform::open_url(url).map_err(io::Error::other)
-    }
-
-    fn probe_gateway_redirects(
-        &self,
-        expected: &platform::PfRedirectConfig,
-        ca_certificate_path: &Utf8Path,
-    ) -> Result<(), String> {
-        daemon::gateway::probe_gateway_identity_blocking(expected, ca_certificate_path)
-            .map_err(|error| error.to_string())
-    }
-
-    fn request_system_reconciliation(&self, paths: &state::PvPaths) -> Result<(), String> {
-        daemon::submit_job_blocking(paths.clone(), "reconcile", "system")
-            .map(|_job| ())
-            .map_err(|error| error.to_string())
     }
 
     fn exec(&self, program: &Path, args: &[String]) -> io::Result<ExitCode> {

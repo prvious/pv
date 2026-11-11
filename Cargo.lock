@@ -988,7 +988,6 @@ dependencies = [
  "state",
  "textwrap",
  "thiserror 2.0.18",
- "time",
  "tokio",
  "yaml_serde",
 ]
@@ -3215,7 +3214,6 @@ dependencies = [
  "camino-tempfile",
  "data-encoding",
  "futures-util",
- "getrandom 0.4.2",
  "insta",
  "libc",
  "listenfd",

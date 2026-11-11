@@ -20,8 +20,7 @@ use platform::clock::{self, real};
 use platform::{
     DAEMON_REGISTRATION_LABEL, DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION,
     KeychainCertificate, KeychainTrustResult, LocalCaMetadata, LowPortInspection, LowPortState,
-    PRIVILEGED_HELPER_VERSION, PfConfReference, PfRedirectConfig, PrivilegedHelperStatus,
-    ResolverConfig, generate_local_ca,
+    PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig, generate_local_ca,
 };
 use resources::{ResourceHttpClient, ResourcesError, TargetPlatform};
 use serde_json::json;
@@ -83,11 +82,10 @@ struct TestEnvironment {
     current_exe: PathBuf,
     daemon_registration_path: PathBuf,
     resolver_path: PathBuf,
-    pf_anchor_path: PathBuf,
-    pf_conf_path: PathBuf,
     shell: Option<OsString>,
     certificates: Mutex<Vec<KeychainCertificate>>,
-    active_pf_config: Mutex<Option<PfRedirectConfig>>,
+    // This is probably temporary. We should remember to remove it on the next release.
+    legacy_pf: Mutex<bool>,
     operations: Mutex<Vec<String>>,
     client: ScriptedClient,
     target_platform: TargetPlatform,
@@ -95,7 +93,6 @@ struct TestEnvironment {
     helper_cleanup_warning: Mutex<Option<String>>,
     terminal_width: Mutex<Option<usize>>,
     terminal_surfaces: Mutex<Option<(bool, bool)>>,
-    pf_apply_conflict: bool,
 }
 
 impl TestEnvironment {
@@ -105,17 +102,14 @@ impl TestEnvironment {
         target_platform: TargetPlatform,
     ) -> Self {
         Self {
-            pf_apply_conflict: false,
             home: paths.home.as_std_path().to_path_buf(),
             current_dir: paths.current_dir.as_std_path().to_path_buf(),
             current_exe: paths.current_exe.as_std_path().to_path_buf(),
             daemon_registration_path: paths.daemon_registration_path.as_std_path().to_path_buf(),
             resolver_path: paths.resolver_path.as_std_path().to_path_buf(),
-            pf_anchor_path: paths.pf_anchor_path.as_std_path().to_path_buf(),
-            pf_conf_path: paths.pf_conf_path.as_std_path().to_path_buf(),
             shell,
             certificates: Mutex::new(Vec::new()),
-            active_pf_config: Mutex::new(None),
+            legacy_pf: Mutex::new(false),
             operations: Mutex::new(Vec::new()),
             client: ScriptedClient::new(),
             target_platform,
@@ -136,10 +130,6 @@ impl TestEnvironment {
 
     fn certificates(&self) -> Vec<KeychainCertificate> {
         lock(&self.certificates).clone()
-    }
-
-    fn set_active_pf_config(&self, config: PfRedirectConfig) {
-        *lock(&self.active_pf_config) = Some(config);
     }
 
     fn script_manifest_text(&self, text: String) {
@@ -221,8 +211,6 @@ struct TestEnvironmentPaths<'path> {
     current_exe: &'path Utf8Path,
     daemon_registration_path: &'path Utf8Path,
     resolver_path: &'path Utf8Path,
-    pf_anchor_path: &'path Utf8Path,
-    pf_conf_path: &'path Utf8Path,
 }
 
 impl Environment for TestEnvironment {
@@ -326,18 +314,6 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn pf_anchor_path(&self) -> PathBuf {
-        self.pf_anchor_path.clone()
-    }
-
-    fn pf_conf_path(&self) -> PathBuf {
-        self.pf_conf_path.clone()
-    }
-
-    fn loopback_tcp_port_available(&self, _port: u16) -> bool {
-        true
-    }
-
     fn inspect_low_ports(&self) -> Result<LowPortInspection, platform::PlatformError> {
         Ok(LowPortInspection {
             ports: [80, 443]
@@ -349,59 +325,6 @@ impl Environment for TestEnvironment {
                 })
                 .collect(),
         })
-    }
-
-    fn install_pf_redirects(
-        &self,
-        prepared_anchor_path: &Utf8Path,
-        prepared_reference_path: &Utf8Path,
-        system_anchor_path: &Utf8Path,
-        system_pf_conf_path: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        if self.pf_apply_conflict {
-            return Err(platform::PlatformError::SystemIntegration(
-                "Loopback TCP port 80 is in use by nginx (pid 412).".to_owned(),
-            ));
-        }
-        let anchor = state::fs::read_to_string(prepared_anchor_path)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        let reference = state::fs::read_to_string(prepared_reference_path)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-
-        write_file(system_anchor_path, &anchor)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        write_file(system_pf_conf_path, &reference)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        *lock(&self.active_pf_config) = PfRedirectConfig::parse_anchor(&anchor);
-        lock(&self.operations).push(format!(
-            "install pf {prepared_anchor_path} {prepared_reference_path} -> {system_anchor_path} {system_pf_conf_path}"
-        ));
-
-        Ok(())
-    }
-
-    fn active_pf_redirect_config(
-        &self,
-    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
-        Ok(lock(&self.active_pf_config).clone())
-    }
-
-    fn remove_pf_redirects(
-        &self,
-        system_anchor_path: &Utf8Path,
-        system_pf_conf_path: &Utf8Path,
-        candidate_dir: &Utf8Path,
-    ) -> Result<(), platform::PlatformError> {
-        delete_optional_file(system_anchor_path)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        delete_optional_file(system_pf_conf_path)
-            .map_err(|error| platform::PlatformError::SystemIntegration(error.to_string()))?;
-        *lock(&self.active_pf_config) = None;
-        lock(&self.operations).push(format!(
-            "remove pf {system_anchor_path} {system_pf_conf_path} via {candidate_dir}"
-        ));
-
-        Ok(())
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
@@ -464,6 +387,19 @@ impl Environment for TestEnvironment {
         Ok(outcome)
     }
 
+    // This is probably temporary. We should remember to remove it on the next release.
+    fn legacy_pf_present(&self) -> Result<bool, platform::PlatformError> {
+        Ok(*lock(&self.legacy_pf))
+    }
+
+    // This is probably temporary. We should remember to remove it on the next release.
+    fn remove_legacy_pf(&self) -> Result<(), platform::PlatformError> {
+        *lock(&self.legacy_pf) = false;
+        lock(&self.operations).push("remove legacy pf".to_owned());
+
+        Ok(())
+    }
+
     fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
         *lock(&self.helper_status) = None;
         lock(&self.operations).push("remove helper".to_string());
@@ -508,9 +444,6 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
         .collect::<Vec<_>>();
     let prepared_resolver = read_required_file(&fixture.paths.resolver_config())?;
     let system_resolver = read_required_file(&fixture.system_resolver_path)?;
-    let prepared_anchor = read_required_file(&fixture.paths.pf_anchor_config())?;
-    let system_anchor = read_required_file(&fixture.system_anchor_path)?;
-    let system_pf_conf = read_required_file(&fixture.system_pf_conf_path)?;
     let launch_agent = read_required_file(&fixture.daemon_registration_path)?;
     let parsed_resolver = ResolverConfig::parse(&prepared_resolver);
     let parsed_launch_agent = DaemonRegistrationConfig::parse(&launch_agent);
@@ -519,7 +452,6 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
     assert!(!output.stderr.contains("error:"));
     assert!(parsed_resolver.is_some());
     assert_eq!(system_resolver, prepared_resolver);
-    assert_eq!(system_anchor, prepared_anchor);
     assert_eq!(fixture.environment.certificates().len(), 1);
     assert!(output.stdout.contains("PV setup complete"));
     assert!(daemon_requests.iter().any(|request| {
@@ -545,42 +477,12 @@ fn setup_no_path_configures_system_integrations_and_waits_for_reconciliation() -
     with_normalized_tempdir(tempdir.path(), || {
         assert_debug_snapshot!((
             output,
-            PfRedirectConfig::parse_anchor(&prepared_anchor),
-            PfConfReference::parse_block(&system_pf_conf),
             parsed_launch_agent,
             fixture.environment.operations(),
             daemon_requests,
         ));
     });
 
-    Ok(())
-}
-
-#[test]
-fn setup_pf_apply_conflict_does_not_reinstall_the_helper() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let mut fixture = Fixture::new(tempdir.path());
-    seed_online_setup_manifest(&fixture)?;
-    let environment = Arc::get_mut(&mut fixture.environment)
-        .ok_or_else(|| anyhow::anyhow!("setup fixture environment is shared"))?;
-    environment.pf_apply_conflict = true;
-    let output = run_pv(&["setup", "--no-path"], environment)?;
-    assert_eq!(output.exit_code, ExitCode::FAILURE);
-    let operations = environment.operations();
-    assert!(
-        !operations
-            .iter()
-            .any(|operation| operation.starts_with("install helper "))
-    );
-    assert!(
-        !Database::open(&fixture.paths)?
-            .assigned_ports()?
-            .iter()
-            .any(|assignment| matches!(assignment.owner, PortOwner::Gateway(_)))
-    );
-    with_normalized_tempdir(tempdir.path(), || {
-        assert_debug_snapshot!((output, operations))
-    });
     Ok(())
 }
 
@@ -650,8 +552,6 @@ fn setup_manifest_fetch_failure_without_cache_stops_before_system_mutation() -> 
     assert!(output.stderr.contains("artifact manifest is unavailable"));
     assert!(fixture.environment.operations().is_empty());
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
     assert_no_managed_resource_tracks(&fixture.paths)?;
 
@@ -696,8 +596,6 @@ fn setup_manifest_missing_default_continues_core_setup_and_records_remaining_def
             "{name}"
         );
         assert!(read_optional_file(&fixture.system_resolver_path)?.is_some());
-        assert!(read_optional_file(&fixture.system_anchor_path)?.is_some());
-        assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_some());
         assert_eq!(fixture.environment.certificates().len(), 1, "{name}");
         assert_eq!(observed, expected_setup_tracks_except(&["mysql"]), "{name}");
         assert_eq!(reconciliation_request_count(&daemon_requests), 1, "{name}");
@@ -731,8 +629,6 @@ fn setup_non_interactive_fails_before_privileged_system_changes() -> anyhow::Res
     assert!(unconfirmed.stderr.contains("requires confirmation"));
     assert!(fixture.environment.operations().is_empty());
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
 
     with_normalized_tempdir(tempdir.path(), || {
@@ -766,6 +662,28 @@ fn setup_installs_missing_helper_before_system_integrations() -> anyhow::Result<
             tempdir.path()
         )
     }));
+
+    Ok(())
+}
+
+// This is probably temporary. We should remember to remove it on the next release.
+#[test]
+fn setup_removes_an_older_pvs_pf_redirect_before_system_integrations() -> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let fixture = Fixture::new(tempdir.path());
+    seed_online_setup_manifest(&fixture)?;
+    *lock(&fixture.environment.legacy_pf) = true;
+    let daemon = DaemonFixture::start(&fixture.paths)?;
+
+    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
+    let _daemon_requests = daemon.finish()?;
+
+    assert_eq!(output.exit_code, ExitCode::SUCCESS);
+    assert!(output.stdout.contains("Removed PV's old pf port redirect"));
+    assert_eq!(
+        fixture.environment.operations().first().map(String::as_str),
+        Some("remove legacy pf")
+    );
 
     Ok(())
 }
@@ -847,26 +765,14 @@ fn setup_non_interactive_fails_before_shell_profile_mutation() -> anyhow::Result
     let fixture = Fixture::new_with_shell(tempdir.path(), "/bin/zsh");
     let profile_path = fixture.paths.home().join(".zprofile");
     let resolver_config = ResolverConfig::new(35353).render();
-    let pf_config = PfRedirectConfig::new(48080, 48443);
     let generated = generate_local_ca()?;
 
     seed_online_setup_manifest(&fixture)?;
     write_file(&fixture.paths.resolver_config(), &resolver_config)?;
     write_file(&fixture.system_resolver_path, &resolver_config)?;
-    write_file(
-        &fixture.paths.pf_anchor_config(),
-        &pf_config.render_anchor(),
-    )?;
-    write_file(&fixture.system_anchor_path, &pf_config.render_anchor())?;
-    write_file(
-        &fixture.paths.pf_conf_reference_config(),
-        &PfConfReference.render(),
-    )?;
-    write_file(&fixture.system_pf_conf_path, &PfConfReference.render())?;
     write_file(&fixture.paths.ca_certificate(), &generated.certificate_pem)?;
     write_file(&fixture.paths.ca_private_key(), &generated.private_key_pem)?;
     write_file(&profile_path, "export EXISTING=1\n")?;
-    fixture.environment.set_active_pf_config(pf_config);
     lock(&fixture.environment.certificates).push(KeychainCertificate {
         metadata: generated.metadata,
         trust: KeychainTrustResult::TrustRoot,
@@ -929,8 +835,6 @@ fn uninstall_preserves_user_data_by_default() -> anyhow::Result<()> {
     assert!(dns_port_assigned_after_setup);
     assert!(!dns_port_assigned(&fixture.paths)?);
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
     assert!(read_optional_file(&fixture.daemon_registration_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
     assert!(path_exists(fixture.paths.root()));
@@ -1101,8 +1005,6 @@ fn uninstall_prune_force_removes_all_pv_state() -> anyhow::Result<()> {
     assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
     assert!(!path_exists(fixture.paths.root()));
     assert!(read_optional_file(&fixture.system_resolver_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_anchor_path)?.is_none());
-    assert!(read_optional_file(&fixture.system_pf_conf_path)?.is_none());
     assert!(read_optional_file(&fixture.daemon_registration_path)?.is_none());
     assert!(fixture.environment.certificates().is_empty());
 
@@ -1236,8 +1138,6 @@ struct Fixture {
     paths: PvPaths,
     daemon_registration_path: camino::Utf8PathBuf,
     system_resolver_path: camino::Utf8PathBuf,
-    system_anchor_path: camino::Utf8PathBuf,
-    system_pf_conf_path: camino::Utf8PathBuf,
     environment: Arc<TestEnvironment>,
 }
 
@@ -1266,8 +1166,6 @@ impl Fixture {
         let daemon_registration_path =
             root.join("Library/LaunchAgents/com.prvious.pv.daemon.plist");
         let system_resolver_path = root.join("etc/resolver/test");
-        let system_anchor_path = root.join("etc/pf.anchors/com.prvious.pv");
-        let system_pf_conf_path = root.join("etc/pf.conf");
         let environment = Arc::new(TestEnvironment::new(
             TestEnvironmentPaths {
                 home: &home,
@@ -1275,8 +1173,6 @@ impl Fixture {
                 current_exe: &current_exe,
                 daemon_registration_path: &daemon_registration_path,
                 resolver_path: &system_resolver_path,
-                pf_anchor_path: &system_anchor_path,
-                pf_conf_path: &system_pf_conf_path,
             },
             shell,
             target_platform,
@@ -1286,8 +1182,6 @@ impl Fixture {
             paths,
             daemon_registration_path,
             system_resolver_path,
-            system_anchor_path,
-            system_pf_conf_path,
             environment,
         }
     }

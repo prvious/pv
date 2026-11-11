@@ -15,11 +15,6 @@ expression: uninstall.stdout
 │  ✓ .test domain routing removed
 │    <tempdir>/etc/resolver/test
 │
-✓  port redirect removal
-│  ✓ Deleted prepared pf anchor: <tempdir>/home/.pv/config/pf/com.prvious.pv
-│  ✓ Deleted prepared pf.conf reference: <tempdir>/home/.pv/config/pf/pf.conf
-│  ✓ Local HTTP and HTTPS redirects removed
-│
 ✓  CA trust removal
 │  ✓ Prepared PV local CA trust removal
 │  ✓ Local CA files: current

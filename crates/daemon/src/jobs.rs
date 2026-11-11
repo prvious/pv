@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use crate::DaemonError;
 use crate::gateway::{
-    CADDY_NOT_INSTALLED, GatewayPfRoutingState, ProjectGatewayReconciliationOutcome,
+    CADDY_NOT_INSTALLED, ProjectGatewayReconciliationOutcome,
     reconcile_gateway_runtimes_with_phase_log, reconcile_project_gateway_runtimes_with_phase_log,
 };
 use crate::hooks::DaemonHooks;
@@ -532,7 +532,6 @@ pub(crate) async fn complete_running_background_reconciliation_job(
             discard_obsolete_project: true,
             hooks: running.hooks(),
             shutdown,
-            ..ReconciliationJobOptions::default()
         },
     )
     .await;
@@ -2015,7 +2014,6 @@ async fn complete_reconciliation_job_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
-    pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
     complete_reconciliation_job_with_progress_outcome(
         paths,
@@ -2024,10 +2022,7 @@ async fn complete_reconciliation_job_with_progress(
         runtime_catalog,
         progress,
         timing,
-        ReconciliationJobOptions {
-            pf_routing_state,
-            ..ReconciliationJobOptions::default()
-        },
+        ReconciliationJobOptions::default(),
     )
     .await
     .into_result()
@@ -2060,7 +2055,6 @@ impl ReconciliationJobCompletion {
 #[derive(Default)]
 struct ReconciliationJobOptions<'a> {
     discard_obsolete_project: bool,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     hooks: Option<DaemonHooks>,
     /// The startup job's shutdown signal; only the system scope reads it.
     shutdown: Option<&'a oneshot::Receiver<()>>,
@@ -2076,7 +2070,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
     options: ReconciliationJobOptions<'_>,
 ) -> ReconciliationJobCompletion {
     let discard_obsolete_project = options.discard_obsolete_project;
-    let pf_routing_state = options.pf_routing_state;
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, "reconcile", &scope_text)
         .with_progress(progress.phase_sender.clone());
@@ -2152,7 +2145,6 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     &phase_log,
                     &mut failure_subject,
                     ReconciliationJobOptions {
-                        pf_routing_state,
                         hooks: options.hooks,
                         ..ReconciliationJobOptions::default()
                     },
@@ -2429,7 +2421,6 @@ async fn complete_project_reconciliation_with_progress(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     failure_subject: &mut Option<JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
     complete_project_reconciliation_with_options(
@@ -2439,10 +2430,7 @@ async fn complete_project_reconciliation_with_progress(
         progress,
         phase_log,
         failure_subject,
-        ReconciliationJobOptions {
-            pf_routing_state,
-            ..ReconciliationJobOptions::default()
-        },
+        ReconciliationJobOptions::default(),
     )
     .await
 }
@@ -2456,7 +2444,6 @@ async fn complete_project_reconciliation_with_options(
     failure_subject: &mut Option<JobDiagnosticSubject>,
     options: ReconciliationJobOptions<'_>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    let pf_routing_state = options.pf_routing_state;
     let project_result = reconcile_project_env_and_missing_resources_with_progress(
         paths,
         id.as_str(),
@@ -2478,13 +2465,8 @@ async fn complete_project_reconciliation_with_options(
             };
         }
     };
-    let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
-        paths,
-        id.as_str(),
-        pf_routing_state,
-        phase_log,
-    )
-    .await?;
+    let gateway_outcome =
+        reconcile_project_gateway_runtimes_with_phase_log(paths, id.as_str(), phase_log).await?;
     let (gateway_summary, gateway_evaluated) = match gateway_outcome {
         ProjectGatewayReconciliationOutcome::Reconciled {
             summary,
@@ -3239,9 +3221,7 @@ mod tests {
     use tokio::net::UnixStream;
     use tokio::sync::{mpsc::channel, oneshot, watch};
 
-    use crate::gateway::{
-        GatewayPfRoutingState, reconcile_gateway_runtimes_with_pf_state_for_test,
-    };
+    use crate::gateway::reconcile_gateway_runtimes;
     use crate::project_env::reconcile_project_env_from_persisted_state;
 
     #[cfg(target_os = "macos")]
@@ -3322,8 +3302,7 @@ mod tests {
             |_port| true,
         )?;
         drop(database);
-        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
-            .await?;
+        reconcile_gateway_runtimes(&paths).await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let worker = supervisor
             .adopt_recorded(&paths.worker_runtime_metadata("8.4"))?
@@ -3436,11 +3415,7 @@ mod tests {
         drop(database);
         seed_installed_caddy(&paths)?;
         let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
-            &paths,
-            crate::gateway::GatewayPfRoutingState::Inactive,
-        )
-        .await?;
+        crate::gateway::reconcile_gateway_runtimes(&paths).await?;
         let mut database = Database::open(&paths)?;
         let uncertain = database
             .link_project(LinkProjectInput {
@@ -3469,7 +3444,6 @@ mod tests {
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
             &mut None,
         )
         .await?;
@@ -3524,11 +3498,7 @@ mod tests {
         drop(database);
         seed_installed_caddy(&paths)?;
         let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
-            &paths,
-            crate::gateway::GatewayPfRoutingState::Inactive,
-        )
-        .await?;
+        crate::gateway::reconcile_gateway_runtimes(&paths).await?;
         let mut database = Database::open(&paths)?;
         database.record_runtime_observed_snapshot(
             RuntimeSubject::Gateway,
@@ -3553,7 +3523,6 @@ mod tests {
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
             &mut None,
         )
         .await?;
@@ -3569,12 +3538,10 @@ mod tests {
             .into_iter()
             .find(|state| state.subject == RuntimeSubject::Gateway)
             .ok_or_else(|| anyhow::anyhow!("missing Gateway observation"))?;
-        assert_eq!(gateway_observation.status, RuntimeObservedStatus::Degraded);
+        assert_eq!(gateway_observation.status, RuntimeObservedStatus::Running);
         assert_eq!(
             gateway_observation.message.as_deref(),
-            Some(
-                "Low-port routing is inactive; run `pv ports:install` to restore ports 80 and 443"
-            )
+            Some("Gateway runtime reconciled")
         );
 
         stop_seeded_caddy(&paths).await?;
@@ -3594,7 +3561,6 @@ mod tests {
         let outcome = crate::gateway::reconcile_project_gateway_runtimes_with_phase_log(
             &paths,
             &project.id,
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
             &failed_probe_phase_log,
         )
         .await?;
@@ -3679,7 +3645,6 @@ mod tests {
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            None,
             &mut None,
         )
         .await?;
@@ -9138,7 +9103,6 @@ mod tests {
             Some(catalog),
             DaemonDownloadProgress::disabled(),
             ReconciliationJobTiming::immediate(),
-            None,
         )
         .await
         .is_ok();
@@ -9363,7 +9327,6 @@ mod tests {
     }
 
     fn write_caddy_fixture(executable: &Utf8Path) -> anyhow::Result<()> {
-        crate::gateway::route_public_probes_to_gateway_for_test();
         pv_fake::install(executable, Persona::Caddy)?;
 
         Ok(())

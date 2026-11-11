@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, btree_map};
 use std::io;
 use std::process::{ExitStatus, Stdio};
 use std::sync::{
-    atomic::{AtomicU8, AtomicU64, Ordering},
+    atomic::{AtomicU64, Ordering},
     mpsc,
 };
 use std::time::Duration;
@@ -45,7 +45,6 @@ use crate::supervisor::{
 use crate::{
     CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, CaddyAdminOperation, DaemonError,
     ProcessSpec, ProcessSupervisor, ReadinessCheck, RuntimeReconciliationFailure, StopSignal,
-    wait_for_readiness,
 };
 
 #[expect(
@@ -70,7 +69,7 @@ const CONFIG_VALIDATION_GROUP_ANCHOR: &str = "while IFS= read -r _line; do :; do
 pub const RUNTIME_START_READINESS_TIMEOUT: Limit =
     Limit::new("runtime start readiness", Duration::from_secs(60));
 /// How long a started Gateway or worker gets to open its admin API, before PV waits for it to
-/// become ready. A Gateway whose pf state is uncertain gets the pf budget under the same name.
+/// become ready.
 pub const RUNTIME_ADMIN_READINESS_TIMEOUT: Limit = Limit::new(
     "runtime admin readiness",
     RUNTIME_START_READINESS_TIMEOUT.duration(),
@@ -79,29 +78,14 @@ pub const RUNTIME_ADMIN_READINESS_TIMEOUT: Limit = Limit::new(
 /// once Caddy has started the new config.
 pub const RUNTIME_RELOAD_READINESS_TIMEOUT: Limit =
     Limit::new("runtime reload readiness", Duration::from_secs(5));
-/// How long a Gateway gets to answer on the public ports when PV can't tell whether pf routes
-/// them.
-pub const PF_PUBLIC_READINESS_TIMEOUT: Limit =
-    Limit::new("pf public readiness", Duration::from_secs(2));
 /// How long PV waits for a process it doesn't own to answer on a runtime's port.
 pub const FOREIGN_LISTENER_PROBE_TIMEOUT: Limit =
     Limit::new("foreign listener probe", Duration::from_millis(100));
-const GATEWAY_IDENTITY_PROBE_TIMEOUT: Limit =
-    Limit::new("gateway identity probe", Duration::from_secs(1));
 const OWNED_READINESS_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const PUBLIC_HTTP_PORT: u16 = 80;
-const PUBLIC_HTTPS_PORT: u16 = 443;
-/// Nothing listens on loopback port 9 and pf doesn't redirect it, so a probe there is refused at
-/// once, as on a machine without PV.
-const UNROUTED_PROBE_PORT: u16 = 9;
-const PUBLIC_PROBE_ROUTE_PUBLIC_PORTS: u8 = 0;
-const PUBLIC_PROBE_ROUTE_GATEWAY_PORTS: u8 = 1;
-const PUBLIC_PROBE_ROUTE_UNROUTED: u8 = 2;
 const GATEWAY_RUNTIME_RECONCILED: &str = "Gateway runtime reconciled";
 const RUNTIME_CONFIG_FINGERPRINT_SCHEME: &[u8] = b"pv-runtime-config:v1";
 pub(crate) const CADDY_NOT_INSTALLED: &str = "Gateway runtime skipped; Caddy is not installed";
 static CANDIDATE_CONFIG_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
-static PUBLIC_PROBE_ROUTE: AtomicU8 = AtomicU8::new(PUBLIC_PROBE_ROUTE_PUBLIC_PORTS);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CaddyCliCommand {
@@ -183,15 +167,6 @@ pub struct GatewayRuntimePlan {
     pub storage_path: Utf8PathBuf,
 }
 
-#[doc(hidden)]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-pub enum GatewayPfRoutingState {
-    Active,
-    Inactive,
-    Drifted,
-    Unknown,
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PhpWorkerRuntimePlan {
     pub php_track: String,
@@ -251,21 +226,20 @@ pub fn promote_validated_config_for_test(
 }
 
 pub async fn reconcile_gateway_runtimes(paths: &PvPaths) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, None, None).await
+    reconcile_all_gateway_runtimes(paths, None).await
 }
 
 pub(crate) async fn reconcile_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, None, Some(phase_log)).await
+    reconcile_all_gateway_runtimes(paths, Some(phase_log)).await
 }
 
 #[doc(hidden)]
 pub async fn reconcile_project_gateway_runtimes_for_test(
     paths: &PvPaths,
     project_id: &str,
-    pf_routing_state: GatewayPfRoutingState,
 ) -> Result<String, DaemonError> {
     let phase_log = structured_log::ReconciliationPhaseLog::new(
         paths,
@@ -273,22 +247,10 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
         "reconcile",
         &format!("project:{project_id}"),
     );
-    match reconcile_project_gateway_runtimes_with_phase_log(
-        paths,
-        project_id,
-        Some(pf_routing_state),
-        &phase_log,
-    )
-    .await?
-    {
+    match reconcile_project_gateway_runtimes_with_phase_log(paths, project_id, &phase_log).await? {
         ProjectGatewayReconciliationOutcome::Reconciled { summary, .. } => Ok(summary),
         ProjectGatewayReconciliationOutcome::PromoteSystem => {
-            reconcile_gateway_runtimes_with_pf_state(
-                paths,
-                Some(pf_routing_state),
-                Some(&phase_log),
-            )
-            .await
+            reconcile_all_gateway_runtimes(paths, Some(&phase_log)).await
         }
     }
 }
@@ -296,13 +258,10 @@ pub async fn reconcile_project_gateway_runtimes_for_test(
 pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
     paths: &PvPaths,
     project_id: &str,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: &structured_log::ReconciliationPhaseLog,
 ) -> Result<ProjectGatewayReconciliationOutcome, DaemonError> {
     let Some(gateway_command) = first_installed_caddy_command(paths)? else {
-        let summary =
-            reconcile_gateway_runtimes_with_pf_state(paths, pf_routing_state, Some(phase_log))
-                .await?;
+        let summary = reconcile_all_gateway_runtimes(paths, Some(phase_log)).await?;
 
         return Ok(ProjectGatewayReconciliationOutcome::Reconciled {
             summary,
@@ -338,16 +297,7 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
         && !target_active_impact.served
         && target_active_impact.runtime_keys.is_empty()
     {
-        let pf_routing_state = match pf_routing_state {
-            Some(pf_routing_state) => pf_routing_state,
-            None => gateway_pf_routing_state(paths, &targeted.plan).await?,
-        };
-        let readiness_hostname = active_gateway_readiness_hostname(
-            paths,
-            target_active_impact.gateway_fragments.keys(),
-        )?;
-        let readiness =
-            gateway_readiness_plan(&targeted.plan, readiness_hostname, pf_routing_state);
+        let readiness = gateway_readiness_plan(&targeted.plan);
         if !matches!(
             clock::timeout(
                 &READINESS_PROBE_TIMEOUT,
@@ -358,11 +308,7 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
         ) {
             return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
         }
-        record_gateway_runtime_observed(
-            paths,
-            pf_routing_state,
-            RuntimeReadinessOutcome::Verified,
-        )?;
+        record_gateway_runtime_observed(paths)?;
 
         return Ok(skipped_project_gateway_outcome(phase_log));
     }
@@ -434,7 +380,6 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
             paths,
             &targeted.plan,
             &gateway_command,
-            pf_routing_state,
             Some(&active_impact.gateway_fragments),
         )
         .await?;
@@ -507,36 +452,8 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
     })
 }
 
-pub fn probe_gateway_identity_blocking(
-    expected: &platform::PfRedirectConfig,
-    ca_certificate_path: &Utf8Path,
-) -> Result<(), DaemonError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_io()
-        .enable_time()
-        .build()?;
-    let check = gateway_identity_readiness_check(
-        expected.http_port,
-        expected.https_port,
-        PUBLIC_HTTP_PORT,
-        PUBLIC_HTTPS_PORT,
-        ca_certificate_path,
-    );
-
-    runtime.block_on(wait_for_readiness(check, &GATEWAY_IDENTITY_PROBE_TIMEOUT))
-}
-
-#[doc(hidden)]
-pub async fn reconcile_gateway_runtimes_with_pf_state_for_test(
+async fn reconcile_all_gateway_runtimes(
     paths: &PvPaths,
-    pf_routing_state: GatewayPfRoutingState,
-) -> Result<String, DaemonError> {
-    reconcile_gateway_runtimes_with_pf_state(paths, Some(pf_routing_state), None).await
-}
-
-async fn reconcile_gateway_runtimes_with_pf_state(
-    paths: &PvPaths,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     phase_log: Option<&structured_log::ReconciliationPhaseLog>,
 ) -> Result<String, DaemonError> {
     let lookup_started_at = clock::now();
@@ -620,14 +537,9 @@ async fn reconcile_gateway_runtimes_with_pf_state(
         Ok(plan) => plan,
         Err(error) => {
             let recording = record_runtime_error(paths, RuntimeSubject::Gateway, &error).err();
-            let recovery = recover_previous_gateway(
-                paths,
-                &gateway_command,
-                None,
-                previous_gateway.as_ref(),
-                pf_routing_state,
-            )
-            .await;
+            let recovery =
+                recover_previous_gateway(paths, &gateway_command, None, previous_gateway.as_ref())
+                    .await;
             let mut failures = vec![("gateway".to_owned(), error)];
             if let Some(recording) = recording {
                 failures.push(("gateway".to_owned(), recording));
@@ -760,7 +672,6 @@ async fn reconcile_gateway_runtimes_with_pf_state(
             &gateway_command,
             Some(&plan),
             previous_gateway.as_ref(),
-            pf_routing_state,
         )
         .await;
         if let Err(error) = recovery {
@@ -786,7 +697,7 @@ async fn reconcile_gateway_runtimes_with_pf_state(
 
     let gateway_timer = phase_log
         .map(|phase_log| phase_log.start(structured_log::ReconciliationPhase::Gateway, "gateway"));
-    reconcile_planned_gateway(paths, &plan, &gateway_command, pf_routing_state, None).await?;
+    reconcile_planned_gateway(paths, &plan, &gateway_command, None).await?;
     if let Some(gateway_timer) = gateway_timer {
         gateway_timer.finish(
             structured_log::PhaseOutcome::Succeeded,
@@ -846,7 +757,6 @@ async fn recover_previous_gateway(
     gateway_command: &CaddyCliCommand,
     plan: Option<&RuntimePlan>,
     snapshot: Option<&ActiveRuntimeConfigSnapshot>,
-    pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let Some(snapshot) = snapshot else {
@@ -866,14 +776,7 @@ async fn recover_previous_gateway(
         }
         match supervisor.verify_ownership(&gateway_spec) {
             Ok(None) => {
-                return reconcile_planned_gateway(
-                    paths,
-                    plan,
-                    gateway_command,
-                    pf_routing_state,
-                    None,
-                )
-                .await;
+                return reconcile_planned_gateway(paths, plan, gateway_command, None).await;
             }
             Ok(Some(_)) | Err(_) => return Ok(()),
         }
@@ -899,7 +802,6 @@ async fn recover_previous_gateway(
         workers: Vec::new(),
     };
     let desired = DesiredGatewayConfig {
-        readiness_hostname: gateway_readiness_hostname(&fragments),
         tree: DesiredRuntimeConfigTree {
             candidate_content: snapshot
                 .root
@@ -911,14 +813,13 @@ async fn recover_previous_gateway(
             fragments,
         },
     };
-    reconcile_gateway_config(paths, &plan, gateway_command, pf_routing_state, desired).await
+    reconcile_gateway_config(paths, &plan, gateway_command, desired).await
 }
 
 async fn reconcile_planned_gateway(
     paths: &PvPaths,
     plan: &RuntimePlan,
     gateway_command: &CaddyCliCommand,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     preserved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<(), DaemonError> {
     let desired_gateway_config = match desired_gateway_config(paths, plan, preserved_fragments) {
@@ -927,35 +828,19 @@ async fn reconcile_planned_gateway(
             return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     };
-    reconcile_gateway_config(
-        paths,
-        plan,
-        gateway_command,
-        pf_routing_state,
-        desired_gateway_config,
-    )
-    .await
+    reconcile_gateway_config(paths, plan, gateway_command, desired_gateway_config).await
 }
 
 async fn reconcile_gateway_config(
     paths: &PvPaths,
     plan: &RuntimePlan,
     gateway_command: &CaddyCliCommand,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     desired_gateway_config: DesiredGatewayConfig,
 ) -> Result<(), DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
-    let pf_routing_state = match pf_routing_state {
-        Some(pf_routing_state) => pf_routing_state,
-        None => gateway_pf_routing_state(paths, plan).await?,
-    };
-    let gateway_readiness = gateway_readiness_plan(
-        plan,
-        desired_gateway_config.readiness_hostname,
-        pf_routing_state,
-    );
+    let gateway_readiness = gateway_readiness_plan(plan);
     let gateway_spec = gateway_process_spec(paths, gateway_command);
-    let readiness_outcome = if let Some(outcome) = match reconcile_unchanged_runtime(
+    if match reconcile_unchanged_runtime(
         &supervisor,
         &gateway_spec,
         &paths.gateway_root_config(),
@@ -964,13 +849,11 @@ async fn reconcile_gateway_config(
     )
     .await
     {
-        Ok(outcome) => outcome,
+        Ok(ready) => !ready,
         Err(error) => {
             return Err(record_primary_error(paths, RuntimeSubject::Gateway, error));
         }
     } {
-        outcome
-    } else {
         let promoted_config = promote_runtime_config_tree(
             paths,
             gateway_command,
@@ -989,9 +872,9 @@ async fn reconcile_gateway_config(
             RuntimeSubject::Gateway,
         )
         .await?;
-        finish_promoted_runtime(runtime.wait().await)?
-    };
-    record_gateway_runtime_observed(paths, pf_routing_state, readiness_outcome)?;
+        finish_promoted_runtime(runtime.wait().await)?;
+    }
+    record_gateway_runtime_observed(paths)?;
 
     Ok(())
 }
@@ -1053,7 +936,6 @@ async fn prepare_planned_worker(
         };
     let readiness = RuntimeReadinessPlan {
         check: worker_readiness_check(worker.port),
-        failure_policy: ReadinessFailurePolicy::FailRuntime,
         budget: RUNTIME_START_READINESS_TIMEOUT,
         admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
         preserve_staged_config: retained_fragments.is_some_and(|fragments| !fragments.is_empty()),
@@ -1074,7 +956,7 @@ async fn prepare_planned_worker(
     )
     .await
     {
-        Ok(Some(_outcome)) => {
+        Ok(true) => {
             record_runtime_observed(
                 paths,
                 subject,
@@ -1083,7 +965,7 @@ async fn prepare_planned_worker(
             )?;
             return Ok(PreparedWorkerReconciliation::Complete);
         }
-        Ok(None) => {}
+        Ok(false) => {}
         Err(error) => {
             return Err(record_primary_error(paths, subject.clone(), error));
         }
@@ -1164,33 +1046,16 @@ fn usize_as_u64(value: usize) -> u64 {
     u64::try_from(value).unwrap_or(u64::MAX)
 }
 
-fn gateway_readiness_plan(
-    plan: &RuntimePlan,
-    readiness_hostname: Option<String>,
-    pf_routing_state: GatewayPfRoutingState,
-) -> RuntimeReadinessPlan {
-    let ports = gateway_readiness_ports(plan, pf_routing_state);
-    let (failure_policy, budget) = match pf_routing_state {
-        GatewayPfRoutingState::Active | GatewayPfRoutingState::Inactive => (
-            ReadinessFailurePolicy::FailRuntime,
-            RUNTIME_START_READINESS_TIMEOUT,
-        ),
-        GatewayPfRoutingState::Drifted | GatewayPfRoutingState::Unknown => (
-            ReadinessFailurePolicy::PreserveRuntime,
-            PF_PUBLIC_READINESS_TIMEOUT,
-        ),
-    };
-
-    let check = if pf_routing_state == GatewayPfRoutingState::Inactive {
-        gateway_readiness_check_for_ports(plan, readiness_hostname, ports)
-    } else {
-        gateway_public_readiness_check(plan, ports)
-    };
-
+/// The Gateway is ready once it answers its health route over HTTP and HTTPS, with a certificate
+/// from PV's CA.
+fn gateway_readiness_plan(plan: &RuntimePlan) -> RuntimeReadinessPlan {
     RuntimeReadinessPlan {
-        check,
-        failure_policy,
-        budget,
+        check: gateway_readiness_check(
+            plan.gateway.http_port,
+            plan.gateway.https_port,
+            &plan.gateway.ca_certificate_path,
+        ),
+        budget: RUNTIME_START_READINESS_TIMEOUT,
         admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_socket_path.clone()),
         preserve_staged_config: false,
     }
@@ -1199,7 +1064,6 @@ fn gateway_readiness_plan(
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct RuntimeReadinessPlan {
     check: ReadinessCheck,
-    failure_policy: ReadinessFailurePolicy,
     /// How long a started runtime gets to become ready.
     budget: Limit,
     admin_endpoint: CaddyAdminEndpoint,
@@ -1227,270 +1091,21 @@ fn missing_previous_service_port() -> DaemonError {
     }
 }
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-struct GatewayReadinessPorts {
-    http: u16,
-    https: u16,
-}
-
-/// Sends every later public readiness probe in this process to the Gateway's own ports, as a
-/// working pf redirect would.
-///
-/// On a Mac with PV installed, pf redirects loopback ports `80` and `443` to that machine's real
-/// Gateway. A test that runs a fake Gateway calls this so its probes reach the fake instead of the
-/// real one, and readiness doesn't wait out the bounded public probe on every start.
-#[doc(hidden)]
-pub fn route_public_probes_to_gateway_for_test() {
-    PUBLIC_PROBE_ROUTE.store(PUBLIC_PROBE_ROUTE_GATEWAY_PORTS, Ordering::Relaxed);
-}
-
-/// Sends every later public readiness probe in this process to a port nothing listens on, so the
-/// bounded public probe fails as it does when pf routing is broken.
-///
-/// Only tests of that failure call this; other tests that run a fake Gateway use
-/// [`route_public_probes_to_gateway_for_test`].
-#[doc(hidden)]
-pub fn use_unrouted_public_probe_ports_for_test() {
-    PUBLIC_PROBE_ROUTE.store(PUBLIC_PROBE_ROUTE_UNROUTED, Ordering::Relaxed);
-}
-
-fn public_probe_ports(gateway_http_port: u16, gateway_https_port: u16) -> GatewayReadinessPorts {
-    match PUBLIC_PROBE_ROUTE.load(Ordering::Relaxed) {
-        PUBLIC_PROBE_ROUTE_GATEWAY_PORTS => GatewayReadinessPorts {
-            http: gateway_http_port,
-            https: gateway_https_port,
-        },
-        PUBLIC_PROBE_ROUTE_UNROUTED => GatewayReadinessPorts {
-            http: UNROUTED_PROBE_PORT,
-            https: UNROUTED_PROBE_PORT,
-        },
-        _ => GatewayReadinessPorts {
-            http: PUBLIC_HTTP_PORT,
-            https: PUBLIC_HTTPS_PORT,
-        },
-    }
-}
-
-fn gateway_readiness_ports(
-    plan: &RuntimePlan,
-    pf_routing_state: GatewayPfRoutingState,
-) -> GatewayReadinessPorts {
-    // macOS pf can make direct connections to an active rdr target port hang.
-    if pf_routing_state != GatewayPfRoutingState::Inactive {
-        return public_probe_ports(plan.gateway.http_port, plan.gateway.https_port);
-    }
-
-    GatewayReadinessPorts {
-        http: plan.gateway.http_port,
-        https: plan.gateway.https_port,
-    }
-}
-
-async fn gateway_pf_routing_state(
-    paths: &PvPaths,
-    plan: &RuntimePlan,
-) -> Result<GatewayPfRoutingState, DaemonError> {
-    gateway_pf_routing_state_for_ports(paths, plan.gateway.http_port, plan.gateway.https_port).await
-}
-
-async fn gateway_pf_routing_state_for_ports(
-    paths: &PvPaths,
+/// Asks the Gateway for its health route over HTTP and HTTPS, which must present a certificate from
+/// PV's CA.
+pub(crate) fn gateway_readiness_check(
     http_port: u16,
     https_port: u16,
-) -> Result<GatewayPfRoutingState, DaemonError> {
-    let paths = paths.clone();
-    let expected = platform::PfRedirectConfig::new(http_port, https_port);
-    spawn_gateway_pf_inspection(move || {
-        let files_current = pf_files_current(&paths, &expected);
-
-        match platform::inspect_active_pf_redirects_unprivileged() {
-            Ok(inspection) => {
-                classify_gateway_pf_routing_state(&expected, Some(&inspection), files_current)
-            }
-            Err(_error) => classify_gateway_pf_routing_state(&expected, None, files_current),
-        }
-    })
-    .await
-}
-
-/// Returns whether the persisted Gateway runtime passes its state-selected readiness probe.
-pub(crate) async fn persisted_gateway_is_ready(
-    paths: &PvPaths,
-    http_port: u16,
-    https_port: u16,
-) -> Result<bool, DaemonError> {
-    let pf_routing_state = gateway_pf_routing_state_for_ports(paths, http_port, https_port).await?;
-
-    persisted_gateway_is_ready_with_pf_state_for_test(
-        paths,
-        http_port,
-        https_port,
-        pf_routing_state,
-    )
-    .await
-}
-
-pub async fn persisted_gateway_is_ready_with_pf_state_for_test(
-    paths: &PvPaths,
-    http_port: u16,
-    https_port: u16,
-    pf_routing_state: GatewayPfRoutingState,
-) -> Result<bool, DaemonError> {
-    let probe_ports = if pf_routing_state == GatewayPfRoutingState::Inactive {
-        GatewayReadinessPorts {
-            http: http_port,
-            https: https_port,
-        }
-    } else {
-        public_probe_ports(http_port, https_port)
-    };
-    let check = gateway_identity_readiness_check(
-        http_port,
-        https_port,
-        probe_ports.http,
-        probe_ports.https,
-        &paths.ca_certificate(),
-    );
-
-    match clock::timeout(&READINESS_PROBE_TIMEOUT, probe_readiness_once(&check)).await {
-        Ok(Ok(())) => Ok(true),
-        Ok(Err(error)) => Err(error),
-        Err(error) => Err(DaemonError::ReadinessTimedOut {
-            check: format!("{check:?}"),
-            timeout_ms: READINESS_PROBE_TIMEOUT.duration().as_millis(),
-            last_error: Some(error.to_string()),
-        }),
-    }
-}
-
-async fn spawn_gateway_pf_inspection<Inspect>(
-    inspect: Inspect,
-) -> Result<GatewayPfRoutingState, DaemonError>
-where
-    Inspect: FnOnce() -> GatewayPfRoutingState + Send + 'static,
-{
-    Ok(tokio::task::spawn_blocking(inspect).await?)
-}
-
-fn classify_gateway_pf_routing_state(
-    expected: &platform::PfRedirectConfig,
-    inspection: Option<&platform::ActivePfRedirectInspection>,
-    files_current: bool,
-) -> GatewayPfRoutingState {
-    let Some(inspection) = inspection else {
-        return if files_current {
-            GatewayPfRoutingState::Unknown
-        } else {
-            GatewayPfRoutingState::Drifted
-        };
-    };
-
-    match inspection.pv_config.as_ref() {
-        Some(active) if active == expected && inspection.pf_enabled && files_current => {
-            if cfg!(target_os = "linux") {
-                // Systemd's loaded Listen can outlive its kernel socket after a reload.
-                GatewayPfRoutingState::Unknown
-            } else {
-                GatewayPfRoutingState::Active
-            }
-        }
-        Some(_) => GatewayPfRoutingState::Drifted,
-        None if inspection.pv_anchor_has_unparsed_rules
-            || inspection.has_unresolved_redirect_targets
-            || inspection
-                .resolved_target_ports
-                .contains(&expected.http_port)
-            || inspection
-                .resolved_target_ports
-                .contains(&expected.https_port) =>
-        {
-            GatewayPfRoutingState::Drifted
-        }
-        None => GatewayPfRoutingState::Inactive,
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn pf_files_current(paths: &PvPaths, expected: &platform::PfRedirectConfig) -> bool {
-    platform::socket_proxy_files_current(
-        expected,
-        &paths.ports_config(),
-        Utf8Path::new(platform::SYSTEM_SOCKET_PROXY_DIRECTORY),
-    )
-}
-
-#[cfg(not(target_os = "linux"))]
-fn pf_files_current(paths: &PvPaths, expected: &platform::PfRedirectConfig) -> bool {
-    let prepared_anchor =
-        platform::inspect_pf_anchor_file(&paths.pf_anchor_config(), Some(expected));
-    let prepared_reference = platform::inspect_pf_conf_reference(
-        &paths.pf_conf_reference_config(),
-        Some(&platform::PfConfReference),
-    );
-    let system_anchor = platform::inspect_pf_anchor_file(
-        Utf8Path::new(platform::SYSTEM_PF_ANCHOR_PATH),
-        Some(expected),
-    );
-    let system_reference = platform::inspect_pf_conf_reference(
-        Utf8Path::new(platform::SYSTEM_PF_CONF_PATH),
-        Some(&platform::PfConfReference),
-    );
-
-    matches!(prepared_anchor, platform::PfFileState::Current { .. })
-        && matches!(prepared_reference, platform::PfFileState::Current { .. })
-        && matches!(system_anchor, platform::PfFileState::Current { .. })
-        && matches!(system_reference, platform::PfFileState::Current { .. })
-}
-
-fn gateway_readiness_check_for_ports(
-    plan: &RuntimePlan,
-    readiness_hostname: Option<String>,
-    ports: GatewayReadinessPorts,
-) -> ReadinessCheck {
-    match readiness_hostname {
-        Some(server_name) => ReadinessCheck::GatewayHttps {
-            http_host: "127.0.0.1".to_owned(),
-            http_port: ports.http,
-            https_host: "127.0.0.1".to_owned(),
-            https_port: ports.https,
-            server_name,
-            ca_certificate_path: plan.gateway.ca_certificate_path.clone(),
-        },
-        None => ReadinessCheck::Tcp {
-            host: "127.0.0.1".to_owned(),
-            port: ports.http,
-        },
-    }
-}
-
-fn gateway_public_readiness_check(
-    plan: &RuntimePlan,
-    ports: GatewayReadinessPorts,
-) -> ReadinessCheck {
-    gateway_identity_readiness_check(
-        plan.gateway.http_port,
-        plan.gateway.https_port,
-        ports.http,
-        ports.https,
-        &plan.gateway.ca_certificate_path,
-    )
-}
-
-fn gateway_identity_readiness_check(
-    expected_http_port: u16,
-    expected_https_port: u16,
-    probe_http_port: u16,
-    probe_https_port: u16,
     ca_certificate_path: &Utf8Path,
 ) -> ReadinessCheck {
     ReadinessCheck::GatewayIdentity {
         http_host: "127.0.0.1".to_owned(),
-        http_port: probe_http_port,
+        http_port,
         https_host: "127.0.0.1".to_owned(),
-        https_port: probe_https_port,
+        https_port,
         server_name: GATEWAY_HEALTH_HOSTNAME.to_owned(),
         path: HEALTH_PATH.to_owned(),
-        expected_body: gateway_health_response(expected_http_port, expected_https_port),
+        expected_body: gateway_health_response(http_port, https_port),
         ca_certificate_path: ca_certificate_path.to_path_buf(),
     }
 }
@@ -1505,12 +1120,6 @@ pub(crate) fn worker_readiness_check(port: u16) -> ReadinessCheck {
         path: HEALTH_PATH.to_owned(),
         expected_body: worker_health_response(port),
     }
-}
-
-fn gateway_readiness_hostname(fragments: &[ProjectConfigFragment]) -> Option<String> {
-    fragments
-        .first()
-        .map(|fragment| fragment.primary_hostname.clone())
 }
 
 pub async fn validate_config(
@@ -2617,27 +2226,6 @@ fn failed_worker_outside_target(
         }))
 }
 
-fn active_gateway_readiness_hostname<'a>(
-    paths: &PvPaths,
-    fragment_file_names: impl IntoIterator<Item = &'a String>,
-) -> Result<Option<String>, DaemonError> {
-    let database = Database::open(paths)?;
-
-    for file_name in fragment_file_names {
-        let Some(project_id) = file_name.strip_suffix(".Caddyfile") else {
-            continue;
-        };
-        if let Some(hostname) = database
-            .project_by_id(project_id)?
-            .and_then(|project| project.primary_hostname)
-        {
-            return Ok(Some(hostname));
-        }
-    }
-
-    Ok(None)
-}
-
 fn active_worker_plan(
     paths: &PvPaths,
     runtime_key: &str,
@@ -3155,7 +2743,6 @@ struct DesiredRuntimeConfigTree {
 
 struct DesiredGatewayConfig {
     tree: DesiredRuntimeConfigTree,
-    readiness_hostname: Option<String>,
 }
 
 fn desired_gateway_config(
@@ -3168,7 +2755,6 @@ fn desired_gateway_config(
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let mut fragments = gateway_project_config_fragments(paths, &routes, preserved_fragments)?;
     enforce_project_bind_policy(&mut fragments);
-    let readiness_hostname = gateway_readiness_hostname(&fragments);
     let import_project_configs = !fragments.is_empty();
     let mut config_input = GatewayConfigInput {
         http_port: plan.gateway.http_port,
@@ -3196,7 +2782,6 @@ fn desired_gateway_config(
             fragments,
             fingerprint,
         },
-        readiness_hostname,
     })
 }
 
@@ -3417,14 +3002,14 @@ async fn reconcile_unchanged_runtime(
     config_path: &Utf8Path,
     readiness: &RuntimeReadinessPlan,
     desired: &DesiredRuntimeConfigTree,
-) -> Result<Option<RuntimeReadinessOutcome>, DaemonError> {
+) -> Result<bool, DaemonError> {
     let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
-        return Ok(None);
+        return Ok(false);
     };
     if runtime.replacement_required()
         || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
     {
-        return Ok(None);
+        return Ok(false);
     }
 
     if !matches!(
@@ -3435,7 +3020,7 @@ async fn reconcile_unchanged_runtime(
         .await,
         Ok(Ok(()))
     ) {
-        return Ok(None);
+        return Ok(false);
     }
 
     if matches!(
@@ -3444,16 +3029,16 @@ async fn reconcile_unchanged_runtime(
     ) {
         harden_generated_runtime_config(config_path, desired)?;
     } else if restore_generated_runtime_config(config_path, desired).is_err() {
-        return Ok(None);
+        return Ok(false);
     }
 
     let Ok(Some(runtime)) = supervisor.verify_ownership(spec) else {
-        return Ok(None);
+        return Ok(false);
     };
     if runtime.replacement_required()
         || runtime.applied_config_fingerprint() != Some(desired.fingerprint.as_str())
     {
-        return Ok(None);
+        return Ok(false);
     }
 
     if !runtime.has_applied_desired_config()
@@ -3462,10 +3047,10 @@ async fn reconcile_unchanged_runtime(
             Ok(true)
         )
     {
-        return Ok(None);
+        return Ok(false);
     }
 
-    Ok(Some(RuntimeReadinessOutcome::Verified))
+    Ok(true)
 }
 
 struct PendingPromotedRuntime {
@@ -3492,7 +3077,7 @@ struct CompletedPromotedRuntime {
     spec: ProcessSpec,
     subject: RuntimeSubject,
     origin: PromotedRuntimeOrigin,
-    result: Result<RuntimeReadinessOutcome, RuntimeTransactionError>,
+    result: Result<(), RuntimeTransactionError>,
 }
 
 struct PromotedRuntimeRecovery {
@@ -3614,9 +3199,7 @@ async fn prepare_promoted_runtime(
     Ok(pending)
 }
 
-fn finish_promoted_runtime(
-    completed: CompletedPromotedRuntime,
-) -> Result<RuntimeReadinessOutcome, DaemonError> {
+fn finish_promoted_runtime(completed: CompletedPromotedRuntime) -> Result<(), DaemonError> {
     let CompletedPromotedRuntime {
         paths,
         promoted_config,
@@ -3626,7 +3209,7 @@ fn finish_promoted_runtime(
         result,
     } = completed;
     match result {
-        Ok(outcome) => {
+        Ok(()) => {
             if let Err(error) = promoted_config.cleanup() {
                 structured_log::runtime_config_cleanup_failed(
                     &paths,
@@ -3634,7 +3217,7 @@ fn finish_promoted_runtime(
                     &error.to_string(),
                 );
             }
-            Ok(outcome)
+            Ok(())
         }
         Err(error) => {
             let previous_fingerprint = match origin {
@@ -3832,42 +3415,26 @@ async fn finish_runtime_transaction(
     readiness: &RuntimeReadinessPlan,
     desired_fingerprint: &str,
     started: StartedRuntimeTransaction,
-) -> Result<RuntimeReadinessOutcome, RuntimeTransactionError> {
+) -> Result<(), RuntimeTransactionError> {
     let RuntimeReadinessPlan {
         check,
-        failure_policy,
         budget,
         admin_endpoint,
         preserve_staged_config,
     } = readiness;
     let preserve_staged_config = *preserve_staged_config;
     let StartedRuntimeTransaction::Fresh(process) = started else {
-        // The pf budget is shorter than a reload's and still applies.
+        // A start budget shorter than a reload's still applies.
         let reload_budget = if budget.duration() < RUNTIME_RELOAD_READINESS_TIMEOUT.duration() {
             budget
         } else {
             &RUNTIME_RELOAD_READINESS_TIMEOUT
         };
-        let client = CaddyAdminClient::new();
         let readiness_result = wait_for_owned_readiness(check.clone(), reload_budget, || {
             verify_runtime_ownership(supervisor, spec)
         })
         .await;
         if let Err(error) = readiness_result {
-            if *failure_policy == ReadinessFailurePolicy::PreserveRuntime
-                && supervisor
-                    .verify_ownership(spec)
-                    .map_err(RuntimeTransactionError::pending_preserve)?
-                    .is_some()
-                && client
-                    .wait_until_ready(admin_endpoint, reload_budget)
-                    .await
-                    .is_ok()
-            {
-                record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
-                return Ok(RuntimeReadinessOutcome::Unverified);
-            }
-
             // Caddy accepted the config, so keep it. The marker stays set, and the next
             // reconciliation replaces this runtime instead of loading it again.
             return Err(RuntimeTransactionError::pending_preserve(error));
@@ -3876,7 +3443,7 @@ async fn finish_runtime_transaction(
             .map_err(RuntimeTransactionError::pending_preserve)?;
         record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
 
-        return Ok(RuntimeReadinessOutcome::Verified);
+        return Ok(());
     };
     let mut process = *process;
     // A separate wait from the readiness wait below, with the same budget.
@@ -3918,42 +3485,6 @@ async fn finish_runtime_transaction(
     .await;
     if let Err(error) = service_result {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        if *failure_policy == ReadinessFailurePolicy::PreserveRuntime {
-            let process_exited = match process.has_exited() {
-                Ok(process_exited) => process_exited,
-                Err(error) => {
-                    return Err(cleanup_fresh_runtime(
-                        supervisor,
-                        spec,
-                        process,
-                        desired_fingerprint,
-                        preserve_staged_config,
-                        error,
-                    )
-                    .await);
-                }
-            };
-            if !process_exited {
-                match supervisor.verify_ownership(spec) {
-                    Ok(Some(_runtime)) => {
-                        record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
-                        return Ok(RuntimeReadinessOutcome::Unverified);
-                    }
-                    Ok(None) => {}
-                    Err(error) => {
-                        return Err(cleanup_fresh_runtime(
-                            supervisor,
-                            spec,
-                            process,
-                            desired_fingerprint,
-                            preserve_staged_config,
-                            error,
-                        )
-                        .await);
-                    }
-                }
-            }
-        }
         return Err(cleanup_fresh_runtime(
             supervisor,
             spec,
@@ -3993,7 +3524,7 @@ async fn finish_runtime_transaction(
     }
     record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
 
-    Ok(RuntimeReadinessOutcome::Verified)
+    Ok(())
 }
 
 fn record_applied_runtime_config(
@@ -4187,18 +3718,6 @@ where
         timeout_ms: budget.duration().as_millis(),
         last_error,
     })
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum ReadinessFailurePolicy {
-    FailRuntime,
-    PreserveRuntime,
-}
-
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-enum RuntimeReadinessOutcome {
-    Verified,
-    Unverified,
 }
 
 async fn foreign_listener_is_ready(readiness: &ReadinessCheck) -> bool {
@@ -4848,31 +4367,13 @@ fn record_primary_error(
     }
 }
 
-fn record_gateway_runtime_observed(
-    paths: &PvPaths,
-    pf_routing_state: GatewayPfRoutingState,
-    readiness_outcome: RuntimeReadinessOutcome,
-) -> Result<(), DaemonError> {
-    let (status, message) = match (pf_routing_state, readiness_outcome) {
-        (GatewayPfRoutingState::Active, _)
-        | (GatewayPfRoutingState::Unknown, RuntimeReadinessOutcome::Verified) => {
-            (RuntimeObservedStatus::Running, GATEWAY_RUNTIME_RECONCILED)
-        }
-        (GatewayPfRoutingState::Inactive, _) => (
-            RuntimeObservedStatus::Degraded,
-            "Low-port routing is inactive; run `pv ports:install` to restore ports 80 and 443",
-        ),
-        (GatewayPfRoutingState::Drifted, _) => (
-            RuntimeObservedStatus::Degraded,
-            "Low-port routing is drifted; run `pv ports:install` to restore ports 80 and 443",
-        ),
-        (GatewayPfRoutingState::Unknown, RuntimeReadinessOutcome::Unverified) => (
-            RuntimeObservedStatus::Degraded,
-            "Low-port routing is unknown; run `pv ports:install` to verify ports 80 and 443",
-        ),
-    };
-
-    record_runtime_observed(paths, RuntimeSubject::Gateway, status, Some(message))
+fn record_gateway_runtime_observed(paths: &PvPaths) -> Result<(), DaemonError> {
+    record_runtime_observed(
+        paths,
+        RuntimeSubject::Gateway,
+        RuntimeObservedStatus::Running,
+        Some(GATEWAY_RUNTIME_RECONCILED),
+    )
 }
 
 fn record_runtime_observed(
@@ -4939,10 +4440,9 @@ fn worker_config_private_environment(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
     #[cfg(unix)]
     use std::process::Stdio;
-    use std::sync::mpsc;
     use std::time::Duration;
 
     use anyhow::Result;
@@ -4951,19 +4451,13 @@ mod tests {
     use insta::assert_debug_snapshot;
     #[cfg(unix)]
     use platform::clock::real;
-    use platform::{ActivePfRedirectInspection, PfRedirectConfig};
     use state::{Database, LinkProjectInput, PvPaths};
 
-    use crate::gateway_config::GatewayProjectRoute;
-    use crate::{DaemonError, ReadinessCheck};
+    use crate::DaemonError;
 
     use super::{
-        GatewayPfRoutingState, GatewayReadinessPorts, GatewayRuntimePlan,
-        PF_PUBLIC_READINESS_TIMEOUT, PhpWorkerRuntimePlan, ReadinessFailurePolicy, RuntimePlan,
-        RuntimeProject, build_target_runtime_plan, classify_gateway_pf_routing_state,
+        PhpWorkerRuntimePlan, RuntimeProject, build_target_runtime_plan,
         combined_runtime_reconciliation_error, desired_worker_config, enforce_project_bind_policy,
-        gateway_project_config_fragments, gateway_readiness_hostname, gateway_readiness_plan,
-        gateway_readiness_ports, project_config_file_name, spawn_gateway_pf_inspection,
     };
     #[cfg(unix)]
     use super::{
@@ -5042,29 +4536,6 @@ mod tests {
         Ok(())
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn pf_inspection_does_not_block_the_async_executor() -> Result<()> {
-        let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
-        let (release_sender, release_receiver) = mpsc::channel();
-        let (result_sender, result_receiver) = tokio::sync::oneshot::channel();
-        let inspection = tokio::spawn(spawn_gateway_pf_inspection(move || {
-            let _result = started_sender.send(());
-            let result = release_receiver.recv_timeout(Duration::from_secs(5));
-            let _result = result_sender.send(result);
-
-            GatewayPfRoutingState::Inactive
-        }));
-
-        started_receiver.await?;
-        tokio::task::yield_now().await;
-        release_sender.send(())?;
-
-        assert_eq!(inspection.await??, GatewayPfRoutingState::Inactive);
-        result_receiver.await??;
-
-        Ok(())
-    }
-
     #[test]
     fn targeted_runtime_plan_returns_config_error_for_invalid_project() -> Result<()> {
         let tempdir = tempdir()?;
@@ -5088,193 +4559,6 @@ mod tests {
             build_target_runtime_plan(&paths, &project.id),
             Err(crate::DaemonError::Config(_))
         ));
-
-        Ok(())
-    }
-
-    #[test]
-    fn gateway_readiness_uses_public_ports_for_active_drifted_and_unknown_pf() {
-        let plan = runtime_plan();
-
-        for state in [
-            GatewayPfRoutingState::Active,
-            GatewayPfRoutingState::Drifted,
-            GatewayPfRoutingState::Unknown,
-        ] {
-            assert_eq!(
-                gateway_readiness_ports(&plan, state),
-                GatewayReadinessPorts {
-                    http: 80,
-                    https: 443,
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn gateway_readiness_uses_backend_ports_only_when_pf_is_inactive() {
-        let plan = runtime_plan();
-
-        assert_eq!(
-            gateway_readiness_ports(&plan, GatewayPfRoutingState::Inactive),
-            GatewayReadinessPorts {
-                http: plan.gateway.http_port,
-                https: plan.gateway.https_port,
-            }
-        );
-    }
-
-    #[test]
-    fn confirmed_inactive_evidence_selects_backend_readiness() {
-        let plan = runtime_plan();
-        let expected = PfRedirectConfig::new(plan.gateway.http_port, plan.gateway.https_port);
-        let inspection = pf_inspection(None, BTreeSet::new());
-        let state = classify_gateway_pf_routing_state(&expected, Some(&inspection), true);
-        let readiness = gateway_readiness_plan(&plan, None, state);
-
-        assert_eq!(state, GatewayPfRoutingState::Inactive);
-        assert_eq!(
-            readiness.check,
-            ReadinessCheck::Tcp {
-                host: "127.0.0.1".to_string(),
-                port: plan.gateway.http_port,
-            }
-        );
-    }
-
-    #[test]
-    fn matching_loaded_state_requires_current_files_and_linux_identity_probes() {
-        let expected = PfRedirectConfig::new(45080, 45443);
-        let inspection = pf_inspection(Some(expected.clone()), BTreeSet::new());
-
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
-            if cfg!(target_os = "linux") {
-                GatewayPfRoutingState::Unknown
-            } else {
-                GatewayPfRoutingState::Active
-            }
-        );
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, Some(&inspection), false),
-            GatewayPfRoutingState::Drifted
-        );
-    }
-
-    #[test]
-    fn redirects_targeting_backend_ports_are_drifted_not_inactive() {
-        let expected = PfRedirectConfig::new(45080, 45443);
-        let inspection = pf_inspection(None, BTreeSet::from([45080]));
-
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
-            GatewayPfRoutingState::Drifted
-        );
-    }
-
-    #[test]
-    fn unresolved_redirect_targets_are_drifted_not_inactive() {
-        let expected = PfRedirectConfig::new(45080, 45443);
-        let mut inspection = pf_inspection(None, BTreeSet::new());
-        inspection.has_unresolved_redirect_targets = true;
-
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, Some(&inspection), true),
-            GatewayPfRoutingState::Drifted
-        );
-    }
-
-    #[test]
-    fn disabled_pf_and_partial_pv_rules_are_drifted() {
-        let expected = PfRedirectConfig::new(45080, 45443);
-        let mut disabled = pf_inspection(Some(expected.clone()), BTreeSet::from([45080, 45443]));
-        disabled.pf_enabled = false;
-        let mut partial = pf_inspection(None, BTreeSet::from([44080]));
-        partial.pv_anchor_has_unparsed_rules = true;
-
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, Some(&disabled), true),
-            GatewayPfRoutingState::Drifted
-        );
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, Some(&partial), true),
-            GatewayPfRoutingState::Drifted
-        );
-    }
-
-    #[test]
-    fn unavailable_rule_inspection_uses_bounded_advisory_public_readiness() {
-        let plan = runtime_plan();
-
-        let readiness = gateway_readiness_plan(
-            &plan,
-            Some("project.test".to_string()),
-            GatewayPfRoutingState::Unknown,
-        );
-
-        assert_eq!(
-            readiness.failure_policy,
-            ReadinessFailurePolicy::PreserveRuntime
-        );
-        assert_eq!(readiness.budget, PF_PUBLIC_READINESS_TIMEOUT);
-        assert_eq!(
-            readiness.check,
-            ReadinessCheck::GatewayIdentity {
-                http_host: "127.0.0.1".to_string(),
-                http_port: 80,
-                https_host: "127.0.0.1".to_string(),
-                https_port: 443,
-                server_name: "pv-gateway.localhost".to_string(),
-                path: "/__pv/health".to_string(),
-                expected_body: "pv-gateway-health-v1:45080:45443".to_string(),
-                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
-            }
-        );
-    }
-
-    #[test]
-    fn unavailable_rule_inspection_is_unknown_only_when_files_are_current() {
-        let expected = PfRedirectConfig::new(45080, 45443);
-
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, None, true),
-            GatewayPfRoutingState::Unknown
-        );
-        assert_eq!(
-            classify_gateway_pf_routing_state(&expected, None, false),
-            GatewayPfRoutingState::Drifted
-        );
-    }
-
-    #[test]
-    fn gateway_readiness_hostname_uses_imported_project_fragments() -> Result<()> {
-        let tempdir = tempdir()?;
-        let paths = PvPaths::for_home(tempdir.path().join("home"));
-        let project_id = "project-1";
-        let preserved_content = "preserved.test {\n    respond 200\n}\n";
-        let fragment_path = paths
-            .gateway_projects_config_dir()
-            .join(project_config_file_name(project_id));
-        state::fs::write_sensitive_file(&fragment_path, preserved_content)?;
-
-        let fragments = gateway_project_config_fragments(
-            &paths,
-            &[GatewayProjectRoute {
-                id: project_id.to_owned(),
-                render_config: false,
-                primary_hostname: "preserved.test".to_owned(),
-                worker_port: 8123,
-                access_log_path: paths.gateway_access_log(),
-            }],
-            None,
-        )?;
-
-        assert_eq!(fragments.len(), 1);
-        assert_eq!(fragments[0].content, preserved_content);
-        assert_eq!(
-            gateway_readiness_hostname(&fragments).as_deref(),
-            Some("preserved.test")
-        );
 
         Ok(())
     }
@@ -5343,32 +4627,5 @@ mod tests {
             previous
         );
         Ok(())
-    }
-
-    fn runtime_plan() -> RuntimePlan {
-        RuntimePlan {
-            gateway: GatewayRuntimePlan {
-                http_port: 45080,
-                https_port: 45443,
-                admin_socket_path: Utf8PathBuf::from("/tmp/pv-gateway-admin.sock"),
-                ca_certificate_path: Utf8PathBuf::from("/tmp/pv-missing-ca.pem"),
-                ca_private_key_path: Utf8PathBuf::from("/tmp/pv-missing-ca-key.pem"),
-                storage_path: Utf8PathBuf::from("/tmp/pv-gateway-storage"),
-            },
-            workers: Vec::new(),
-        }
-    }
-
-    fn pf_inspection(
-        pv_config: Option<PfRedirectConfig>,
-        resolved_target_ports: BTreeSet<u16>,
-    ) -> ActivePfRedirectInspection {
-        ActivePfRedirectInspection {
-            pf_enabled: true,
-            pv_config,
-            pv_anchor_has_unparsed_rules: false,
-            resolved_target_ports,
-            has_unresolved_redirect_targets: false,
-        }
     }
 }

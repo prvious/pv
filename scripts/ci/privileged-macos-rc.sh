@@ -70,6 +70,29 @@ pv_pf_rules_absent() {
   return 0
 }
 
+# This is probably temporary. We should remember to remove it on the next release.
+# Leaves the pf redirect a PV release before launchd sockets installed: its anchor, and its lines
+# in /etc/pf.conf, loaded.
+seed_legacy_pf() {
+  local seeded="$PV_RC_EVIDENCE_DIR/pf.conf.seeded"
+  printf '%s\n' '# Managed by PV' \
+    'rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080' \
+    'rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443' |
+    sudo tee /etc/pf.anchors/com.prvious.pv > /dev/null || return 1
+  awk '{ print }
+    /^rdr-anchor "com\.apple\/\*"/ {
+      print "# Managed by PV"
+      print "# Source: PV prepared pf.conf reference for /etc/pf.conf"
+      print "rdr-anchor \"com.prvious.pv\""
+    }
+    END { print "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"" }' \
+    /etc/pf.conf > "$seeded" || return 1
+  grep -Fxq 'rdr-anchor "com.prvious.pv"' "$seeded" || return 1
+  sudo install -m 0644 "$seeded" /etc/pf.conf || return 1
+  sudo pfctl -f /etc/pf.conf || return 1
+  sudo pfctl -s nat | grep -Fq 'com.prvious.pv'
+}
+
 pv_ca_trust_removed() {
   "$PV_RC_BIN" ca:status | grep -F "System keychain trust: not trusted"
 }
@@ -257,7 +280,7 @@ cat > "$PV_RC_EVIDENCE_DIR/checklist.txt" <<'CHECKLIST'
 Privileged macOS RC evidence checklist:
 - candidate install.sh downloaded and used to install PV
 - /etc/resolver/test installed and removed
-- pf redirect rules installed and removed
+- an older PV's pf redirect removed by setup
 - System keychain CA trust installed and removed
 - root helper executable, launchd registration, metadata, and socket installed and removed
 - root helper replacement transaction completed and cleaned its temporary files
@@ -268,7 +291,13 @@ Privileged macOS RC evidence checklist:
 - Update check and diagnostics executed
 CHECKLIST
 
+# This is probably temporary. We should remember to remove it on the next release.
+record_status legacy-pf-seed required seed_legacy_pf
 record_status setup required pv setup --yes --no-path
+# This is probably temporary. We should remember to remove it on the next release.
+record_status legacy-pf-removed-by-setup required pv_pf_rules_absent
+# This is probably temporary. We should remember to remove it on the next release.
+record_status legacy-pf-anchor-removed-by-setup required test ! -e /etc/pf.anchors/com.prvious.pv
 record_status helper-executable required sudo test -x /Library/PrivilegedHelperTools/com.prvious.pv.helper
 collect_file helper-launch-daemon /Library/LaunchDaemons/com.prvious.pv.helper.plist
 collect_file helper-metadata "/Library/Application Support/PV/helper.json"
@@ -283,16 +312,9 @@ collect_file helper-stderr-log /var/log/com.prvious.pv.helper.err.log
 collect_file gateway-caddyfile "$HOME/.pv/config/gateway/Caddyfile"
 collect_file gateway-runtime-pid "$HOME/.pv/run/gateway.pid"
 collect_file gateway-runtime-metadata "$HOME/.pv/run/gateway.json"
-record_status gateway-listeners evidence lsof -nP -iTCP:48080 -sTCP:LISTEN
-record_status gateway-loopback-nc evidence nc -vz -G 2 127.0.0.1 48080
-record_status gateway-loopback-http evidence curl --show-error --silent --max-time 5 --write-out '\nhttp_code:%{http_code}\n' http://127.0.0.1:48080/
 
 collect_file resolver-system /etc/resolver/test
 record_status resolver-status required pv dns:status
-record_status pf-rules evidence sudo pfctl -sr
-record_status pf-nat-rules evidence sudo pfctl -s nat
-collect_file pf-anchor /etc/pf.anchors/com.prvious.pv
-record_status ports-status required pv ports:status
 record_status ca-status required pv ca:status
 record_status ca-verify evidence security verify-cert -c "$HOME/.pv/certificates/ca.pem" -p ssl -L
 collect_file launch-agent-plist "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
@@ -319,7 +341,6 @@ record_status diagnostics required pv doctor
 record_status jobs evidence pv jobs
 record_status logs evidence pv logs --all
 
-record_status helper-interrupted-work-seed required sudo touch "/Library/Application Support/PV/pv-pf-conf-interrupted-uninstall"
 record_status uninstall required pv uninstall
 collect_file resolver-after-uninstall /etc/resolver/test
 record_status resolver-removed required test ! -e /etc/resolver/test

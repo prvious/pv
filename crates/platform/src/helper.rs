@@ -24,8 +24,7 @@ use sha2::{Digest, Sha256};
 #[cfg(target_os = "macos")]
 use crate::clock::{self, Deadline, Limit};
 use crate::{
-    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection, PfRedirectConfig,
-    PlatformError, ResolverConfig, ResolverFileState,
+    KeychainCertificate, LowPortInspection, PlatformError, ResolverConfig, ResolverFileState,
 };
 
 pub const HELPER_PROTOCOL_VERSION: u32 = 3;
@@ -172,8 +171,7 @@ enum HelperOperation {
     DnsApply { port: u16 },
     DnsRemove,
     LowPortInspect,
-    PfInspect,
-    PfApply { http_port: u16, https_port: u16 },
+    // This is probably temporary. We should remember to remove it on the next release.
     PfRemove,
     CaInspect,
     CaApply { fingerprint: String },
@@ -221,7 +219,6 @@ enum HelperPayload {
     Status(PrivilegedHelperStatus),
     ResolverState(ResolverFileState),
     LowPorts(LowPortInspection),
-    PfInspection(ActivePfRedirectInspection),
     CaCertificates(Vec<KeychainCertificate>),
 }
 
@@ -268,21 +265,9 @@ impl PrivilegedHelperClient {
         }
     }
 
-    pub fn inspect_pf(&self) -> Result<ActivePfRedirectInspection, PlatformError> {
-        match self.call(HelperOperation::PfInspect)? {
-            HelperPayload::PfInspection(inspection) => Ok(inspection),
-            payload => Err(unexpected_payload("PF inspection", &payload)),
-        }
-    }
-
-    pub fn apply_pf(&self, config: &PfRedirectConfig) -> Result<(), PlatformError> {
-        expect_empty(self.call(HelperOperation::PfApply {
-            http_port: config.http_port,
-            https_port: config.https_port,
-        })?)
-    }
-
-    pub fn remove_pf(&self) -> Result<(), PlatformError> {
+    // This is probably temporary. We should remember to remove it on the next release.
+    /// macOS: removes the pf port redirect an older PV installed.
+    pub fn remove_legacy_pf(&self) -> Result<(), PlatformError> {
         expect_empty(self.call(HelperOperation::PfRemove)?)
     }
 
@@ -1242,12 +1227,6 @@ fn call_helper(
             HelperOperation::DnsInspect { .. } => {
                 crate::resolver::DNS_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
             }
-            HelperOperation::PfApply { .. } | HelperOperation::PfRemove => {
-                crate::pf::PORT_PROXY_MUTATION_TIMEOUT + HELPER_IO_TIMEOUT
-            }
-            HelperOperation::PfInspect => {
-                crate::pf::PORT_PROXY_INSPECTION_TIMEOUT + HELPER_IO_TIMEOUT
-            }
             HelperOperation::CaApply { .. } | HelperOperation::CaRemove { .. } => {
                 crate::trust::linux::COMMAND_TIMEOUT + HELPER_IO_TIMEOUT
             }
@@ -1261,18 +1240,6 @@ fn call_helper(
     };
     write_message(&mut stream, &request)?;
     let response: Result<HelperResponse, PlatformError> = read_message(&mut stream);
-    #[cfg(target_os = "linux")]
-    let response = response.map_err(|source| match request.operation {
-        HelperOperation::PfApply { .. } => PlatformError::PortProxyMutation {
-            operation: "apply",
-            source: Box::new(source),
-        },
-        HelperOperation::PfRemove => PlatformError::PortProxyMutation {
-            operation: "remove",
-            source: Box::new(source),
-        },
-        _ => source,
-    });
     let response = response?;
 
     if response.protocol_version != HELPER_PROTOCOL_VERSION {
@@ -1689,40 +1656,10 @@ fn dispatch_request(
         HelperOperation::LowPortInspect => Ok(HelperPayload::LowPorts(
             crate::low_port::inspect_loopback_ports(&[80, 443])?,
         )),
-        #[cfg(any(target_os = "macos", target_os = "linux"))]
-        HelperOperation::PfInspect => Ok(HelperPayload::PfInspection(
-            crate::pf::inspect_active_pf_redirects_privileged()?,
-        )),
-        #[cfg(target_os = "macos")]
-        HelperOperation::PfApply {
-            http_port,
-            https_port,
-        } => {
-            validate_high_port("Gateway HTTP", http_port)?;
-            validate_high_port("Gateway HTTPS", https_port)?;
-            if http_port == https_port {
-                return Err(PlatformError::PrivilegedHelperRejected {
-                    message: "Gateway HTTP and HTTPS ports must be different".to_string(),
-                });
-            }
-            let inspection = crate::low_port::inspect_loopback_ports(&[80, 443])?;
-            let conflicts = inspection
-                .ports
-                .iter()
-                .filter(|port| !port.available)
-                .map(crate::LowPortState::conflict_message)
-                .collect::<Vec<_>>();
-            if !conflicts.is_empty() {
-                return Err(PlatformError::SystemIntegration(conflicts.join(" ")));
-            }
-            crate::pf::apply_pf_redirects_privileged(&PfRedirectConfig::new(
-                http_port, https_port,
-            ))?;
-            Ok(HelperPayload::Empty)
-        }
+        // This is probably temporary. We should remember to remove it on the next release.
         #[cfg(target_os = "macos")]
         HelperOperation::PfRemove => {
-            crate::pf::remove_pf_redirects_privileged()?;
+            crate::legacy_pf::remove_legacy_pf_privileged()?;
             Ok(HelperPayload::Empty)
         }
         #[cfg(target_os = "macos")]
@@ -1777,21 +1714,12 @@ fn dispatch_request(
             crate::trust::untrust_system_ca_privileged(&fingerprint)?;
             Ok(HelperPayload::Empty)
         }
+        // This is probably temporary. We should remember to remove it on the next release.
         #[cfg(target_os = "linux")]
-        HelperOperation::PfApply {
-            http_port,
-            https_port,
-        } => {
-            crate::pf::apply_pf_redirects_privileged(&PfRedirectConfig::new(
-                http_port, https_port,
-            ))?;
-            Ok(HelperPayload::Empty)
-        }
-        #[cfg(target_os = "linux")]
-        HelperOperation::PfRemove => {
-            crate::pf::remove_pf_redirects_privileged()?;
-            Ok(HelperPayload::Empty)
-        }
+        HelperOperation::PfRemove => Err(PlatformError::Unsupported {
+            capability: crate::PlatformCapability::LowPortFrontend,
+            target: crate::PlatformTarget::Linux,
+        }),
         #[cfg(target_os = "linux")]
         HelperOperation::CaInspect => Ok(HelperPayload::CaCertificates(
             crate::trust::linux::trusted_certificates()?,
@@ -2039,8 +1967,6 @@ fn helper_error_code(error: &PlatformError) -> HelperErrorCode {
         PlatformError::PrivilegedHelperAuthentication(_) => HelperErrorCode::AuthenticationFailed,
         PlatformError::PrivilegedHelperProtocolMismatch { .. } => HelperErrorCode::ProtocolMismatch,
         PlatformError::PrivilegedHelperRejected { .. } => HelperErrorCode::InvalidRequest,
-        #[cfg(target_os = "linux")]
-        PlatformError::PortProxyMutation { .. } => HelperErrorCode::SystemIntegrationFailed,
         PlatformError::SystemIntegration(_)
         | PlatformError::Unsupported { .. }
         | PlatformError::SystemIntegrationCommand { .. }
@@ -2355,7 +2281,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     #[ignore = "requires root and free loopback ports 80 and 443; run in every macOS CI lane"]
-    fn pf_apply_rejects_a_low_port_conflict_as_root() -> anyhow::Result<()> {
+    fn low_port_inspection_names_a_root_owned_listener_as_root() -> anyhow::Result<()> {
         if !rustix::process::geteuid().is_root() {
             return Err(anyhow!("run this test as root"));
         }
@@ -2367,7 +2293,6 @@ mod tests {
         for port in [80, 443] {
             let free = crate::low_port::inspect_loopback_ports(&[80, 443])?;
             assert!(free.ports.iter().all(|state| state.available));
-            let before = crate::pf::inspect_active_pf_redirects_unprivileged()?;
             let tempdir = tempdir()?;
             let fake = pv_fake::install_with_settings(
                 &tempdir.path().join("tcp-holder"),
@@ -2418,31 +2343,12 @@ mod tests {
                         .filter(|state| state.port != port)
                         .all(|state| state.available && state.owners.is_empty())
                 );
-                let result = dispatch_request(
-                    HelperRequest {
-                        protocol_version: HELPER_PROTOCOL_VERSION,
-                        operation: HelperOperation::PfApply {
-                            http_port: 48080,
-                            https_port: 48443,
-                        },
-                    },
-                    &metadata,
-                );
-                let Err(PlatformError::SystemIntegration(message)) = result else {
-                    return Err(anyhow!(
-                        "PfApply did not reject the held low port: {result:?}"
-                    ));
-                };
-                assert_eq!(message, held.conflict_message());
+                let message = held.conflict_message();
                 let mut settings = Settings::clone_current();
                 settings.add_filter(&format!(r"\b{pid}\b"), "<holder-pid>");
                 settings.bind(|| {
                     assert_debug_snapshot!(format!("root_port_{port}"), (inspection, message))
                 });
-                assert_eq!(
-                    crate::pf::inspect_active_pf_redirects_unprivileged()?,
-                    before
-                );
                 Ok(())
             })();
             let cleanup = holder.stop();

@@ -379,11 +379,6 @@ fn paths_are_derived_from_an_injected_home() -> Result<()> {
             "project_tls_private_key",
             paths.project_tls_private_key("project123").to_string(),
         ),
-        ("pf_anchor_config", paths.pf_anchor_config().to_string()),
-        (
-            "pf_conf_reference_config",
-            paths.pf_conf_reference_config().to_string(),
-        ),
         (
             "gateway_root_config",
             paths.gateway_root_config().to_string(),

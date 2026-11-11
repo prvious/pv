@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -13,7 +12,7 @@ use state::{
 };
 
 use crate::DaemonError;
-use crate::gateway::{persisted_gateway_is_ready, worker_readiness_check};
+use crate::gateway::{gateway_readiness_check, worker_readiness_check};
 use crate::hooks::DaemonHooks;
 use crate::managed_resources::{ManagedResourceReadiness, ManagedResourceRuntimeCatalog};
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
@@ -588,11 +587,12 @@ async fn inspect_runtime_probe(
                 http_port,
                 https_port,
             }) => {
-                gateway_readiness_probe_outcome(
-                    persisted_gateway_is_ready(&paths, http_port, https_port),
+                let check = gateway_readiness_check(http_port, https_port, &paths.ca_certificate());
+                readiness_probe_outcome(
+                    clock::timeout(&RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check))
+                        .await,
                     probe.error,
                 )
-                .await
             }
             Some(RuntimeReadinessProbe::Worker(check)) => readiness_probe_outcome(
                 clock::timeout(&RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
@@ -637,20 +637,6 @@ fn readiness_probe_outcome(
     }
 }
 
-/// Gateway readiness includes privileged PF inspection, which can legitimately take
-/// longer than the runtime readiness deadline because each `pfctl` command carries its
-/// own bound. The HTTP identity probe that follows PF inspection keeps its own timeout,
-/// so the aggregate Gateway future is not bounded here.
-async fn gateway_readiness_probe_outcome(
-    probe: impl Future<Output = Result<bool, DaemonError>>,
-    existing_error: Option<String>,
-) -> (bool, Option<String>) {
-    match probe.await {
-        Ok(healthy) => (healthy, existing_error),
-        Err(error) => (false, Some(error.to_string())),
-    }
-}
-
 fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
     if runtime_key.contains('+') {
         RuntimeSubject::PhpRuntimeWorker {
@@ -677,9 +663,9 @@ mod tests {
     #[cfg(unix)]
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
+    use platform::clock;
     #[cfg(unix)]
     use platform::clock::real;
-    use platform::clock::{self, Limit};
     #[cfg(unix)]
     use pv_fake::Persona;
     #[cfg(unix)]
@@ -696,7 +682,7 @@ mod tests {
         DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
         RUNTIME_HEALTH_PROBE_TIMEOUT, RUNTIME_RETRY_DELAYS, RuntimeHealthObservation,
         RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
-        gateway_readiness_probe_outcome, inspect_runtime_probe,
+        inspect_runtime_probe,
     };
     #[cfg(unix)]
     use super::{RUNTIME_RECOVERY_EXHAUSTED, RUNTIME_RECOVERY_RESTORED, scan_runtime_health};
@@ -1061,52 +1047,6 @@ mod tests {
             timeout_error.map(|timeout_error| timeout_error.error),
             Some("deadline has elapsed".to_owned())
         );
-
-        let (healthy, error) = gateway_readiness_probe_outcome(
-            async {
-                Err(crate::DaemonError::Io(io::Error::other(
-                    "gateway probe failed",
-                )))
-            },
-            None,
-        )
-        .await;
-        assert!(!healthy);
-        assert_eq!(error, Some("I/O error: gateway probe failed".to_owned()));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn gateway_pf_inspection_is_not_bounded_by_readiness_timeout() -> anyhow::Result<()> {
-        let clock = clock::install_fake_for_test();
-        let slow_inspection = Limit::new(
-            "slow pf inspection",
-            RUNTIME_HEALTH_PROBE_TIMEOUT.duration() + Duration::from_secs(1),
-        );
-        // Advancing past the slow inspection also passes the probe limit, had one been pending.
-        let ((healthy, error), ()) = tokio::try_join!(
-            async {
-                Ok::<_, anyhow::Error>(
-                    gateway_readiness_probe_outcome(
-                        async {
-                            clock::sleep(&slow_inspection).await;
-
-                            Ok(true)
-                        },
-                        None,
-                    )
-                    .await,
-                )
-            },
-            async {
-                clock.advance_when_waiting(&slow_inspection).await?;
-                Ok(())
-            },
-        )?;
-
-        assert!(healthy);
-        assert_eq!(error, None);
 
         Ok(())
     }

@@ -12,8 +12,6 @@ SYSTEM
 
 ROUTING
 ✓  DNS config               system resolver uses port 35353
-✓  Port redirect config     low-port routing is active
-   evidence: pfctl; expected: HTTP 48080, HTTPS 48443; active: HTTP 48080, HTTPS 48443; observed: <timestamp>
 ✓  Local CA trust           system trust matches fingerprint <fingerprint>
 
 DAEMON & JOBS
@@ -26,4 +24,4 @@ DAEMON & JOBS
 ✓  Artifact manifest cache  cached manifest is present
    path: <tempdir>/home/.pv/downloads/manifest.json
 
-✓  All 11 checks passed · 0 warnings · 0 failed
+✓  All 10 checks passed · 0 warnings · 0 failed

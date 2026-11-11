@@ -1,0 +1,10 @@
+---
+source: crates/platform/src/legacy_pf.rs
+expression: "commands.iter().map(|command|\ncommand.replace(tempdir.path().as_str(), \"<tempdir>\")).collect::<Vec<_>>()"
+---
+[
+    "/sbin/pfctl -nf <tempdir>/candidates/pf.conf.candidate",
+    "/usr/bin/install -m 0644 <tempdir>/candidates/pf.conf.candidate <tempdir>/etc/pf.conf",
+    "/bin/rm -f <tempdir>/etc/pf.anchors/com.prvious.pv",
+    "/sbin/pfctl -f <tempdir>/etc/pf.conf",
+]

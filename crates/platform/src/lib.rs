@@ -9,10 +9,12 @@ mod error;
 mod gateway_listeners;
 mod helper;
 pub mod hooks;
+// This is probably temporary. We should remember to remove it on the next release.
+#[cfg(any(target_os = "macos", test))]
+mod legacy_pf;
 #[cfg(target_os = "linux")]
 mod linux_host;
 mod low_port;
-mod pf;
 mod port;
 mod process;
 mod resolver;
@@ -59,18 +61,9 @@ pub use helper::{
 #[cfg(target_os = "linux")]
 pub use linux_host::{check_linux_resolved_stub, check_linux_setup_host};
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
-pub use pf::{
-    ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
-    SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH, active_pf_redirect_config,
-    inspect_active_pf_redirects_unprivileged, inspect_pf_anchor_file, inspect_pf_conf_reference,
-    install_pf_redirects, remove_pf_redirects,
-};
-#[cfg(target_os = "linux")]
-pub use pf::{
-    SYSTEM_SOCKET_PROXY_DIRECTORY, inspect_socket_proxy_unit, render_socket_proxy_units,
-    repairable_socket_proxy_ports, socket_proxy_files_current, socket_proxy_unit_names,
-    socket_proxy_units_absent,
-};
+// This is probably temporary. We should remember to remove it on the next release.
+#[cfg(target_os = "macos")]
+pub use legacy_pf::legacy_pf_present;
 pub use port::loopback_tcp_port_available;
 pub use process::{
     BootSessionId, ProcessEvents, ProcessExitWatch, ProcessIdentity, ProcessStartIdentity,

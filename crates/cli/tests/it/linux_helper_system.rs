@@ -2,8 +2,6 @@
 
 mod dns_system;
 
-mod ports_system;
-
 mod unprivileged_ports_system;
 
 use platform::clock::{self, real};

@@ -16,7 +16,6 @@ mod logs;
 mod mailpit;
 mod mysql;
 mod php;
-mod ports;
 mod postgres;
 mod presentation;
 mod project_env;

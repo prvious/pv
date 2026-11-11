@@ -75,6 +75,8 @@ pub(crate) fn run_managed_resource_continuation(
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
     validate_active_release(&layout, &current_version)?;
+    // This is probably temporary. We should remember to remove it on the next release.
+    super::setup::remove_legacy_pf_or_warn(environment, streams)?;
 
     run_managed_resource_update_phase(paths, streams)
 }

@@ -17,7 +17,6 @@ use crate::helper_release::HelperReleaseMetadata;
 use crate::output::{Line, Mark, Output, Streams, Tone};
 
 use super::linux_distribution::LinuxDistribution;
-use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
     args: DoctorArgs,
@@ -74,7 +73,6 @@ impl DoctorReport {
                 title: "Routing",
                 checks: vec![
                     dns_check(environment, &paths)?,
-                    ports_check(environment, &paths, database.as_ref())?,
                     ca_check(environment, &paths),
                 ],
             },
@@ -308,8 +306,6 @@ struct DoctorCheck {
     message: String,
     detail: Option<String>,
     repair: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    routing: Option<PfRoutingDiagnostic>,
 }
 
 impl DoctorCheck {
@@ -320,7 +316,6 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: None,
-            routing: None,
         }
     }
 
@@ -331,7 +326,6 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: repair.map(str::to_owned),
-            routing: None,
         }
     }
 
@@ -342,17 +336,11 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: Some(repair.into()),
-            routing: None,
         }
     }
 
     fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
-        self
-    }
-
-    fn with_routing(mut self, routing: PfRoutingDiagnostic) -> Self {
-        self.routing = Some(routing);
         self
     }
 }
@@ -547,40 +535,6 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
         return Ok(DoctorCheck::warn("DNS config", error.to_string(), None));
     }
     Ok(check)
-}
-
-fn ports_check(
-    environment: &impl Environment,
-    paths: &PvPaths,
-    database: Option<&Database>,
-) -> Result<DoctorCheck, ExecuteError> {
-    let routing = PfRoutingDiagnostic::read(environment, paths, database)?;
-    let message = match routing.state {
-        PfRoutingState::Active => "low-port routing is active",
-        PfRoutingState::Inactive => "low-port redirects are inactive",
-        PfRoutingState::Drifted => "low-port routing has drifted",
-        PfRoutingState::Unknown => "low-port routing could not be verified",
-    };
-    let detail = format!(
-        "evidence: {}; expected: HTTP {}, HTTPS {}; active: HTTP {}, HTTPS {}; observed: {}",
-        routing.evidence.as_str(),
-        display_port(routing.expected_http_port),
-        display_port(routing.expected_https_port),
-        display_port(routing.active_http_port),
-        display_port(routing.active_https_port),
-        routing.observed_at,
-    );
-    let check = if routing.is_active() {
-        DoctorCheck::pass("Port redirect config", message)
-    } else {
-        DoctorCheck::fail("Port redirect config", message, "pv ports:install")
-    };
-
-    Ok(check.with_detail(detail).with_routing(routing))
-}
-
-fn display_port(port: Option<u16>) -> String {
-    port.map_or_else(|| "-".to_owned(), |port| port.to_string())
 }
 
 fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {

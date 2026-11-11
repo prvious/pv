@@ -1,6 +1,5 @@
 #![cfg(target_os = "macos")]
 
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, Write as _};
 use std::os::unix::net::UnixListener;
@@ -15,9 +14,8 @@ use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
-    ActivePfRedirectInspection, DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION,
-    KeychainCertificate, KeychainTrustResult, PRIVILEGED_HELPER_VERSION, PfConfReference,
-    PfRedirectConfig, PrivilegedHelperStatus, ResolverConfig,
+    DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
+    PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig,
 };
 use state::{
     Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PvPaths,
@@ -30,9 +28,6 @@ struct TestEnvironment {
     current_dir: PathBuf,
     daemon_registration_path: PathBuf,
     resolver_path: PathBuf,
-    pf_anchor_path: PathBuf,
-    pf_conf_path: PathBuf,
-    active_pf_config: std::cell::RefCell<Option<PfRedirectConfig>>,
     trusted_certificates: std::cell::RefCell<Vec<KeychainCertificate>>,
     helper_status: std::cell::RefCell<Option<PrivilegedHelperStatus>>,
     helper_authentication_error: std::cell::Cell<bool>,
@@ -49,12 +44,6 @@ impl TestEnvironment {
                 .as_std_path()
                 .to_path_buf(),
             resolver_path: home.join("etc/resolver/test").as_std_path().to_path_buf(),
-            pf_anchor_path: home
-                .join("etc/pf.anchors/com.prvious.pv")
-                .as_std_path()
-                .to_path_buf(),
-            pf_conf_path: home.join("etc/pf.conf").as_std_path().to_path_buf(),
-            active_pf_config: std::cell::RefCell::new(None),
             trusted_certificates: std::cell::RefCell::new(Vec::new()),
             helper_status: std::cell::RefCell::new(Some(PrivilegedHelperStatus {
                 version: PRIVILEGED_HELPER_VERSION.to_string(),
@@ -73,14 +62,6 @@ impl TestEnvironment {
 
     fn resolver_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
         utf8_path_buf(&self.resolver_path, "resolver path")
-    }
-
-    fn pf_anchor_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
-        utf8_path_buf(&self.pf_anchor_path, "pf anchor path")
-    }
-
-    fn pf_conf_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
-        utf8_path_buf(&self.pf_conf_path, "pf.conf path")
     }
 
     fn set_helper_missing(&self) {
@@ -143,37 +124,6 @@ impl Environment for TestEnvironment {
 
     fn resolver_test_path(&self) -> PathBuf {
         self.resolver_path.clone()
-    }
-
-    fn pf_anchor_path(&self) -> PathBuf {
-        self.pf_anchor_path.clone()
-    }
-
-    fn pf_conf_path(&self) -> PathBuf {
-        self.pf_conf_path.clone()
-    }
-
-    fn active_pf_redirect_config(
-        &self,
-    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
-        Ok(self.active_pf_config.borrow().clone())
-    }
-
-    fn inspect_active_pf_redirects_unprivileged(
-        &self,
-    ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
-        let pv_config = self.active_pf_config.borrow().clone();
-        let resolved_target_ports = pv_config.as_ref().map_or_else(BTreeSet::new, |config| {
-            BTreeSet::from([config.http_port, config.https_port])
-        });
-
-        Ok(ActivePfRedirectInspection {
-            pf_enabled: true,
-            pv_config,
-            pv_anchor_has_unparsed_rules: false,
-            resolved_target_ports,
-            has_unresolved_redirect_targets: false,
-        })
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
@@ -336,17 +286,10 @@ fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
 #[test]
 fn doctor_fails_one_check_and_continues_the_others() -> anyhow::Result<()> {
     type BreakCheck = fn(&TestEnvironment) -> anyhow::Result<()>;
-    let cases: [(&'static str, BreakCheck); 5] = [
+    let cases: [(&'static str, BreakCheck); 4] = [
         (
             "doctor_fails_when_system_resolver_is_missing",
             |environment| delete_optional_file(&environment.resolver_path_utf8()?),
-        ),
-        (
-            "doctor_fails_when_active_pf_redirects_are_missing",
-            |environment| {
-                *environment.active_pf_config.borrow_mut() = None;
-                Ok(())
-            },
         ),
         (
             "doctor_fails_when_system_ca_trust_is_missing",
@@ -457,18 +400,6 @@ fn seed_required_checks(
         &environment.resolver_path_utf8()?,
         &ResolverConfig::new(35353).render(),
     )?;
-    let pf_redirect_config = PfRedirectConfig::new(48080, 48443);
-    state::fs::write_sensitive_file(
-        &paths.pf_anchor_config(),
-        &pf_redirect_config.render_anchor(),
-    )?;
-    state::fs::write_sensitive_file(&paths.pf_conf_reference_config(), &PfConfReference.render())?;
-    state::fs::write_sensitive_file(
-        &environment.pf_anchor_path_utf8()?,
-        &pf_redirect_config.render_anchor(),
-    )?;
-    state::fs::write_sensitive_file(&environment.pf_conf_path_utf8()?, &PfConfReference.render())?;
-    *environment.active_pf_config.borrow_mut() = Some(pf_redirect_config);
     let ca = platform::generate_local_ca()?;
     state::fs::write_sensitive_file(&paths.ca_certificate(), &ca.certificate_pem)?;
     state::fs::write_sensitive_file(&paths.ca_private_key(), &ca.private_key_pem)?;

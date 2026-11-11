@@ -29,7 +29,7 @@ Run setup after installation or whenever system integration needs repair:
 pv setup
 ```
 
-`pv setup` creates the PV state layout, optionally repairs the PV-managed shell profile block, installs `.test` DNS resolver configuration, installs PV-owned `pf` loopback redirects for ports `80` and `443`, trusts the PV local CA in the macOS System keychain, registers and starts the per-user LaunchAgent daemon, and records desired default Managed Resources.
+`pv setup` creates the PV state layout, optionally repairs the PV-managed shell profile block, installs `.test` DNS resolver configuration, trusts the PV local CA in the macOS System keychain, registers and starts the per-user LaunchAgent daemon, and records desired default Managed Resources.
 
 Fresh setup fetches the Managed Resource artifact manifest before planning default resources. If the fetch fails and a cached manifest exists, PV may use the cached manifest with a warning. If no cached manifest exists, setup fails before default-resource planning and remains safe to rerun.
 
@@ -252,7 +252,6 @@ Targeted commands are also available for specific system integrations:
 ```shell
 pv daemon:restart
 pv dns:status
-pv ports:status
 pv ca:status
 ```
 
@@ -266,7 +265,7 @@ Safe uninstall preserves user data:
 pv uninstall
 ```
 
-By default, PV removes the daemon registration, DNS resolver config, `pf` redirects, local CA trust, registered root helper, PV app binaries, shims, runtime metadata, sockets, generated config, and download cache. macOS may request administrator authentication to remove the helper. PV preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks.
+By default, PV removes the daemon registration, DNS resolver config, local CA trust, registered root helper, PV app binaries, shims, runtime metadata, sockets, generated config, and download cache. macOS may request administrator authentication to remove the helper. PV preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks.
 
 Remove all PV-owned state:
 

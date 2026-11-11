@@ -32,7 +32,6 @@ state = { path = "../state" }
 textwrap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-time = { workspace = true }
 yaml_serde = { workspace = true }
 
 [dev-dependencies]

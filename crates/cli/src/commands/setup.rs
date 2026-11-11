@@ -10,7 +10,7 @@ use resources::{
 };
 use state::{Database, ManagedResourceDesiredState, PortOwner, PvPaths, StateError};
 
-use super::{ca, daemon as daemon_command, dns, ports};
+use super::{ca, daemon as daemon_command, dns};
 use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
@@ -129,28 +129,27 @@ pub(crate) fn setup(
     {
         return Ok(ExitCode::FAILURE);
     }
+    let mut replay_error = None;
+    // This is probably temporary. We should remember to remove it on the next release.
+    if environment.legacy_pf_present()?
+        && !run_required_step(
+            "old pf redirect removal",
+            streams,
+            &mut replay_error,
+            |streams| remove_legacy_pf(environment, streams),
+        )?
+    {
+        return Ok(ExitCode::FAILURE);
+    }
 
     if configure_shell_integration(&args, environment, &paths, streams)? != ExitCode::SUCCESS {
         return Ok(ExitCode::FAILURE);
     }
-    let mut replay_error = None;
     if !run_required_step(
         "DNS resolver setup",
         streams,
         &mut replay_error,
         |streams| dns::install_config_only(environment, streams),
-    )? {
-        return Ok(ExitCode::FAILURE);
-    }
-    if !run_required_step(
-        if linux {
-            "socket proxy setup"
-        } else {
-            "port redirect setup"
-        },
-        streams,
-        &mut replay_error,
-        |streams| ports::install(environment, streams),
     )? {
         return Ok(ExitCode::FAILURE);
     }
@@ -179,11 +178,7 @@ pub(crate) fn setup(
             Mark::Success,
             "Local HTTPS, .test domains and startup configured",
         )?;
-        output.detail(if linux {
-            "DNS resolver · socket proxy · CA trust · daemon registration"
-        } else {
-            "DNS resolver · port redirect · CA trust · daemon registration"
-        })?;
+        output.detail("DNS resolver · CA trust · daemon registration")?;
     }
 
     let summary = Line::from("System reconciliation completed: ")
@@ -413,18 +408,8 @@ pub(crate) fn uninstall(
     // `pv dns:uninstall` keeps the DNS port because a running daemon still
     // listens on it. The daemon is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
-    if !run_required_step(
-        if cfg!(target_os = "linux") {
-            "socket proxy removal"
-        } else {
-            "port redirect removal"
-        },
-        streams,
-        &mut replay_error,
-        |streams| ports::uninstall(environment, streams),
-    )? {
-        return Ok(ExitCode::FAILURE);
-    }
+    // This is probably temporary. We should remember to remove it on the next release.
+    remove_legacy_pf_or_warn(environment, streams)?;
     if !run_required_step("CA trust removal", streams, &mut replay_error, |streams| {
         untrust_ca_for_uninstall(environment, streams)
     })? {
@@ -471,6 +456,36 @@ pub(crate) fn uninstall(
 /// marked with the outcome and closes a failed flow with the stop line. Plain
 /// stdout streams rows as they happen and writes the stop line for a failing
 /// exit code. A step that needs sudo or a prompt must not run here.
+// This is probably temporary. We should remember to remove it on the next release.
+/// Removes the pf port redirect an older PV installed on this Mac, when there is one.
+fn remove_legacy_pf(
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+) -> Result<ExitCode, ExecuteError> {
+    if environment.legacy_pf_present()? {
+        environment.remove_legacy_pf()?;
+        streams.out.success("Removed PV's old pf port redirect")?;
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+// This is probably temporary. We should remember to remove it on the next release.
+/// For `pv uninstall` and the update continuation, where a leftover redirect shouldn't stop the
+/// rest: shows the error and carries on.
+pub(super) fn remove_legacy_pf_or_warn(
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    if let Err(error) = remove_legacy_pf(environment, streams) {
+        streams.err.warning(&format!(
+            "Could not remove PV's old pf port redirect: {error}"
+        ))?;
+    }
+
+    Ok(())
+}
+
 fn run_required_step(
     label: &str,
     streams: &mut Streams<'_>,
@@ -478,7 +493,6 @@ fn run_required_step(
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
     let active_label = match label {
-        "port redirect setup" | "socket proxy setup" => "Configuring local HTTP and HTTPS",
         "CA trust setup" => "Trust local HTTPS certificates",
         "daemon registration" => "Start PV at login",
         _ => label,
@@ -510,7 +524,6 @@ fn run_required_step(
     let displayed_label = if succeeded {
         match label {
             "DNS resolver setup" => ".test domains configured",
-            "port redirect setup" | "socket proxy setup" => "Local HTTP and HTTPS configured",
             "CA trust setup" => "Local HTTPS certificates trusted",
             "daemon registration" => "PV starts at login",
             _ => label,

@@ -8,9 +8,8 @@ use std::time::Duration;
 use anyhow::{Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
-use daemon::gateway::{GatewayPfRoutingState, persisted_gateway_is_ready_with_pf_state_for_test};
 use daemon::{
-    DaemonError, ProcessSpec, ProcessSupervisor, READINESS_PROBE_TIMEOUT, ReadinessCheck,
+    ProcessSpec, ProcessSupervisor, READINESS_PROBE_TIMEOUT, ReadinessCheck,
     wait_for_custom_readiness, wait_for_readiness,
 };
 use insta::{Settings, assert_debug_snapshot};
@@ -20,7 +19,7 @@ use rustix::process::{Pid, test_kill_process};
 use rustls::pki_types::PrivateKeyDer;
 use serde_json::json;
 use state::PvPaths;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
@@ -266,89 +265,6 @@ async fn gateway_https_readiness_accepts_tls_handshake_without_app_response() ->
 }
 
 #[tokio::test]
-async fn inactive_pf_does_not_make_gateway_identity_readiness_unhealthy() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let ca_certificate_path = paths.ca_certificate();
-    let certified_key =
-        rcgen::generate_simple_self_signed(vec!["pv-gateway.localhost".to_owned()])?;
-    state::fs::write_sensitive_file(&ca_certificate_path, &certified_key.cert.pem())?;
-    let server_config = rustls::ServerConfig::builder_with_provider(Arc::new(
-        rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .map_err(|error| anyhow!("TLS protocol configuration failed: {error}"))?
-    .with_no_client_auth()
-    .with_single_cert(
-        vec![certified_key.cert.der().clone()],
-        PrivateKeyDer::Pkcs8(certified_key.signing_key.serialize_der().into()),
-    )?;
-    let acceptor = TlsAcceptor::from(Arc::new(server_config));
-    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let http_port = http_listener.local_addr()?.port();
-    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let https_port = https_listener.local_addr()?.port();
-    let expected_body = format!("pv-gateway-health-v1:{http_port}:{https_port}");
-    let http_body = expected_body.clone();
-    let http_server = tokio::spawn(async move {
-        let (mut stream, _address) = http_listener.accept().await?;
-        write_gateway_identity_response(&mut stream, &http_body).await
-    });
-    let https_server = tokio::spawn(async move {
-        let (stream, _address) = https_listener.accept().await?;
-        let mut stream = acceptor.accept(stream).await?;
-
-        write_gateway_identity_response(&mut stream, &expected_body).await
-    });
-
-    assert!(
-        persisted_gateway_is_ready_with_pf_state_for_test(
-            &paths,
-            http_port,
-            https_port,
-            GatewayPfRoutingState::Inactive,
-        )
-        .await?
-    );
-    http_server.await??;
-    https_server.await??;
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn gateway_identity_readiness_preserves_probe_error() -> Result<()> {
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let http_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let http_port = http_listener.local_addr()?.port();
-    let https_listener = TcpListener::bind(("127.0.0.1", 0)).await?;
-    let https_port = https_listener.local_addr()?.port();
-    let http_server = tokio::spawn(async move {
-        let (mut stream, _address) = http_listener.accept().await?;
-        write_gateway_identity_response(&mut stream, "wrong identity").await
-    });
-
-    let result = persisted_gateway_is_ready_with_pf_state_for_test(
-        &paths,
-        http_port,
-        https_port,
-        GatewayPfRoutingState::Inactive,
-    )
-    .await;
-
-    assert!(matches!(
-        result,
-        Err(DaemonError::Io(error))
-            if error.to_string() == "identity readiness returned an unexpected response"
-    ));
-    http_server.await??;
-    drop(https_listener);
-
-    Ok(())
-}
-
-#[tokio::test]
 async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()> {
     let tempdir = tempdir()?;
     let ca_certificate_path = tempdir.path().join("ca.pem");
@@ -378,27 +294,6 @@ async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()
     drop(https_listener);
 
     Ok(())
-}
-
-async fn write_gateway_identity_response<Stream>(
-    stream: &mut Stream,
-    body: &str,
-) -> Result<(), std::io::Error>
-where
-    Stream: AsyncRead + AsyncWrite + Unpin,
-{
-    let mut request = [0_u8; 1024];
-    let _bytes = stream.read(&mut request).await?;
-    stream
-        .write_all(
-            format!(
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                body.len()
-            )
-            .as_bytes(),
-        )
-        .await?;
-    stream.shutdown().await
 }
 
 #[tokio::test]

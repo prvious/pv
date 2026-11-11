@@ -12,9 +12,8 @@ use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
-    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection, PlatformError,
-    PlatformTarget, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
-    SYSTEM_RESOLVER_TEST_PATH,
+    KeychainCertificate, LowPortInspection, PlatformError, PlatformTarget, PrivilegedHelperStatus,
+    ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH,
 };
 use serde_json::{Value, json};
 use state::{Database, PortOwner, PvPaths, fs};
@@ -114,18 +113,7 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn pf_anchor_path(&self) -> PathBuf {
-        self.home.join("etc/pf.anchor").into_std_path_buf()
-    }
-    fn pf_conf_path(&self) -> PathBuf {
-        self.home.join("etc/pf.conf").into_std_path_buf()
-    }
     fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
-        Err(PlatformError::PrivilegedHelperUnavailable)
-    }
-    fn inspect_active_pf_redirects_unprivileged(
-        &self,
-    ) -> Result<ActivePfRedirectInspection, PlatformError> {
         Err(PlatformError::PrivilegedHelperUnavailable)
     }
     fn privileged_helper_status(&self) -> Result<PrivilegedHelperStatus, PlatformError> {
