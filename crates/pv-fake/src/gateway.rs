@@ -7,6 +7,9 @@ use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
 use std::io::{self, Write};
+use std::mem::ManuallyDrop;
+use std::net::{Ipv4Addr, SocketAddr};
+use std::os::fd::FromRawFd;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
@@ -23,6 +26,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use platform::clock;
 use rcgen::{CertificateParams, DistinguishedName, Issuer, KeyPair};
+use rustix::io::{FdFlags, fcntl_setfd};
 use rustls::crypto::CryptoProvider;
 use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
 use rustls::server::{ClientHello, ResolvesServerCert};
@@ -53,6 +57,7 @@ pub(crate) async fn start(
     argv: &[String],
     settings: &FakeSettings,
     events: &EventLog,
+    inherited: InheritedListeners,
 ) -> Result<Option<u8>> {
     let subcommand = argv.get(1).map(String::as_str);
     let Some(config_path) = option_value(argv, "--config") else {
@@ -74,7 +79,7 @@ pub(crate) async fn start(
             }
         }
         Some("run") => {
-            serve(&config_path, settings, events).await?;
+            serve(&config_path, settings, events, inherited).await?;
             Ok(None)
         }
         _ => {
@@ -89,6 +94,97 @@ fn option_value<'a>(argv: &'a [String], name: &str) -> Option<&'a str> {
         .position(|argument| argument == name)
         .and_then(|index| argv.get(index + 1))
         .map(String::as_str)
+}
+
+/// The listening sockets a `caddy run` config binds with `bind fd/N`, adopted once at startup.
+#[derive(Debug, Default)]
+pub(crate) struct InheritedListeners(HashMap<i32, std::net::TcpListener>);
+
+impl InheritedListeners {
+    /// Adopts each descriptor that `caddy run`'s config binds with `bind fd/N`, as the daemon's
+    /// monitor passes the Gateway's listeners. Runs before anything else in the process opens a
+    /// descriptor. A config that can't be read is left for `run` to report.
+    pub(crate) fn adopt(argv: &[String]) -> Result<Self> {
+        let config = match (
+            argv.get(1).map(String::as_str),
+            option_value(argv, "--config"),
+        ) {
+            (Some("run"), Some(config_path)) => {
+                state::fs::read_to_string(Utf8Path::new(config_path))
+                    .ok()
+                    .and_then(|source| GatewayConfig::parse(&source).ok())
+            }
+            _ => None,
+        };
+        let mut listeners = HashMap::new();
+        for fd in config.iter().flat_map(GatewayConfig::inherited_fds) {
+            listeners.insert(fd, adopt_listener(fd)?);
+        }
+
+        Ok(Self(listeners))
+    }
+
+    /// A new handle on the inherited listener, which stays open in this process when the handle
+    /// closes, as Caddy keeps an `fd` listener across loads.
+    fn listen(&self, fd: i32) -> Result<TcpListener, String> {
+        let listener = self
+            .0
+            .get(&fd)
+            .ok_or_else(|| io::Error::from_raw_os_error(rustix::io::Errno::BADF.raw_os_error()))
+            .and_then(std::net::TcpListener::try_clone)
+            .and_then(TcpListener::from_std);
+
+        listener.map_err(|error| {
+            format!(
+                "loading config: loading new config: http app module: start: listening on \
+                 fd/{fd}: {error}"
+            )
+        })
+    }
+}
+
+/// Takes ownership of an inherited listener after checking that it is a TCP socket bound to a
+/// loopback port, and keeps descendants from inheriting it. Errors read like Caddy's.
+fn adopt_listener(fd: i32) -> Result<std::net::TcpListener> {
+    // SAFETY: only the daemon's Gateway monitor starts `caddy run` with a `bind fd/N` config, and it
+    // maps the Gateway's listeners to these numbers before exec, so each is an open descriptor that
+    // nothing else in this process uses. `ManuallyDrop` keeps a descriptor that fails the checks
+    // below open, as it was inherited.
+    let listener = ManuallyDrop::new(unsafe { std::net::TcpListener::from_raw_fd(fd) });
+    let checked = socket2::SockRef::from(&*listener)
+        .r#type()
+        .and_then(|kind| {
+            if kind == socket2::Type::STREAM {
+                listener.local_addr()
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "not a TCP socket",
+                ))
+            }
+        })
+        .and_then(|address| match address {
+            SocketAddr::V4(address)
+                if *address.ip() == Ipv4Addr::LOCALHOST && address.port() != 0 =>
+            {
+                Ok(())
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("bound to {address}, not a 127.0.0.1 port"),
+            )),
+        });
+    if let Err(error) = checked {
+        bail!(
+            "loading initial config: loading new config: http app module: start: listening on \
+             fd/{fd}: {error}"
+        );
+    }
+    let listener = ManuallyDrop::into_inner(listener);
+    fcntl_setfd(&listener, FdFlags::CLOEXEC)?;
+    listener.set_nonblocking(true)?;
+
+    Ok(listener)
 }
 
 /// Accepts any existing config, as the Python fixtures did, and records it in
@@ -108,7 +204,12 @@ fn validate(config_path: &Utf8Path) -> Result<u8> {
     Ok(1)
 }
 
-async fn serve(config_path: &Utf8Path, settings: &FakeSettings, events: &EventLog) -> Result<()> {
+async fn serve(
+    config_path: &Utf8Path,
+    settings: &FakeSettings,
+    events: &EventLog,
+    inherited: InheritedListeners,
+) -> Result<()> {
     if settings.gateway_listeners == GatewayListeners::Nothing {
         return Ok(());
     }
@@ -127,6 +228,7 @@ async fn serve(config_path: &Utf8Path, settings: &FakeSettings, events: &EventLo
         readiness_failure: Utf8PathBuf::from(format!("{config_path}.readiness-fail")),
         serves_tcp: settings.gateway_listeners == GatewayListeners::All,
         health_body: Mutex::new(None),
+        inherited,
         listeners: tokio::sync::Mutex::new(Listeners::default()),
     });
 
@@ -161,6 +263,9 @@ struct GatewayConfig {
     admin: Option<Admin>,
     http_port: Option<u16>,
     https_port: Option<u16>,
+    /// The descriptors in `bind fd/N` lines of the `http://` and `https://` sites.
+    http_fd: Option<i32>,
+    https_fd: Option<i32>,
     ca_certificate: Option<Utf8PathBuf>,
     ca_private_key: Option<Utf8PathBuf>,
     health_body: Option<String>,
@@ -173,8 +278,25 @@ struct GatewayConfig {
 impl GatewayConfig {
     fn parse(source: &str) -> Result<Self> {
         let mut config = Self::default();
+        let mut https_site = false;
         for line in source.lines().map(str::trim) {
-            if let Some(path) =
+            if line.starts_with("http://") {
+                https_site = false;
+            } else if line.starts_with("https://") {
+                https_site = true;
+            }
+            if let Some(fd) = line.strip_prefix("bind fd/") {
+                let fd = fd
+                    .parse::<u16>()
+                    .map(i32::from)
+                    .with_context(|| format!("bind fd/{fd}"))?;
+                let fd = Some(fd);
+                if https_site {
+                    config.https_fd = fd;
+                } else {
+                    config.http_fd = fd;
+                }
+            } else if let Some(path) =
                 quoted_after(line, "admin \"unix/").and_then(|value| value.strip_suffix("|0600"))
             {
                 config.admin = Some(Admin::Socket(Utf8PathBuf::from(path)));
@@ -204,17 +326,26 @@ impl GatewayConfig {
         Ok(config)
     }
 
+    fn inherited_fds(&self) -> impl Iterator<Item = i32> {
+        self.http_fd.into_iter().chain(self.https_fd)
+    }
+
     /// The listeners this config asks for. Imported fragments are read now, as Caddy's adapter
     /// reads them on every load, so a worker whose root config is unchanged still moves to a
     /// fragment's new port.
     fn listener_plan(&self) -> Result<ListenerPlan> {
-        let http = match self.http_port.or(self.site_port) {
-            Some(port) => Some(port),
-            None => self.first_imported_site_port()?,
+        let http = match (self.http_fd, self.http_port.or(self.site_port)) {
+            (Some(fd), _) => Some(Address::Fd(fd)),
+            (None, Some(port)) => Some(Address::Port(port)),
+            (None, None) => self.first_imported_site_port()?.map(Address::Port),
         };
-        let https = match (self.https_port, &self.ca_certificate, &self.ca_private_key) {
-            (Some(port), Some(certificate), Some(private_key)) => Some(HttpsPlan {
-                port,
+        let https_address = self
+            .https_fd
+            .map(Address::Fd)
+            .or(self.https_port.map(Address::Port));
+        let https = match (https_address, &self.ca_certificate, &self.ca_private_key) {
+            (Some(address), Some(certificate), Some(private_key)) => Some(HttpsPlan {
+                address,
                 certificate: certificate.clone(),
                 private_key: private_key.clone(),
             }),
@@ -273,13 +404,20 @@ fn first_http_site_port(fragment: &str) -> Option<u16> {
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 struct ListenerPlan {
-    http: Option<u16>,
+    http: Option<Address>,
     https: Option<HttpsPlan>,
+}
+
+/// Where a site listens: a loopback port, or a listener inherited at a descriptor number.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Address {
+    Port(u16),
+    Fd(i32),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct HttpsPlan {
-    port: u16,
+    address: Address,
     certificate: Utf8PathBuf,
     private_key: Utf8PathBuf,
 }
@@ -287,7 +425,7 @@ struct HttpsPlan {
 /// The HTTP and HTTPS listeners a runtime is serving.
 #[derive(Default)]
 struct Listeners {
-    http: Option<Serving<u16>>,
+    http: Option<Serving<Address>>,
     https: Option<Serving<HttpsPlan>>,
 }
 
@@ -330,6 +468,7 @@ struct Runtime {
     serves_tcp: bool,
     /// Served only when the config has a `respond /__pv/health` line, as with real Caddy.
     health_body: Mutex<Option<String>>,
+    inherited: InheritedListeners,
     /// Held while switching listeners, so loads apply one at a time.
     listeners: tokio::sync::Mutex<Listeners>,
 }
@@ -337,7 +476,8 @@ struct Runtime {
 impl Runtime {
     /// Serves `config` as Caddy does on a load: binds the new ports first, keeps listeners whose
     /// settings didn't change, and leaves everything as it was if a new port can't be bound.
-    /// Returns Caddy's error message on failure.
+    /// Inherited listeners are never closed, only the handles serving them. Returns Caddy's error
+    /// message on failure.
     async fn apply(
         self: &Arc<Self>,
         config: GatewayConfig,
@@ -351,8 +491,9 @@ impl Runtime {
             let http = match (plan.http, &listeners.http) {
                 (port, Some(serving)) if port == Some(serving.plan) => Slot::Unchanged,
                 (None, None) => Slot::Unchanged,
-                (port, _) => Slot::Replace(
-                    port.map(|port| bind(port).map(|listener| (port, listener)))
+                (address, _) => Slot::Replace(
+                    address
+                        .map(|address| self.listen(address).map(|listener| (address, listener)))
                         .transpose()?,
                 ),
             };
@@ -365,7 +506,7 @@ impl Runtime {
                         .map(|https| {
                             let acceptor = tls_acceptor(https)
                                 .map_err(|error| format!("loading config: {error:#}"))?;
-                            Ok::<_, String>((https.clone(), bind(https.port)?, acceptor))
+                            Ok::<_, String>((https.clone(), self.listen(https.address)?, acceptor))
                         })
                         .transpose()?,
                 ),
@@ -382,8 +523,8 @@ impl Runtime {
             if let Some(serving) = listeners.http.take() {
                 serving.stop().await;
             }
-            listeners.http = next.map(|(port, listener)| Serving {
-                plan: port,
+            listeners.http = next.map(|(address, listener)| Serving {
+                plan: address,
                 task: tokio::spawn(self.clone().accept_http(listener)),
             });
         }
@@ -399,6 +540,13 @@ impl Runtime {
         self.records
             .current(source)
             .map_err(|error| format!("pv-fake: recording the applied config: {error:#}"))
+    }
+
+    fn listen(&self, address: Address) -> Result<TcpListener, String> {
+        match address {
+            Address::Port(port) => bind(port),
+            Address::Fd(fd) => self.inherited.listen(fd),
+        }
     }
 
     async fn accept_http(self: Arc<Self>, listener: TcpListener) {

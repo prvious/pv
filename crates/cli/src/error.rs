@@ -111,9 +111,6 @@ pub enum CliError {
     )]
     MissingSetupArtifactManifest { path: String },
 
-    #[error("active pf redirects do not match the prepared PV port redirect config")]
-    PfRedirectsInactive,
-
     #[error(
         "PHP track `{track}` has {usage_count} active Project/global default selection(s); use --force to remove it anyway"
     )]
@@ -241,14 +238,6 @@ pub(crate) enum ExecuteError {
         phase: &'static str,
         #[source]
         source: platform::hooks::HookError,
-    },
-
-    #[cfg(target_os = "linux")]
-    #[error("{original}; could not release newly selected Gateway ports: {cleanup}")]
-    PortPreparationCleanup {
-        #[source]
-        original: Box<Self>,
-        cleanup: Box<Self>,
     },
 
     #[error(transparent)]

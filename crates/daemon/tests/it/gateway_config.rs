@@ -11,8 +11,6 @@ use insta::assert_snapshot;
 #[test]
 fn gateway_config_renderer_outputs_gateway_caddyfile() -> Result<()> {
     let input = GatewayConfigInput {
-        http_port: 48080,
-        https_port: 48443,
         admin_socket_path: Utf8PathBuf::from("/Users/alice/.pv/run/gateway-admin.sock"),
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
@@ -63,8 +61,6 @@ fn worker_config_renderer_outputs_track_caddyfile() -> Result<()> {
 #[test]
 fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
     let gateway = render_gateway_config(&GatewayConfigInput {
-        http_port: 48080,
-        https_port: 48443,
         admin_socket_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/run/gateway-admin.sock"),
         ca_certificate_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/ca.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/Alice Smith/.pv/certificates/ca-key.pem"),
@@ -100,8 +96,6 @@ fn config_renderers_quote_path_tokens_with_spaces() -> Result<()> {
 #[test]
 fn config_renderers_reject_control_characters_in_path_tokens() {
     let result = render_gateway_config(&GatewayConfigInput {
-        http_port: 48080,
-        https_port: 48443,
         admin_socket_path: Utf8PathBuf::from("/Users/alice/.pv/run/gateway-admin.sock"),
         ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca\n.pem"),
         ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
@@ -119,35 +113,6 @@ fn config_renderers_reject_control_characters_in_path_tokens() {
         Err(DaemonError::UnexpectedProtocolResponse { reason })
             if reason.contains("control character")
     ));
-}
-
-#[test]
-fn gateway_config_renderer_outputs_empty_gateway_listener() -> Result<()> {
-    let input = GatewayConfigInput {
-        http_port: 48080,
-        https_port: 48443,
-        admin_socket_path: Utf8PathBuf::from("/Users/alice/.pv/run/gateway-admin.sock"),
-        ca_certificate_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca.pem"),
-        ca_private_key_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/ca-key.pem"),
-        storage_path: Utf8PathBuf::from("/Users/alice/.pv/certificates/caddy"),
-        access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
-        error_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/error.log"),
-        projects_config_glob: Utf8PathBuf::from(
-            "/Users/alice/.pv/config/gateway/projects/*.Caddyfile",
-        ),
-        import_project_configs: false,
-    };
-
-    let rendered = render_gateway_config(&input)?;
-
-    assert_admin_directives(&rendered, "/Users/alice/.pv/run/gateway-admin.sock");
-    assert!(
-        rendered.lines().any(|line| line == "    bind 127.0.0.1"),
-        "empty Gateway fallback must bind only loopback interfaces"
-    );
-    assert_snapshot!(rendered);
-
-    Ok(())
 }
 
 #[test]

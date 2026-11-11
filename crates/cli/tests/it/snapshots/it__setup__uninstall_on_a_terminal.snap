@@ -11,14 +11,8 @@ expression: uninstall.stdout
 │  ✓ LaunchAgent removed: <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist
 │
 ✓  DNS resolver removal
-│  ✓ Deleted prepared DNS resolver config: <tempdir>/home/.pv/config/resolver/test
 │  ✓ .test domain routing removed
 │    <tempdir>/etc/resolver/test
-│
-✓  port redirect removal
-│  ✓ Deleted prepared pf anchor: <tempdir>/home/.pv/config/pf/com.prvious.pv
-│  ✓ Deleted prepared pf.conf reference: <tempdir>/home/.pv/config/pf/pf.conf
-│  ✓ Local HTTP and HTTPS redirects removed
 │
 ✓  CA trust removal
 │  ✓ Prepared PV local CA trust removal

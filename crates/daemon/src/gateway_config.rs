@@ -16,9 +16,10 @@ const LOG_ROLL_KEEP: u8 = 5;
 const LOG_ROLL_KEEP_FOR: &str = "720h";
 const LOG_ROLL_SIZE: &str = "10MiB";
 
-pub(crate) fn gateway_health_response(http_port: u16, https_port: u16) -> String {
-    format!("pv-gateway-health-v1:{http_port}:{https_port}")
-}
+pub(crate) const GATEWAY_HEALTH_RESPONSE: &str = "pv-gateway-health-v2";
+/// Caddy serves the Gateway from the listeners the daemon passes it at these descriptors.
+pub(crate) const GATEWAY_HTTP_LISTENER: &str = "fd/3";
+pub(crate) const GATEWAY_HTTPS_LISTENER: &str = "fd/4";
 
 pub(crate) fn worker_health_response(port: u16) -> String {
     format!("pv-worker-health-v1:{port}")
@@ -26,8 +27,6 @@ pub(crate) fn worker_health_response(port: u16) -> String {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GatewayConfigInput {
-    pub http_port: u16,
-    pub https_port: u16,
     pub admin_socket_path: Utf8PathBuf,
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
@@ -65,7 +64,6 @@ pub struct PhpWorkerProject {
 
 pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, DaemonError> {
     let mut output = String::new();
-    let health_response = gateway_health_response(input.http_port, input.https_port);
     output.push_str("{\n");
     append_admin_socket(&mut output, &input.admin_socket_path)?;
     output.push_str("    persist_config off\n");
@@ -76,8 +74,10 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
         quoted_caddyfile_token(input.storage_path.as_str())?
     ));
     output.push_str("    }\n");
-    output.push_str(&format!("    http_port {}\n", input.http_port));
-    output.push_str(&format!("    https_port {}\n", input.https_port));
+    // HTTP/3 can't use an inherited listener.
+    output.push_str("    servers {\n");
+    output.push_str("        protocols h1 h2\n");
+    output.push_str("    }\n");
     output.push_str("    pki {\n");
     output.push_str("        ca local {\n");
     output.push_str("            root {\n");
@@ -95,14 +95,14 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("    }\n");
     output.push_str("}\n");
     output.push_str(&format!(
-        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1\n"
+        "\nhttp://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind {GATEWAY_HTTP_LISTENER}\n"
     ));
     append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
     output.push_str(&format!(
-        "    respond {HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "    respond {HEALTH_PATH} \"{GATEWAY_HEALTH_RESPONSE}\" 200\n}}\n"
     ));
     output.push_str(&format!(
-        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind 127.0.0.1\n"
+        "\nhttps://{GATEWAY_HEALTH_HOSTNAME} {{\n    bind {GATEWAY_HTTPS_LISTENER}\n"
     ));
     append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
     output.push_str("    tls {\n");
@@ -111,8 +111,12 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
     output.push_str("        }\n");
     output.push_str("    }\n");
     output.push_str(&format!(
-        "    respond {HEALTH_PATH} \"{health_response}\" 200\n}}\n"
+        "    respond {HEALTH_PATH} \"{GATEWAY_HEALTH_RESPONSE}\" 200\n}}\n"
     ));
+    // Caddy adds no HTTP-to-HTTPS redirect for inherited listeners, so the Gateway has its own.
+    output.push_str(&format!("\nhttp:// {{\n    bind {GATEWAY_HTTP_LISTENER}\n"));
+    append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
+    output.push_str("    redir https://{host}{uri} 308\n}\n");
 
     if input.import_project_configs {
         output.push('\n');
@@ -120,13 +124,6 @@ pub fn render_gateway_config(input: &GatewayConfigInput) -> Result<String, Daemo
             "import {}\n",
             quoted_caddyfile_token(input.projects_config_glob.as_str())?
         ));
-    } else {
-        output.push('\n');
-        output.push_str(&format!("http://127.0.0.1:{} {{\n", input.http_port));
-        output.push_str("    bind 127.0.0.1\n");
-        append_file_log(&mut output, "    ", input.access_log_path.as_str())?;
-        output.push_str("    respond \"PV Gateway is running\" 404\n");
-        output.push_str("}\n");
     }
 
     Ok(output)
@@ -162,7 +159,7 @@ pub fn render_gateway_project_config(route: &GatewayProjectRoute) -> Result<Stri
         "{} {{\n",
         comma_separated_hostnames(&route.primary_hostname)?
     ));
-    output.push_str("    bind 127.0.0.1\n");
+    output.push_str(&format!("    bind {GATEWAY_HTTPS_LISTENER}\n"));
     append_file_log(&mut output, "    ", route.access_log_path.as_str())?;
     output.push_str("    tls {\n");
     output.push_str("        issuer internal {\n");

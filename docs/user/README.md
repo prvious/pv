@@ -12,7 +12,7 @@ curl -fsSL <installer-url> | bash
 
 The installer downloads separate `pv` and `pv-helper` binaries, verifies both SHA-256 checksums, installs them under `~/.pv/bin/releases/<version>/`, updates the active `~/.pv/bin/pv` symlink, and runs `pv setup` unless `--no-setup` is used.
 
-On first setup, macOS asks for administrator authentication to register PV's small privileged helper. Later DNS, low-port redirect, and local-CA repairs use that on-demand helper without repeated `sudo` prompts, including after reboot. PV's daemon, Gateway, DNS resolver, and Managed Resources remain unprivileged. The helper supports one macOS account per machine. The original owning account must uninstall/remove its helper before the replacement account runs setup; if that account is unavailable, manual administrator recovery is required.
+On first setup, macOS asks for administrator authentication to register PV's small privileged helper. Later DNS and local-CA repairs use that on-demand helper without repeated `sudo` prompts, including after reboot. PV's daemon, Gateway, DNS resolver, and Managed Resources remain unprivileged. The helper supports one macOS account per machine. The original owning account must uninstall/remove its helper before the replacement account runs setup; if that account is unavailable, manual administrator recovery is required.
 
 Installer flags mirror setup behavior:
 
@@ -29,7 +29,7 @@ Run setup after installation or whenever system integration needs repair:
 pv setup
 ```
 
-`pv setup` creates the PV state layout, optionally repairs the PV-managed shell profile block, installs `.test` DNS resolver configuration, installs PV-owned `pf` loopback redirects for ports `80` and `443`, trusts the PV local CA in the macOS System keychain, registers and starts the per-user LaunchAgent daemon, and records desired default Managed Resources.
+`pv setup` creates the PV state layout, optionally repairs the PV-managed shell profile block, installs `.test` DNS resolver configuration, trusts the PV local CA in the macOS System keychain, registers and starts the per-user LaunchAgent daemon, and records desired default Managed Resources.
 
 Fresh setup fetches the Managed Resource artifact manifest before planning default resources. If the fetch fails and a cached manifest exists, PV may use the cached manifest with a warning. If no cached manifest exists, setup fails before default-resource planning and remains safe to rerun.
 
@@ -252,7 +252,6 @@ Targeted commands are also available for specific system integrations:
 ```shell
 pv daemon:restart
 pv dns:status
-pv ports:status
 pv ca:status
 ```
 
@@ -266,7 +265,7 @@ Safe uninstall preserves user data:
 pv uninstall
 ```
 
-By default, PV removes the daemon registration, DNS resolver config, `pf` redirects, local CA trust, registered root helper, PV app binaries, shims, runtime metadata, sockets, generated config, and download cache. macOS may request administrator authentication to remove the helper. PV preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks.
+By default, PV removes the daemon registration, DNS resolver config, local CA trust, registered root helper, PV app binaries, shims, runtime metadata, sockets, generated config, and download cache. macOS may request administrator authentication to remove the helper. PV preserves logs, `pv.db`, certificates, Composer home/cache, Managed Resource data, and Project `.env` blocks.
 
 Remove all PV-owned state:
 

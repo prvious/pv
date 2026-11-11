@@ -9,6 +9,7 @@ mod daemon_foundation;
 mod gateway_config;
 mod gateway_reconciliation;
 mod gateway_runtime_contracts;
+mod host;
 mod loopback_port_probe;
 mod monitor;
 mod project_env_reconciliation;

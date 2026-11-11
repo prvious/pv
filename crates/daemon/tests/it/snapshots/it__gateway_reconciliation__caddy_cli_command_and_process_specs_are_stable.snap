@@ -28,6 +28,7 @@ expression: snapshot
             "caddyfile",
         ],
         private_environment: {
+            "PV_GATEWAY_LISTENERS": "<redacted>",
             "XDG_CONFIG_HOME": "<redacted>",
             "XDG_DATA_HOME": "<redacted>",
         },

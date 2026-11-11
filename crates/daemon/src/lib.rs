@@ -6,6 +6,7 @@ pub mod gateway;
 pub mod gateway_config;
 mod health;
 mod hooks;
+mod host;
 mod ipc;
 mod jobs;
 mod managed_resources;
@@ -46,6 +47,9 @@ pub use client::{
 pub use dns::{dns_port_available, response_bytes};
 pub use error::{DaemonError, ManagedResourceProjectFailure, RuntimeReconciliationFailure};
 pub use health::RUNTIME_HEALTH_SCAN;
+pub use host::{
+    DnsRepair, GatewayListenerHolder, HostIntegration, gateway_failure_is_port_conflict,
+};
 pub use monitor::{
     LiveRuntime, MONITOR_GATE_COMMAND, MONITOR_RUN_COMMAND, MonitorCleanup, MonitorErrorKind,
     MonitorExit, MonitorHooks, MonitorPause, MonitorStart, MonitorState, MonitorStop, live_runtime,
@@ -58,8 +62,8 @@ pub use reconciliation::{
     ReconciliationQueue, ReconciliationScope, ReconciliationScopeParseError, RunningReconciliation,
 };
 pub use runtime_stop::{
-    DAEMON_EXIT_GRACE, DaemonProcess, daemon_process_for_stop, stop_recorded_runtimes,
-    stop_recorded_runtimes_blocking,
+    DAEMON_EXIT_GRACE, DaemonProcess, daemon_process_for_stop, stop_recorded_gateway_blocking,
+    stop_recorded_runtimes, stop_recorded_runtimes_blocking,
 };
 pub use supervisor::{
     AdoptedProcess, ManagedProcess, OwnedRuntime, ProcessSpec, ProcessSupervisor,
@@ -77,22 +81,28 @@ pub struct RunningDaemon {
 }
 
 impl RunningDaemon {
-    pub async fn start(paths: PvPaths) -> Result<Self, DaemonError> {
-        Self::start_for_target(paths, PlatformTarget::current()?).await
+    pub async fn start(paths: PvPaths, host: HostIntegration) -> Result<Self, DaemonError> {
+        Self::start_for_target(paths, host, PlatformTarget::current()?).await
     }
 
-    async fn start_for_target(paths: PvPaths, target: PlatformTarget) -> Result<Self, DaemonError> {
+    async fn start_for_target(
+        paths: PvPaths,
+        host: HostIntegration,
+        target: PlatformTarget,
+    ) -> Result<Self, DaemonError> {
         ipc::require_ipc_for(target)?;
-        Self::start_with_runtime_catalog(paths, None).await
+        Self::start_with_runtime_catalog(paths, host, None).await
     }
 
     #[doc(hidden)]
     pub async fn start_without_managed_resource_adapters(
         paths: PvPaths,
+        host: HostIntegration,
     ) -> Result<Self, DaemonError> {
         ipc::require_ipc_for(PlatformTarget::current()?)?;
         Self::start_with_runtime_catalog(
             paths,
+            host,
             Some(ManagedResourceRuntimeCatalog::without_adapters()?),
         )
         .await
@@ -101,12 +111,14 @@ impl RunningDaemon {
     #[doc(hidden)]
     pub async fn start_without_managed_resource_adapters_with_manifest_client(
         paths: PvPaths,
+        host: HostIntegration,
         manifest_url: impl Into<String>,
         client: impl resources::ResourceHttpClient + Send + Sync + 'static,
     ) -> Result<Self, DaemonError> {
         ipc::require_ipc_for(PlatformTarget::current()?)?;
         Self::start_with_runtime_catalog(
             paths,
+            host,
             Some(
                 ManagedResourceRuntimeCatalog::without_adapters_with_manifest_client(
                     manifest_url,
@@ -119,10 +131,11 @@ impl RunningDaemon {
 
     async fn start_with_runtime_catalog(
         paths: PvPaths,
+        host: HostIntegration,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
         let _runtime_lifecycle_lock = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
-        match Self::start_with_runtime_catalog_inner(paths.clone(), runtime_catalog).await {
+        match Self::start_with_runtime_catalog_inner(paths.clone(), host, runtime_catalog).await {
             Ok(daemon) => Ok(daemon),
             Err(error) => {
                 write_startup_failure_marker(&paths, &error);
@@ -134,12 +147,14 @@ impl RunningDaemon {
 
     async fn start_with_runtime_catalog_inner(
         paths: PvPaths,
+        host: HostIntegration,
         runtime_catalog: Option<ManagedResourceRuntimeCatalog>,
     ) -> Result<Self, DaemonError> {
         runtime_stop::require_previous_daemon_exited(&paths)?;
         let mut database = Database::open(&paths)?;
         ipc::prepare_endpoint(&paths).await?;
         let listener = ipc::bind(&paths)?;
+        let gateway_listeners = Arc::new(GatewayListenerHolder::new(host.gateway_listeners));
         if let Err(error) =
             database.fail_running_jobs("daemon was interrupted before job completed")
         {
@@ -153,7 +168,7 @@ impl RunningDaemon {
                 Ok(project_config_watcher) => project_config_watcher,
                 Err(error) => return Err(cleanup_startup_endpoint(&paths, error)),
             };
-        let dns = match dns::RunningDnsResolver::start(paths.clone()).await {
+        let dns = match dns::RunningDnsResolver::start(paths.clone(), host.dns_repair).await {
             Ok(dns) => dns,
             Err(error) => {
                 return Err(cleanup_startup_endpoint(&paths, error));
@@ -168,6 +183,8 @@ impl RunningDaemon {
             listener,
             shutdown_receiver,
             runtime_catalog,
+            gateway_listeners,
+            host.dns_repair,
             project_config_watcher,
         ));
 
@@ -246,11 +263,15 @@ fn startup_error_after_endpoint_cleanup(
     }
 }
 
-pub fn run_blocking(paths: PvPaths) -> Result<(), DaemonError> {
-    run_blocking_for_target(paths, PlatformTarget::current()?)
+pub fn run_blocking(paths: PvPaths, host: HostIntegration) -> Result<(), DaemonError> {
+    run_blocking_for_target(paths, host, PlatformTarget::current()?)
 }
 
-fn run_blocking_for_target(paths: PvPaths, target: PlatformTarget) -> Result<(), DaemonError> {
+fn run_blocking_for_target(
+    paths: PvPaths,
+    host: HostIntegration,
+    target: PlatformTarget,
+) -> Result<(), DaemonError> {
     ipc::require_ipc_for(target)?;
     // If bootstrap fails before identity publication, admission must outlive
     // runtime destruction too: canceled blocking work can still be running.
@@ -258,7 +279,7 @@ fn run_blocking_for_target(paths: PvPaths, target: PlatformTarget) -> Result<(),
     let runtime = build_runtime()?;
 
     runtime.block_on(async {
-        let daemon = RunningDaemon::start_with_runtime_catalog(paths.clone(), None).await?;
+        let daemon = RunningDaemon::start_with_runtime_catalog(paths.clone(), host, None).await?;
         let daemon = publish_started_daemon(&paths, daemon).await?;
         drop(admission.take());
         // Keep the identity record through runtime teardown and OS process exit.
@@ -369,6 +390,19 @@ async fn termination_signal() -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    /// Two test ports for the Gateway instead of the host's ports 80 and 443.
+    fn test_host() -> anyhow::Result<super::HostIntegration> {
+        let [http_port, https_port] = pv_fake::ports()?;
+
+        Ok(super::HostIntegration {
+            gateway_listeners: platform::GatewayListenerSource::Bind {
+                http_port,
+                https_port,
+            },
+            dns_repair: super::DnsRepair::Off,
+        })
+    }
+
     use std::{future, io, time::Duration};
 
     use camino_tempfile::tempdir;
@@ -395,10 +429,11 @@ mod tests {
         let started = build_runtime()?
             .block_on(RunningDaemon::start_for_target(
                 paths.clone(),
+                test_host()?,
                 PlatformTarget::Windows,
             ))
             .map(|_daemon| ());
-        let ran = run_blocking_for_target(paths.clone(), PlatformTarget::Windows);
+        let ran = run_blocking_for_target(paths.clone(), test_host()?, PlatformTarget::Windows);
 
         for result in [started, ran] {
             assert!(matches!(
@@ -522,7 +557,13 @@ mod tests {
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::ensure_layout(&paths)?;
         state::fs::ensure_user_dir(&paths.daemon_process_record())?;
-        let error = match RunningDaemon::start_with_runtime_catalog(paths.clone(), None).await {
+        let error = match RunningDaemon::start_with_runtime_catalog(
+            paths.clone(),
+            test_host()?,
+            None,
+        )
+        .await
+        {
             Ok(daemon) => {
                 daemon.shutdown().await?;
                 return Err(anyhow::anyhow!("startup unexpectedly succeeded"));
@@ -601,7 +642,9 @@ mod tests {
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         pv_fake::seed_dns_port(&paths)?;
-        let daemon = RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        let daemon =
+            RunningDaemon::start_without_managed_resource_adapters(paths.clone(), test_host()?)
+                .await?;
 
         daemon.shutdown().await?;
 

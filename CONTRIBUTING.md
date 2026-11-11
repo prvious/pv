@@ -78,15 +78,17 @@ refuses to start and says how to rebuild. Explicit cleanup still applies. To sto
 `descendant_spawned`, instead of marker files. Steer a running Gateway fake
 with `pv_fake::write_gateway_control`, which rejects unknown keys.
 
-Tests must not reach the PV installed on the machine running them, whose pf rules
-send loopback ports `80` and `443` to its real Gateway. A fixture that installs
-a fake Caddy calls `daemon::gateway::route_public_probes_to_gateway_for_test()`
-first, so Gateway readiness probes the fake Gateway's own ports, as a working
-redirect would, instead of those ports. A test of what PV does when the public
-probe fails calls `use_unrouted_public_probe_ports_for_test()` after its
-fixture instead. Daemons started with
+Daemons started with
 `RunningDaemon::start_without_managed_resource_adapters` fetch the artifact
 manifest from a closed loopback port, so the fetch fails at once.
+
+Every daemon a test starts takes a `HostIntegration` whose Gateway listeners
+are `GatewayListenerSource::Bind` on two `pv_fake::ports()` and whose
+`dns_repair` is `DnsRepair::Off`; each test crate's `test_host()` builds one.
+Only `pv daemon:run` passes `HostIntegration::production()`, because launchd's
+sockets, ports 80 and 443, and the privileged helper that repairs DNS belong to
+the machine's own PV. A fake's `started` event lists the sockets it
+inherited, so a test can check that only the Gateway gets the listeners.
 
 A port a test hands to a fake, a runtime, or `pv.db` comes from
 `pv_fake::port()` (or `pv_fake::ports::<N>()` for several), never from binding
@@ -285,20 +287,11 @@ PV_LINUX_SYSTEM_TESTS=1 PV_LINUX_SYSTEM_HELPER="$PWD/target/debug/pv-helper" \
   cargo nextest run --profile ci --locked -p cli --run-ignored only -E 'test(/^linux_helper_system::/)'
 ```
 
-The socket-proxy system test uses the same bounded service and requires free
-loopback ports 80 and 443. Build the daemon examples with
-`cargo build --locked -p daemon --examples`, then select:
-
-```shell
--E 'test(=ports_system::systemd_socket_proxies_route_gateway_identity_repair_and_refuse_foreign_units)'
-```
-
-It runs a monitored native fake Caddy with a real test CA, verifies HTTP and HTTPS
-Gateway identity through the proxies, and checks repair, foreign ownership,
-repeated removal, and the limits of loaded socket and command metadata after
-reload. Its independent 140-second timer stops accepted helper work before
-removing only preflight-absent fixture units and files. Nextest serializes all
-tests in this helper-system binary; separate invocations must also remain serial.
+The same binary's kernel port-setting test needs the machine's
+`net.ipv4.ip_unprivileged_port_start` at the kernel default, 1024, and no
+`/etc/sysctl.d/99-pv-ports.conf`; it puts both back when it finishes. Nextest
+serializes all tests in this helper-system binary; separate invocations must also
+remain serial.
 
 ## Crate structure
 

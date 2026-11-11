@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -8,12 +7,12 @@ use config::ProjectConfigFile;
 use futures_util::{StreamExt, stream};
 use platform::clock::{self, Elapsed, Limit};
 use state::{
-    Database, GatewayPort, ManagedResourceDesiredState, PortOwner, ProjectMode, PvPaths,
-    RuntimeObservedStatus, RuntimeSubject,
+    Database, ManagedResourceDesiredState, PortOwner, ProjectMode, PvPaths, RuntimeObservedStatus,
+    RuntimeSubject,
 };
 
 use crate::DaemonError;
-use crate::gateway::{persisted_gateway_is_ready, worker_readiness_check};
+use crate::gateway::{gateway_readiness_check, worker_readiness_check};
 use crate::hooks::DaemonHooks;
 use crate::managed_resources::{ManagedResourceReadiness, ManagedResourceRuntimeCatalog};
 use crate::project_env::{project_tls_artifact_exists, project_tls_files_are_current};
@@ -270,10 +269,13 @@ fn runtime_retry_delay(attempts: usize) -> Duration {
         .unwrap_or(RUNTIME_HEALTH_INTERVAL)
 }
 
+/// Probes every desired runtime once. The Gateway answers on `gateway_ports`, its HTTP and HTTPS
+/// listeners.
 pub(crate) async fn scan_runtime_health(
     paths: PvPaths,
     runtime_catalog: Option<Arc<ManagedResourceRuntimeCatalog>>,
     hooks: Option<DaemonHooks>,
+    gateway_ports: (u16, u16),
 ) -> Result<RuntimeHealthScan, DaemonError> {
     let runtime_catalog = match runtime_catalog {
         Some(runtime_catalog) => runtime_catalog,
@@ -282,7 +284,12 @@ pub(crate) async fn scan_runtime_health(
     let collect_paths = paths.clone();
     let collect_catalog = Arc::clone(&runtime_catalog);
     let collected = tokio::task::spawn_blocking(move || {
-        collect_runtime_health_probes(&collect_paths, &collect_catalog, hooks.as_ref())
+        collect_runtime_health_probes(
+            &collect_paths,
+            &collect_catalog,
+            hooks.as_ref(),
+            gateway_ports,
+        )
     })
     .await??;
     let inspected = stream::iter(collected.probes)
@@ -317,6 +324,7 @@ fn collect_runtime_health_probes(
     paths: &PvPaths,
     runtime_catalog: &ManagedResourceRuntimeCatalog,
     hooks: Option<&DaemonHooks>,
+    (gateway_http_port, gateway_https_port): (u16, u16),
 ) -> Result<CollectedRuntimeHealth, DaemonError> {
     let Some(database) = Database::open_read_only(paths)? else {
         return Ok(CollectedRuntimeHealth {
@@ -337,19 +345,9 @@ fn collect_runtime_health_probes(
             && track.installed_version.is_some()
             && track.current_artifact_path.is_some()
     }) {
-        let http_port = assignments.iter().find_map(|assignment| {
-            matches!(&assignment.owner, PortOwner::Gateway(GatewayPort::Http))
-                .then_some(assignment.port)
-        });
-        let https_port = assignments.iter().find_map(|assignment| {
-            matches!(&assignment.owner, PortOwner::Gateway(GatewayPort::Https))
-                .then_some(assignment.port)
-        });
-        let readiness = http_port.zip(https_port).map(|(http_port, https_port)| {
-            RuntimeReadinessProbe::Gateway {
-                http_port,
-                https_port,
-            }
+        let readiness = Some(RuntimeReadinessProbe::Gateway {
+            http_port: gateway_http_port,
+            https_port: gateway_https_port,
         });
         let scope = ReconciliationScope::resource("caddy", "2")?;
         let (current, error) = recorded_runtime_is_current(
@@ -588,11 +586,12 @@ async fn inspect_runtime_probe(
                 http_port,
                 https_port,
             }) => {
-                gateway_readiness_probe_outcome(
-                    persisted_gateway_is_ready(&paths, http_port, https_port),
+                let check = gateway_readiness_check(http_port, https_port, &paths.ca_certificate());
+                readiness_probe_outcome(
+                    clock::timeout(&RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check))
+                        .await,
                     probe.error,
                 )
-                .await
             }
             Some(RuntimeReadinessProbe::Worker(check)) => readiness_probe_outcome(
                 clock::timeout(&RUNTIME_HEALTH_PROBE_TIMEOUT, probe_readiness_once(&check)).await,
@@ -637,20 +636,6 @@ fn readiness_probe_outcome(
     }
 }
 
-/// Gateway readiness includes privileged PF inspection, which can legitimately take
-/// longer than the runtime readiness deadline because each `pfctl` command carries its
-/// own bound. The HTTP identity probe that follows PF inspection keeps its own timeout,
-/// so the aggregate Gateway future is not bounded here.
-async fn gateway_readiness_probe_outcome(
-    probe: impl Future<Output = Result<bool, DaemonError>>,
-    existing_error: Option<String>,
-) -> (bool, Option<String>) {
-    match probe.await {
-        Ok(healthy) => (healthy, existing_error),
-        Err(error) => (false, Some(error.to_string())),
-    }
-}
-
 fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
     if runtime_key.contains('+') {
         RuntimeSubject::PhpRuntimeWorker {
@@ -665,6 +650,19 @@ fn php_runtime_subject(runtime_key: &str) -> RuntimeSubject {
 
 #[cfg(test)]
 mod tests {
+    /// Two test ports for the Gateway, shared by every reconciliation in a test, as the daemon
+    /// shares its listeners.
+    fn test_gateway_listeners() -> anyhow::Result<crate::GatewayListenerHolder> {
+        let [http_port, https_port] = pv_fake::ports()?;
+
+        Ok(crate::GatewayListenerHolder::new(
+            platform::GatewayListenerSource::Bind {
+                http_port,
+                https_port,
+            },
+        ))
+    }
+
     use std::collections::BTreeSet;
     use std::io;
     #[cfg(unix)]
@@ -677,9 +675,9 @@ mod tests {
     #[cfg(unix)]
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::tempdir;
+    use platform::clock;
     #[cfg(unix)]
     use platform::clock::real;
-    use platform::clock::{self, Limit};
     #[cfg(unix)]
     use pv_fake::Persona;
     #[cfg(unix)]
@@ -696,7 +694,7 @@ mod tests {
         DesiredRuntimeProbe, HEALTHY_RESET_INTERVAL, RUNTIME_HEALTH_INTERVAL,
         RUNTIME_HEALTH_PROBE_TIMEOUT, RUNTIME_RETRY_DELAYS, RuntimeHealthObservation,
         RuntimeHealthScan, RuntimeReadinessProbe, RuntimeRecoveryBackoff, RuntimeRecoveryEntry,
-        gateway_readiness_probe_outcome, inspect_runtime_probe,
+        inspect_runtime_probe,
     };
     #[cfg(unix)]
     use super::{RUNTIME_RECOVERY_EXHAUSTED, RUNTIME_RECOVERY_RESTORED, scan_runtime_health};
@@ -1062,52 +1060,6 @@ mod tests {
             Some("deadline has elapsed".to_owned())
         );
 
-        let (healthy, error) = gateway_readiness_probe_outcome(
-            async {
-                Err(crate::DaemonError::Io(io::Error::other(
-                    "gateway probe failed",
-                )))
-            },
-            None,
-        )
-        .await;
-        assert!(!healthy);
-        assert_eq!(error, Some("I/O error: gateway probe failed".to_owned()));
-
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn gateway_pf_inspection_is_not_bounded_by_readiness_timeout() -> anyhow::Result<()> {
-        let clock = clock::install_fake_for_test();
-        let slow_inspection = Limit::new(
-            "slow pf inspection",
-            RUNTIME_HEALTH_PROBE_TIMEOUT.duration() + Duration::from_secs(1),
-        );
-        // Advancing past the slow inspection also passes the probe limit, had one been pending.
-        let ((healthy, error), ()) = tokio::try_join!(
-            async {
-                Ok::<_, anyhow::Error>(
-                    gateway_readiness_probe_outcome(
-                        async {
-                            clock::sleep(&slow_inspection).await;
-
-                            Ok(true)
-                        },
-                        None,
-                    )
-                    .await,
-                )
-            },
-            async {
-                clock.advance_when_waiting(&slow_inspection).await?;
-                Ok(())
-            },
-        )?;
-
-        assert!(healthy);
-        assert_eq!(error, None);
-
         Ok(())
     }
 
@@ -1124,6 +1076,7 @@ mod tests {
     #[tokio::test]
     async fn scanner_excludes_incomplete_caddy_and_frankenphp_installations() -> anyhow::Result<()>
     {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
@@ -1152,6 +1105,7 @@ mod tests {
             paths,
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await?;
 
@@ -1163,6 +1117,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn scanner_selects_only_gateway_caddy_track_two() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let mut database = Database::open(&paths)?;
@@ -1185,6 +1140,7 @@ mod tests {
             paths,
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await?;
 
@@ -1204,6 +1160,7 @@ mod tests {
     #[tokio::test]
     async fn scanner_uses_persisted_runtime_state_without_writing_or_assigning_ports()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project_path = tempdir.path().join("project");
@@ -1237,6 +1194,7 @@ mod tests {
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await?;
 
@@ -1267,6 +1225,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn killed_shared_worker_selects_one_project_scope() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
@@ -1314,6 +1273,7 @@ mod tests {
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await;
         let cleanup_result = healthy_process.stop(Duration::from_secs(1)).await;
@@ -1338,6 +1298,7 @@ mod tests {
     #[tokio::test]
     async fn scanner_rejects_replacement_required_and_stale_worker_artifacts() -> anyhow::Result<()>
     {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
@@ -1361,6 +1322,7 @@ mod tests {
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await?;
         record_applied_fixture_config(&supervisor, &spec, "sha256:v1:applied").await?;
@@ -1370,6 +1332,7 @@ mod tests {
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await?;
         supervisor.record_restored_config(&spec, "sha256:v1:applied")?;
@@ -1377,6 +1340,7 @@ mod tests {
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await?;
         record_applied_fixture_config(&supervisor, &spec, "sha256:v1:staged").await?;
@@ -1393,6 +1357,7 @@ mod tests {
             paths.clone(),
             Some(Arc::new(ManagedResourceRuntimeCatalog::without_adapters()?)),
             None,
+            gateway_listeners.source().ports(),
         )
         .await;
         let cleanup_result = process.stop(Duration::from_secs(1)).await;
@@ -1421,6 +1386,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn managed_resource_scan_does_not_prepare_or_write_runtime_files() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(&paths.ca_certificate(), "unused certificate")?;
@@ -1458,7 +1424,13 @@ mod tests {
         let config_path = paths.resource_runtime_config("redis", "8.2");
         let data_dir = paths.resource_data_dir("redis", "8.2");
 
-        let scan = scan_runtime_health(paths.clone(), None, None).await?;
+        let scan = scan_runtime_health(
+            paths.clone(),
+            None,
+            None,
+            gateway_listeners.source().ports(),
+        )
+        .await?;
 
         assert!(scan.observations.iter().any(|observation| {
             observation.subject

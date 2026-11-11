@@ -988,7 +988,6 @@ dependencies = [
  "state",
  "textwrap",
  "thiserror 2.0.18",
- "time",
  "tokio",
  "yaml_serde",
 ]
@@ -1114,6 +1113,17 @@ dependencies = [
  "crossterm",
  "unicode-segmentation",
  "unicode-width",
+]
+
+[[package]]
+name = "command-fds"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1b60b5124979fccd9addd89d8b97a1d6eebb4950694520c75ddd722535ea443f"
+dependencies = [
+ "nix 0.31.3",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]
@@ -1333,6 +1343,7 @@ dependencies = [
  "bytes",
  "camino",
  "camino-tempfile",
+ "command-fds",
  "config",
  "futures-util",
  "getrandom 0.4.2",
@@ -3205,7 +3216,6 @@ dependencies = [
  "camino-tempfile",
  "data-encoding",
  "futures-util",
- "getrandom 0.4.2",
  "insta",
  "libc",
  "listenfd",
@@ -3474,6 +3484,7 @@ dependencies = [
  "bytes",
  "camino",
  "camino-tempfile",
+ "command-fds",
  "futures-util",
  "http-body-util",
  "hyper 1.10.1",
@@ -3496,7 +3507,7 @@ dependencies = [
 
 [[package]]
 name = "pv-privileged-helper"
-version = "2.0.0"
+version = "3.0.0"
 dependencies = [
  "anyhow",
  "clap",

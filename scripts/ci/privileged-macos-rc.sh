@@ -70,6 +70,29 @@ pv_pf_rules_absent() {
   return 0
 }
 
+# This is probably temporary. We should remember to remove it on the next release.
+# Leaves the pf redirect a PV release before launchd sockets installed: its anchor, and its lines
+# in /etc/pf.conf, loaded.
+seed_legacy_pf() {
+  local seeded="$PV_RC_EVIDENCE_DIR/pf.conf.seeded"
+  printf '%s\n' '# Managed by PV' \
+    'rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080' \
+    'rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443' |
+    sudo tee /etc/pf.anchors/com.prvious.pv > /dev/null || return 1
+  awk '{ print }
+    /^rdr-anchor "com\.apple\/\*"/ {
+      print "# Managed by PV"
+      print "# Source: PV prepared pf.conf reference for /etc/pf.conf"
+      print "rdr-anchor \"com.prvious.pv\""
+    }
+    END { print "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"" }' \
+    /etc/pf.conf > "$seeded" || return 1
+  grep -Fxq 'rdr-anchor "com.prvious.pv"' "$seeded" || return 1
+  sudo install -m 0644 "$seeded" /etc/pf.conf || return 1
+  sudo pfctl -f /etc/pf.conf || return 1
+  sudo pfctl -s nat | grep -Fq 'com.prvious.pv'
+}
+
 pv_ca_trust_removed() {
   "$PV_RC_BIN" ca:status | grep -F "System keychain trust: not trusted"
 }
@@ -92,6 +115,99 @@ wait_for_pv_jobs_idle() {
   cat "$jobs_error" >&2
   cat "$jobs_file"
   return 1
+}
+
+launch_agent_lists_gateway_sockets() {
+  local printed
+  printed=$(launchctl print "gui/$(id -u)/com.prvious.pv.daemon") || return 1
+  printf '%s\n' "$printed"
+  grep -Eq 'GatewayHttp([^s]|$)' <<< "$printed" && grep -Fq GatewayHttps <<< "$printed"
+}
+
+ROOT_PORT_80_HOLDER_PID=
+ROOT_PORT_80_HOLDER_PID_FILE="$PV_RC_EVIDENCE_DIR/root-port-80-holder.pid"
+
+# Holds 127.0.0.1:80 as root for up to 120 s and records the listener's own pid.
+start_root_port_80_holder() {
+  sudo python3 -c 'import os, socket, sys, time
+listener = socket.socket()
+listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+listener.bind(("127.0.0.1", 80))
+listener.listen()
+with open(sys.argv[1] + ".tmp", "w") as pid_file:
+    pid_file.write(str(os.getpid()))
+os.rename(sys.argv[1] + ".tmp", sys.argv[1])
+time.sleep(120)' "$ROOT_PORT_80_HOLDER_PID_FILE" &
+  local deadline=$((SECONDS + 10))
+  until [ -s "$ROOT_PORT_80_HOLDER_PID_FILE" ]; do
+    [ "$SECONDS" -le "$deadline" ] || return 1
+    sleep 0.2
+  done
+  ROOT_PORT_80_HOLDER_PID=$(cat "$ROOT_PORT_80_HOLDER_PID_FILE")
+  printf 'pid: %s\n' "$ROOT_PORT_80_HOLDER_PID"
+}
+
+stop_root_port_80_holder() {
+  sudo kill "$ROOT_PORT_80_HOLDER_PID"
+}
+
+gateway_failed_on_port_80() {
+  pv status --json > "$PV_RC_EVIDENCE_DIR/root-holder-status.json"
+  python3 -c 'import json, sys
+runtimes = json.load(open(sys.argv[1], encoding="utf-8"))["runtimes"]
+gateway = next(runtime for runtime in runtimes if runtime["subject"] == "gateway")
+print(gateway)
+sys.exit(0 if gateway["status"] == "failed" and "Port 80" in (gateway["message"] or "") else 1)' "$PV_RC_EVIDENCE_DIR/root-holder-status.json"
+}
+
+DNS_PORT_BEFORE_REPAIR=
+DNS_PORT_HOLDER_PID=
+
+record_dns_port() {
+  DNS_PORT_BEFORE_REPAIR=$(pv dns:status | sed -n 's/^DNS port: \([0-9][0-9]*\)$/\1/p')
+  [ -n "$DNS_PORT_BEFORE_REPAIR" ] || return 1
+  printf 'port: %s\n' "$DNS_PORT_BEFORE_REPAIR"
+}
+
+resolver_port() {
+  sed -n 's/^port //p' /etc/resolver/test 2>/dev/null
+}
+
+# The daemon repairs /etc/resolver/test on its next health tick, every 30 s.
+wait_for_resolver_port() {
+  local expected=$1
+  local deadline=$((SECONDS + 40))
+  until [ "$(resolver_port)" = "$expected" ]; do
+    [ "$SECONDS" -le "$deadline" ] || return 1
+    sleep 1
+  done
+  cat /etc/resolver/test
+}
+
+wait_for_moved_resolver_port() {
+  local deadline=$((SECONDS + 40))
+  local port
+  while [ "$SECONDS" -le "$deadline" ]; do
+    port=$(resolver_port)
+    if [ -n "$port" ] && [ "$port" != "$DNS_PORT_BEFORE_REPAIR" ]; then
+      cat /etc/resolver/test
+      return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+# Holds PV's DNS port over TCP as the user for up to 120 s.
+start_dns_port_holder() {
+  python3 -c 'import socket, sys, time
+listener = socket.socket()
+listener.bind(("127.0.0.1", int(sys.argv[1])))
+listener.listen()
+time.sleep(120)' "$DNS_PORT_BEFORE_REPAIR" &
+  DNS_PORT_HOLDER_PID=$!
+  sleep 1
+  kill -0 "$DNS_PORT_HOLDER_PID"
 }
 
 preserve_rc_binary() {
@@ -257,18 +373,27 @@ cat > "$PV_RC_EVIDENCE_DIR/checklist.txt" <<'CHECKLIST'
 Privileged macOS RC evidence checklist:
 - candidate install.sh downloaded and used to install PV
 - /etc/resolver/test installed and removed
-- pf redirect rules installed and removed
+- an older PV's pf redirect removed by setup
 - System keychain CA trust installed and removed
 - root helper executable, launchd registration, metadata, and socket installed and removed
 - root helper replacement transaction completed and cleaned its temporary files
-- LaunchAgent installed, printed, restarted, and uninstalled
+- LaunchAgent installed, printed with its GatewayHttp and GatewayHttps sockets, restarted, and uninstalled
+- Gateway serves ports 80 and 443 from launchd's sockets
+- a root listener on port 80 fails the Gateway with the port named, doctor names its pid, and daemon:restart recovers
+- the daemon restores a deleted /etc/resolver/test, and moves to a new DNS port when another program holds it
 - Project linked and served through .test
 - PV placeholder TLS leaf recorded and verified with macOS system policy without an explicit anchor
 - Gateway HTTPS verified through installed system trust without --cacert
 - Update check and diagnostics executed
 CHECKLIST
 
+# This is probably temporary. We should remember to remove it on the next release.
+record_status legacy-pf-seed required seed_legacy_pf
 record_status setup required pv setup --yes --no-path
+# This is probably temporary. We should remember to remove it on the next release.
+record_status legacy-pf-removed-by-setup required pv_pf_rules_absent
+# This is probably temporary. We should remember to remove it on the next release.
+record_status legacy-pf-anchor-removed-by-setup required test ! -e /etc/pf.anchors/com.prvious.pv
 record_status helper-executable required sudo test -x /Library/PrivilegedHelperTools/com.prvious.pv.helper
 collect_file helper-launch-daemon /Library/LaunchDaemons/com.prvious.pv.helper.plist
 collect_file helper-metadata "/Library/Application Support/PV/helper.json"
@@ -283,20 +408,13 @@ collect_file helper-stderr-log /var/log/com.prvious.pv.helper.err.log
 collect_file gateway-caddyfile "$HOME/.pv/config/gateway/Caddyfile"
 collect_file gateway-runtime-pid "$HOME/.pv/run/gateway.pid"
 collect_file gateway-runtime-metadata "$HOME/.pv/run/gateway.json"
-record_status gateway-listeners evidence lsof -nP -iTCP:48080 -sTCP:LISTEN
-record_status gateway-loopback-nc evidence nc -vz -G 2 127.0.0.1 48080
-record_status gateway-loopback-http evidence curl --show-error --silent --max-time 5 --write-out '\nhttp_code:%{http_code}\n' http://127.0.0.1:48080/
 
 collect_file resolver-system /etc/resolver/test
 record_status resolver-status required pv dns:status
-record_status pf-rules evidence sudo pfctl -sr
-record_status pf-nat-rules evidence sudo pfctl -s nat
-collect_file pf-anchor /etc/pf.anchors/com.prvious.pv
-record_status ports-status required pv ports:status
 record_status ca-status required pv ca:status
 record_status ca-verify evidence security verify-cert -c "$HOME/.pv/certificates/ca.pem" -p ssl -L
 collect_file launch-agent-plist "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"
-record_status launch-agent-print required launchctl print "gui/$(id -u)/com.prvious.pv.daemon"
+record_status launch-agent-print required launch_agent_lists_gateway_sockets
 
 record_status link required pv link "$PV_RC_PROJECT"
 record_status link-reconciliation-idle required wait_for_pv_jobs_idle
@@ -314,12 +432,33 @@ record_status restart-reconciliation-idle required wait_for_pv_jobs_idle
 record_status post-restart-status-json required pv status --json
 record_status post-restart-serve-http required curl --fail --show-error --silent --location --retry 6 --retry-delay 2 --cacert "$HOME/.pv/certificates/ca.pem" http://pv-rc-project.test/ && require_output_contains post-restart-serve-http pv-privileged-rc-ok
 record_status post-restart-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains post-restart-serve-https pv-privileged-rc-ok
+record_status port-80-listener evidence sudo lsof -nP -iTCP:80 -sTCP:LISTEN
+record_status port-443-listener evidence sudo lsof -nP -iTCP:443 -sTCP:LISTEN
+record_status root-holder-daemon-disable required pv daemon:disable
+record_status root-holder-start required start_root_port_80_holder
+record_status root-holder-daemon-enable required pv daemon:enable
+record_status root-holder-reconciliation-idle required wait_for_pv_jobs_idle
+record_status root-holder-gateway-failed required gateway_failed_on_port_80
+record_status root-holder-doctor evidence pv doctor
+require_output_contains root-holder-doctor "pid $ROOT_PORT_80_HOLDER_PID"
+record_status root-holder-stop required stop_root_port_80_holder
+record_status root-holder-daemon-restart required pv daemon:restart
+record_status root-holder-reconciliation-after-restart required wait_for_pv_jobs_idle
+record_status root-holder-serve-https required curl --fail --show-error --silent --retry 6 --retry-delay 2 https://pv-rc-project.test/ && require_output_contains root-holder-serve-https pv-privileged-rc-ok
+record_status dns-port-before-repair required record_dns_port
+record_status dns-resolver-deleted required sudo rm -f /etc/resolver/test
+record_status dns-resolver-repaired required wait_for_resolver_port "$DNS_PORT_BEFORE_REPAIR"
+record_status dns-holder-daemon-disable required pv daemon:disable
+record_status dns-holder-start required start_dns_port_holder
+record_status dns-holder-daemon-enable required pv daemon:enable
+record_status dns-port-moved required wait_for_moved_resolver_port
+record_status dns-moved-lookup required dscacheutil -q host -a name pv-rc-project.test && require_output_contains dns-moved-lookup "ip_address: 127.0.0.1"
+record_status dns-holder-stop required kill "$DNS_PORT_HOLDER_PID"
 record_status update-check required pv update --check --json
 record_status diagnostics required pv doctor
 record_status jobs evidence pv jobs
 record_status logs evidence pv logs --all
 
-record_status helper-interrupted-work-seed required sudo touch "/Library/Application Support/PV/pv-pf-conf-interrupted-uninstall"
 record_status uninstall required pv uninstall
 collect_file resolver-after-uninstall /etc/resolver/test
 record_status resolver-removed required test ! -e /etc/resolver/test

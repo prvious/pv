@@ -28,6 +28,7 @@ const PROJECT_FIRST_RECONCILED_AT_SQL: &str =
     include_str!("sql/015_project_first_reconciled_at.sql");
 const PENDING_CLEANUPS_SQL: &str = include_str!("sql/016_pending_cleanups.sql");
 const HOOK_APPROVALS_SQL: &str = include_str!("sql/017_hook_approvals.sql");
+const REMOVE_GATEWAY_PORTS_SQL: &str = include_str!("sql/018_remove_gateway_ports.sql");
 
 pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     Migration::new(1, "core_state_schema", CORE_SCHEMA_SQL),
@@ -75,6 +76,7 @@ pub(crate) const DEFAULT_MIGRATIONS: &[Migration] = &[
     ),
     Migration::new(16, "pending_cleanups", PENDING_CLEANUPS_SQL),
     Migration::new(17, "hook_approvals", HOOK_APPROVALS_SQL),
+    Migration::new(18, "remove_gateway_ports", REMOVE_GATEWAY_PORTS_SQL),
 ];
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]

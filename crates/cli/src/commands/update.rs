@@ -75,6 +75,19 @@ pub(crate) fn run_managed_resource_continuation(
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
     validate_active_release(&layout, &current_version)?;
+    // This is probably temporary. We should remember to remove it on the next release.
+    super::setup::remove_legacy_pf_or_warn(environment, streams)?;
+    // The previous version normalized the registration against its own template. This version's
+    // LaunchAgent declares the Gateway's sockets, which launchd opens only when it loads it.
+    let (registration_path, rewritten) = normalize_daemon_registration(environment, &paths)?;
+    if rewritten {
+        super::daemon::restart_daemon_without_reconciliation(
+            environment,
+            &paths,
+            &registration_path,
+            super::daemon::DaemonHealthCheck::RequireCompatibleProtocol,
+        )?;
+    }
 
     run_managed_resource_update_phase(paths, streams)
 }
@@ -177,18 +190,20 @@ fn validate_active_release(
     Ok(active_version)
 }
 
+/// Rewrites a stale daemon registration from this version's template. Returns its path and
+/// whether it was rewritten.
 fn normalize_daemon_registration(
     environment: &impl Environment,
     paths: &PvPaths,
-) -> Result<Utf8PathBuf, ExecuteError> {
+) -> Result<(Utf8PathBuf, bool), ExecuteError> {
     let expected = DaemonRegistrationConfig::for_paths(paths);
     let path = daemon_registration_path(environment)?;
-    let path = match platform::inspect_daemon_registration_file(&path, Some(&expected)) {
-        DaemonRegistrationFileState::Current { path, .. } => path,
+    let normalized = match platform::inspect_daemon_registration_file(&path, Some(&expected)) {
+        DaemonRegistrationFileState::Current { path, .. } => (path, false),
         DaemonRegistrationFileState::Stale { .. } => {
             platform::write_daemon_registration_file(&path, &expected)?;
 
-            path
+            (path, true)
         }
         DaemonRegistrationFileState::Missing { path } => {
             return Err(CliError::AppUpdateDaemonRegistrationMissing {
@@ -206,7 +221,7 @@ fn normalize_daemon_registration(
             return Err(CliError::AppUpdateDaemonRegistrationUnreadable { message }.into());
         }
     };
-    Ok(path)
+    Ok(normalized)
 }
 
 fn daemon_registration_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
@@ -333,49 +348,8 @@ fn remove_download(path: &Utf8Path) -> Result<(), ExecuteError> {
     Ok(())
 }
 
-fn restart_daemon_without_reconciliation(
-    environment: &impl Environment,
-    paths: &PvPaths,
-    daemon_registration_path: &Utf8Path,
-    health_check: DaemonHealthCheck,
-) -> Result<(), ExecuteError> {
-    super::daemon::unload_and_wait_for_daemon(environment, paths)?;
-    environment.enable_daemon_registration(daemon_registration_path)?;
-    clear_daemon_startup_failure_marker(paths)?;
-    environment.restart_daemon_registration()?;
-    wait_until_daemon_started(paths.clone(), health_check)?;
-
-    Ok(())
-}
-
 fn create_download_file(path: &Utf8Path) -> Result<AppDownloadFile, StateError> {
     state::fs::create_new_file(path)
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum DaemonHealthCheck {
-    RequireCompatibleProtocol,
-    AcceptProtocolMismatch,
-}
-
-fn wait_until_daemon_started(
-    paths: PvPaths,
-    health_check: DaemonHealthCheck,
-) -> Result<(), ExecuteError> {
-    match health_check {
-        DaemonHealthCheck::RequireCompatibleProtocol => daemon::wait_until_healthy_blocking(paths)?,
-        DaemonHealthCheck::AcceptProtocolMismatch => {
-            daemon::wait_until_healthy_allowing_protocol_mismatch_blocking(paths)?;
-        }
-    }
-
-    Ok(())
-}
-
-fn clear_daemon_startup_failure_marker(paths: &PvPaths) -> Result<(), ExecuteError> {
-    state::fs::remove_file_if_exists(&paths.daemon_startup_error())?;
-
-    Ok(())
 }
 
 fn update_state_error(error: StateError) -> ExecuteError {
@@ -514,7 +488,8 @@ fn run_app_update_phase(
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
     let previous_version = validate_active_release(&layout, &current_version)?;
-    let daemon_registration_path = normalize_daemon_registration(environment, &paths)?;
+    let (daemon_registration_path, _rewritten) =
+        normalize_daemon_registration(environment, &paths)?;
 
     let manifest = fetch_app_update_manifest(environment)?;
     let platform = environment
@@ -878,11 +853,11 @@ fn run_app_update_phase(
         .activate_release(&updated_version)
         .map_err(ExecuteError::from)
         .and_then(|()| {
-            restart_daemon_without_reconciliation(
+            super::daemon::restart_daemon_without_reconciliation(
                 environment,
                 &paths,
                 &daemon_registration_path,
-                DaemonHealthCheck::AcceptProtocolMismatch,
+                super::daemon::DaemonHealthCheck::AcceptProtocolMismatch,
             )
         });
     if let Err(error) = transition_result {
@@ -1203,11 +1178,11 @@ fn rollback_app_update(
             context.paths.app_releases_dir().join(versions.failed)
         ));
         if helper_restore_succeeded
-            && let Err(restart_error) = restart_daemon_without_reconciliation(
+            && let Err(restart_error) = super::daemon::restart_daemon_without_reconciliation(
                 environment,
                 context.paths,
                 context.daemon_registration_path,
-                DaemonHealthCheck::RequireCompatibleProtocol,
+                super::daemon::DaemonHealthCheck::RequireCompatibleProtocol,
             )
         {
             rollback_errors.push(format!("daemon restart: {restart_error}"));
@@ -1243,11 +1218,11 @@ fn rollback_app_update(
     }
     let helper_cleanup_error = cleanup_helper_rollback(context.helper_rollback).err();
     let cleanup_error = context.layout.remove_release(versions.failed).err();
-    if let Err(rollback_error) = restart_daemon_without_reconciliation(
+    if let Err(rollback_error) = super::daemon::restart_daemon_without_reconciliation(
         environment,
         context.paths,
         context.daemon_registration_path,
-        DaemonHealthCheck::RequireCompatibleProtocol,
+        super::daemon::DaemonHealthCheck::RequireCompatibleProtocol,
     ) {
         let mut rollback_message = rollback_error.to_string();
         if let Err(error) = output.flow_end(

@@ -10,7 +10,7 @@ use resources::{
 };
 use state::{Database, ManagedResourceDesiredState, PortOwner, PvPaths, StateError};
 
-use super::{ca, daemon as daemon_command, dns, ports};
+use super::{ca, daemon as daemon_command, dns};
 use crate::args::{SetupArgs, UninstallArgs};
 use crate::environment::{Environment, artifact_manifest_url};
 use crate::error::{CliError, ExecuteError};
@@ -129,29 +129,33 @@ pub(crate) fn setup(
     {
         return Ok(ExitCode::FAILURE);
     }
+    let mut replay_error = None;
+    // This is probably temporary. We should remember to remove it on the next release.
+    if environment.legacy_pf_present()?
+        && !run_required_step(
+            "old pf redirect removal",
+            streams,
+            &mut replay_error,
+            |streams| remove_legacy_pf(environment, streams),
+        )?
+    {
+        return Ok(ExitCode::FAILURE);
+    }
 
     if configure_shell_integration(&args, environment, &paths, streams)? != ExitCode::SUCCESS {
         return Ok(ExitCode::FAILURE);
     }
-    let mut replay_error = None;
     if !run_required_step(
         "DNS resolver setup",
         streams,
         &mut replay_error,
-        |streams| dns::install_config_only(environment, streams),
+        |streams| dns::configure(environment, streams),
     )? {
         return Ok(ExitCode::FAILURE);
     }
-    if !run_required_step(
-        if linux {
-            "socket proxy setup"
-        } else {
-            "port redirect setup"
-        },
-        streams,
-        &mut replay_error,
-        |streams| ports::install(environment, streams),
-    )? {
+    if !run_required_step("port setup", streams, &mut replay_error, |streams| {
+        ensure_low_ports(environment, &paths, streams)
+    })? {
         return Ok(ExitCode::FAILURE);
     }
     if !run_required_step("CA trust setup", streams, &mut replay_error, |streams| {
@@ -179,11 +183,7 @@ pub(crate) fn setup(
             Mark::Success,
             "Local HTTPS, .test domains and startup configured",
         )?;
-        output.detail(if linux {
-            "DNS resolver · socket proxy · CA trust · daemon registration"
-        } else {
-            "DNS resolver · port redirect · CA trust · daemon registration"
-        })?;
+        output.detail("DNS resolver · ports 80 and 443 · CA trust · daemon registration")?;
     }
 
     let summary = Line::from("System reconciliation completed: ")
@@ -406,22 +406,28 @@ pub(crate) fn uninstall(
         "DNS resolver removal",
         streams,
         &mut replay_error,
-        |streams| dns::uninstall(environment, streams),
+        |streams| dns::remove(environment, streams),
     )? {
         return Ok(ExitCode::FAILURE);
     }
-    // `pv dns:uninstall` keeps the DNS port because a running daemon still
-    // listens on it. The daemon is stopped by now, so the port can go.
+    // The daemon that listened on the DNS port is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
-    if !run_required_step(
-        if cfg!(target_os = "linux") {
-            "socket proxy removal"
-        } else {
-            "port redirect removal"
-        },
+    // This is probably temporary. We should remember to remove it on the next release.
+    remove_legacy_pf_or_warn(environment, streams)?;
+    // An installation without setup never wrote PV's port setting, and has no helper to ask.
+    #[cfg(target_os = "linux")]
+    if !matches!(
+        environment.inspect_unprivileged_ports(),
+        platform::UnprivilegedPortsState::Missing
+    ) && !run_required_step(
+        "port setting removal",
         streams,
         &mut replay_error,
-        |streams| ports::uninstall(environment, streams),
+        |streams| {
+            environment.remove_unprivileged_ports()?;
+            streams.out.success("Removed PV's port setting")?;
+            Ok(ExitCode::SUCCESS)
+        },
     )? {
         return Ok(ExitCode::FAILURE);
     }
@@ -471,6 +477,102 @@ pub(crate) fn uninstall(
 /// marked with the outcome and closes a failed flow with the stop line. Plain
 /// stdout streams rows as they happen and writes the stop line for a failing
 /// exit code. A step that needs sudo or a prompt must not run here.
+/// Makes sure the Gateway can have ports 80 and 443: no other program holds them, and on Linux
+/// the kernel lets PV open them.
+fn ensure_low_ports(
+    environment: &impl Environment,
+    paths: &PvPaths,
+    streams: &mut Streams<'_>,
+) -> Result<ExitCode, ExecuteError> {
+    let output = &mut streams.out;
+    let registration = platform::inspect_daemon_registration_file(
+        &daemon_command::daemon_registration_path(environment)?,
+        Some(&platform::DaemonRegistrationConfig::for_paths(paths)),
+    );
+    // PV's own registered daemon may hold the ports. A conflict then shows on the Gateway and in
+    // `pv doctor` instead.
+    if !matches!(
+        registration,
+        platform::DaemonRegistrationFileState::Current { .. }
+    ) {
+        let inspection = environment.inspect_low_ports()?;
+        if inspection.ports.iter().any(|port| !port.available) {
+            output.failure("Ports 80 and 443 are not free")?;
+            for port in inspection.ports.iter().filter(|port| !port.available) {
+                output.detail(port.conflict_message())?;
+                if port.owners.is_empty() {
+                    output.hint(
+                        "find it",
+                        &format!("sudo lsof -nP -iTCP:{} -sTCP:LISTEN", port.port),
+                    )?;
+                }
+            }
+            output.detail("Stop the conflicting service, then run `pv setup` again.")?;
+            return Ok(ExitCode::FAILURE);
+        }
+    }
+    #[cfg(target_os = "linux")]
+    if environment.inspect_unprivileged_ports() != platform::UnprivilegedPortsState::Current {
+        environment.apply_unprivileged_ports()?;
+        match environment.inspect_unprivileged_ports() {
+            platform::UnprivilegedPortsState::Current => {
+                output.success("Let PV open ports 80 and 443")?;
+            }
+            platform::UnprivilegedPortsState::Overridden { value, files } => {
+                output.failure(format!(
+                    "The kernel still keeps ports below {value} from PV"
+                ))?;
+                for file in files {
+                    output.detail(format!("set by {file}"))?;
+                }
+                output.detail("Remove or change those files, then run `pv setup` again.")?;
+                return Ok(ExitCode::FAILURE);
+            }
+            platform::UnprivilegedPortsState::Missing => {
+                output.failure("PV's port setting is missing after it was written")?;
+                return Ok(ExitCode::FAILURE);
+            }
+            platform::UnprivilegedPortsState::Unreadable { message } => {
+                output.failure(format!("Could not read PV's port setting: {message}"))?;
+                return Ok(ExitCode::FAILURE);
+            }
+        }
+    }
+    output.success("Ports 80 and 443 are available to PV")?;
+
+    Ok(ExitCode::SUCCESS)
+}
+
+// This is probably temporary. We should remember to remove it on the next release.
+/// Removes the pf port redirect an older PV installed on this Mac, when there is one.
+fn remove_legacy_pf(
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+) -> Result<ExitCode, ExecuteError> {
+    if environment.legacy_pf_present()? {
+        environment.remove_legacy_pf()?;
+        streams.out.success("Removed PV's old pf port redirect")?;
+    }
+
+    Ok(ExitCode::SUCCESS)
+}
+
+// This is probably temporary. We should remember to remove it on the next release.
+/// For `pv uninstall` and the update continuation, where a leftover redirect shouldn't stop the
+/// rest: shows the error and carries on.
+pub(super) fn remove_legacy_pf_or_warn(
+    environment: &impl Environment,
+    streams: &mut Streams<'_>,
+) -> Result<(), ExecuteError> {
+    if let Err(error) = remove_legacy_pf(environment, streams) {
+        streams.err.warning(&format!(
+            "Could not remove PV's old pf port redirect: {error}"
+        ))?;
+    }
+
+    Ok(())
+}
+
 fn run_required_step(
     label: &str,
     streams: &mut Streams<'_>,
@@ -478,7 +580,7 @@ fn run_required_step(
     command: impl FnOnce(&mut Streams<'_>) -> Result<ExitCode, ExecuteError>,
 ) -> Result<bool, ExecuteError> {
     let active_label = match label {
-        "port redirect setup" | "socket proxy setup" => "Configuring local HTTP and HTTPS",
+        "port setup" => "Getting ports 80 and 443",
         "CA trust setup" => "Trust local HTTPS certificates",
         "daemon registration" => "Start PV at login",
         _ => label,
@@ -510,7 +612,7 @@ fn run_required_step(
     let displayed_label = if succeeded {
         match label {
             "DNS resolver setup" => ".test domains configured",
-            "port redirect setup" | "socket proxy setup" => "Local HTTP and HTTPS configured",
+            "port setup" => "Ports 80 and 443 ready",
             "CA trust setup" => "Local HTTPS certificates trusted",
             "daemon registration" => "PV starts at login",
             _ => label,

@@ -3,7 +3,7 @@ source: crates/daemon/tests/it/gateway_config.rs
 expression: render_gateway_project_config(&route)?
 ---
 acme.test, *.acme.test {
-    bind 127.0.0.1
+    bind fd/4
     log {
         output file "/Users/alice/.pv/logs/gateway/access.log" {
             roll_size 10MiB

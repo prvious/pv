@@ -8,9 +8,12 @@ use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
+use command_fds::{CommandFdExt as _, FdMapping};
 use futures_util::StreamExt as _;
 use platform::clock::{self, Deadline, Limit};
-use platform::{BootSessionId, ProcessEvents, ProcessExitWatch, ProcessStartIdentity};
+use platform::{
+    BootSessionId, GatewayListeners, ProcessEvents, ProcessExitWatch, ProcessStartIdentity,
+};
 use protocol::{DaemonTransport, ProtocolError, transport, write_line};
 use serde::{Deserialize, Serialize};
 use state::{MonitorReservation, PvPaths, StateError, fs};
@@ -154,6 +157,17 @@ pub async fn start_monitor(
     executable: &Utf8Path,
     start: MonitorStart,
 ) -> Result<MonitorState, DaemonError> {
+    start_monitor_with_listeners(paths, executable, start, None).await
+}
+
+/// Starts a monitor as [`start_monitor`] does, passing the Gateway's `listeners`, when given, to
+/// the monitor at descriptors 3 and 4. The monitor and its runtime keep them at those numbers.
+pub async fn start_monitor_with_listeners(
+    paths: &PvPaths,
+    executable: &Utf8Path,
+    start: MonitorStart,
+    listeners: Option<&GatewayListeners>,
+) -> Result<MonitorState, DaemonError> {
     let subject = start.subject.clone();
     monitor_socket(paths, &subject)?;
     let reservation = MonitorReservation::acquire(paths, &subject)
@@ -171,7 +185,7 @@ pub async fn start_monitor(
         start,
     };
     let (controller_end, monitor_end) = StdUnixStream::pair()?;
-    let mut monitor = spawn_monitor(paths, executable, &reservation, monitor_end)?;
+    let mut monitor = spawn_monitor(paths, executable, &reservation, monitor_end, listeners)?;
 
     match complete_startup(controller_end, &request).await {
         // Tokio reaps the monitor whenever it exits.
@@ -346,6 +360,7 @@ fn spawn_monitor(
     executable: &Utf8Path,
     reservation: &MonitorReservation,
     monitor_end: StdUnixStream,
+    listeners: Option<&GatewayListeners>,
 ) -> Result<tokio::process::Child, DaemonError> {
     let mut command = tokio::process::Command::new(executable);
     command
@@ -354,6 +369,21 @@ fn spawn_monitor(
         .stdin(reservation.child_stdio()?)
         .stdout(OwnedFd::from(monitor_end))
         .stderr(Stdio::null());
+    if let Some(listeners) = listeners {
+        let GatewayListeners { http, https } = listeners.try_clone()?;
+        command
+            .fd_mappings(vec![
+                FdMapping {
+                    parent_fd: http,
+                    child_fd: 3,
+                },
+                FdMapping {
+                    parent_fd: https,
+                    child_fd: 4,
+                },
+            ])
+            .map_err(|_collision| io::Error::other("Gateway listener descriptors collide"))?;
+    }
 
     // Dropping `command` closes this process's copies of the reservation and the socket end.
     Ok(command.spawn()?)

@@ -5,23 +5,23 @@ expression: "(assigned_dns, reused_dns, fallback_dns, database.assigned_ports()?
 (
     PortAssignment {
         owner: Dns,
-        port: 35353,
+        port: 15353,
         updated_at: "<timestamp>",
     },
     PortAssignment {
         owner: Dns,
-        port: 35353,
+        port: 15353,
         updated_at: "<timestamp>",
     },
     PortAssignment {
         owner: Dns,
-        port: 45000,
+        port: 15000,
         updated_at: "<timestamp>",
     },
     [
         PortAssignment {
             owner: Dns,
-            port: 45000,
+            port: 15000,
             updated_at: "<timestamp>",
         },
     ],

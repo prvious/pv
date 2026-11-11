@@ -39,6 +39,7 @@ tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 
 [target.'cfg(unix)'.dependencies]
+command-fds = { workspace = true, features = ["tokio"] }
 rustix = { workspace = true }
 
 [dev-dependencies]

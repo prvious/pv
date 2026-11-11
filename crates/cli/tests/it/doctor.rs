@@ -1,38 +1,31 @@
 #![cfg(target_os = "macos")]
 
-use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::io::{self, BufRead as _, Write as _};
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::ExitCode;
 use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::support::run_pv;
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8Path;
 use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot, assert_snapshot};
 use platform::{
-    ActivePfRedirectInspection, DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION,
-    KeychainCertificate, KeychainTrustResult, PRIVILEGED_HELPER_VERSION, PfConfReference,
-    PfRedirectConfig, PrivilegedHelperStatus, ResolverConfig,
+    DaemonRegistrationConfig, HELPER_PROTOCOL_VERSION, KeychainCertificate, KeychainTrustResult,
+    PRIVILEGED_HELPER_VERSION, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
+    SYSTEM_RESOLVER_TEST_PATH,
 };
-use state::{
-    Database, GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, PvPaths,
-    RuntimeObservedStatus, RuntimeSubject,
-};
+use state::{Database, PortRequest, PvPaths, RuntimeObservedStatus, RuntimeSubject};
 
 #[derive(Debug)]
 struct TestEnvironment {
     home: PathBuf,
     current_dir: PathBuf,
     daemon_registration_path: PathBuf,
-    resolver_path: PathBuf,
-    pf_anchor_path: PathBuf,
-    pf_conf_path: PathBuf,
-    active_pf_config: std::cell::RefCell<Option<PfRedirectConfig>>,
+    resolver: std::cell::RefCell<ResolverFileState>,
     trusted_certificates: std::cell::RefCell<Vec<KeychainCertificate>>,
     helper_status: std::cell::RefCell<Option<PrivilegedHelperStatus>>,
     helper_authentication_error: std::cell::Cell<bool>,
@@ -48,13 +41,9 @@ impl TestEnvironment {
                 .join("Library/LaunchAgents/com.prvious.pv.daemon.plist")
                 .as_std_path()
                 .to_path_buf(),
-            resolver_path: home.join("etc/resolver/test").as_std_path().to_path_buf(),
-            pf_anchor_path: home
-                .join("etc/pf.anchors/com.prvious.pv")
-                .as_std_path()
-                .to_path_buf(),
-            pf_conf_path: home.join("etc/pf.conf").as_std_path().to_path_buf(),
-            active_pf_config: std::cell::RefCell::new(None),
+            resolver: std::cell::RefCell::new(ResolverFileState::Missing {
+                path: SYSTEM_RESOLVER_TEST_PATH.into(),
+            }),
             trusted_certificates: std::cell::RefCell::new(Vec::new()),
             helper_status: std::cell::RefCell::new(Some(PrivilegedHelperStatus {
                 version: PRIVILEGED_HELPER_VERSION.to_string(),
@@ -69,18 +58,6 @@ impl TestEnvironment {
     fn launch_agent_path_utf8(&self) -> anyhow::Result<camino::Utf8PathBuf> {
         camino::Utf8PathBuf::from_path_buf(self.daemon_registration_path.clone())
             .map_err(|path| anyhow::anyhow!("launch agent path is not UTF-8: {}", path.display()))
-    }
-
-    fn resolver_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
-        utf8_path_buf(&self.resolver_path, "resolver path")
-    }
-
-    fn pf_anchor_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
-        utf8_path_buf(&self.pf_anchor_path, "pf anchor path")
-    }
-
-    fn pf_conf_path_utf8(&self) -> anyhow::Result<Utf8PathBuf> {
-        utf8_path_buf(&self.pf_conf_path, "pf.conf path")
     }
 
     fn set_helper_missing(&self) {
@@ -101,8 +78,25 @@ impl TestEnvironment {
 }
 
 impl Environment for TestEnvironment {
+    /// Another web server holds port 80.
     fn inspect_low_ports(&self) -> Result<platform::LowPortInspection, platform::PlatformError> {
-        Err(platform::PlatformError::PrivilegedHelperUnavailable)
+        Ok(platform::LowPortInspection {
+            ports: vec![
+                platform::LowPortState {
+                    port: 80,
+                    available: false,
+                    owners: vec![platform::PortOwner {
+                        pid: 4242,
+                        command: "nginx".to_owned(),
+                    }],
+                },
+                platform::LowPortState {
+                    port: 443,
+                    available: true,
+                    owners: Vec::new(),
+                },
+            ],
+        })
     }
 
     fn var_os(&self, _key: &str) -> Option<OsString> {
@@ -141,39 +135,8 @@ impl Environment for TestEnvironment {
         self.daemon_registration_path.clone()
     }
 
-    fn resolver_test_path(&self) -> PathBuf {
-        self.resolver_path.clone()
-    }
-
-    fn pf_anchor_path(&self) -> PathBuf {
-        self.pf_anchor_path.clone()
-    }
-
-    fn pf_conf_path(&self) -> PathBuf {
-        self.pf_conf_path.clone()
-    }
-
-    fn active_pf_redirect_config(
-        &self,
-    ) -> Result<Option<PfRedirectConfig>, platform::PlatformError> {
-        Ok(self.active_pf_config.borrow().clone())
-    }
-
-    fn inspect_active_pf_redirects_unprivileged(
-        &self,
-    ) -> Result<ActivePfRedirectInspection, platform::PlatformError> {
-        let pv_config = self.active_pf_config.borrow().clone();
-        let resolved_target_ports = pv_config.as_ref().map_or_else(BTreeSet::new, |config| {
-            BTreeSet::from([config.http_port, config.https_port])
-        });
-
-        Ok(ActivePfRedirectInspection {
-            pf_enabled: true,
-            pv_config,
-            pv_anchor_has_unparsed_rules: false,
-            resolved_target_ports,
-            has_unresolved_redirect_targets: false,
-        })
+    fn inspect_system_resolver(&self, _expected: Option<&ResolverConfig>) -> ResolverFileState {
+        self.resolver.borrow().clone()
     }
 
     fn trusted_ca_certificates(&self) -> Result<Vec<KeychainCertificate>, platform::PlatformError> {
@@ -229,12 +192,12 @@ fn doctor_accepts_helper_only_version_from_active_release_metadata() -> anyhow::
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let environment = TestEnvironment::new(paths.home());
     seed_required_checks(&paths, &environment, true)?;
-    environment.set_helper_status("2.1.0", 2);
+    environment.set_helper_status("3.1.0", 3);
     write_file(
         &paths
             .app_release_helper(env!("CARGO_PKG_VERSION"))
             .with_file_name("pv-helper.json"),
-        "{\n  \"version\": \"2.1.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+        "{\n  \"version\": \"3.1.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
     )?;
     let health_server = spawn_health_server(&paths.daemon_socket())?;
 
@@ -245,7 +208,7 @@ fn doctor_accepts_helper_only_version_from_active_release_metadata() -> anyhow::
     assert!(
         output
             .stdout
-            .contains("available at version 2.1.0 with protocol 2")
+            .contains("available at version 3.1.0 with protocol 3")
     );
 
     Ok(())
@@ -260,11 +223,13 @@ fn doctor_fails_with_repair_commands() -> anyhow::Result<()> {
     seed_required_checks(&paths, &environment, true)?;
     let mut database = Database::open(&paths)?;
     let job = database.start_job("reconcile", "system")?;
-    database.fail_job(&job.id, "Gateway failed to start")?;
+    let port_conflict =
+        "Port 80 is in use by another program; free it, then run `pv daemon:restart`.";
+    database.fail_job(&job.id, port_conflict)?;
     database.record_runtime_observed_snapshot(
         RuntimeSubject::Gateway,
         RuntimeObservedStatus::Failed,
-        Some("Gateway failed to start"),
+        Some(port_conflict),
     )?;
 
     let output = run_pv(&["doctor"], &environment)?;
@@ -336,15 +301,13 @@ fn doctor_fails_when_daemon_socket_is_stale() -> anyhow::Result<()> {
 #[test]
 fn doctor_fails_one_check_and_continues_the_others() -> anyhow::Result<()> {
     type BreakCheck = fn(&TestEnvironment) -> anyhow::Result<()>;
-    let cases: [(&'static str, BreakCheck); 5] = [
+    let cases: [(&'static str, BreakCheck); 4] = [
         (
             "doctor_fails_when_system_resolver_is_missing",
-            |environment| delete_optional_file(&environment.resolver_path_utf8()?),
-        ),
-        (
-            "doctor_fails_when_active_pf_redirects_are_missing",
             |environment| {
-                *environment.active_pf_config.borrow_mut() = None;
+                environment.resolver.replace(ResolverFileState::Missing {
+                    path: SYSTEM_RESOLVER_TEST_PATH.into(),
+                });
                 Ok(())
             },
         ),
@@ -435,10 +398,7 @@ fn seed_required_checks(
     environment: &TestEnvironment,
     include_manifest_cache: bool,
 ) -> anyhow::Result<()> {
-    let mut database = Database::open(paths)?;
-    database.assign_gateway_ports(|port| {
-        port == GATEWAY_HTTP_PREFERRED_PORT || port == GATEWAY_HTTPS_PREFERRED_PORT
-    })?;
+    Database::open(paths)?.assign_port(PortRequest::dns(35353, 35353, 35353), |_port| true)?;
 
     let launch_agent = DaemonRegistrationConfig::new(
         "/bin/pv",
@@ -449,26 +409,10 @@ fn seed_required_checks(
         &environment.launch_agent_path_utf8()?,
         &launch_agent,
     )?;
-    state::fs::write_sensitive_file(
-        &paths.resolver_config(),
-        &ResolverConfig::new(35353).render(),
-    )?;
-    state::fs::write_sensitive_file(
-        &environment.resolver_path_utf8()?,
-        &ResolverConfig::new(35353).render(),
-    )?;
-    let pf_redirect_config = PfRedirectConfig::new(48080, 48443);
-    state::fs::write_sensitive_file(
-        &paths.pf_anchor_config(),
-        &pf_redirect_config.render_anchor(),
-    )?;
-    state::fs::write_sensitive_file(&paths.pf_conf_reference_config(), &PfConfReference.render())?;
-    state::fs::write_sensitive_file(
-        &environment.pf_anchor_path_utf8()?,
-        &pf_redirect_config.render_anchor(),
-    )?;
-    state::fs::write_sensitive_file(&environment.pf_conf_path_utf8()?, &PfConfReference.render())?;
-    *environment.active_pf_config.borrow_mut() = Some(pf_redirect_config);
+    environment.resolver.replace(ResolverFileState::Current {
+        path: SYSTEM_RESOLVER_TEST_PATH.into(),
+        port: 35353,
+    });
     let ca = platform::generate_local_ca()?;
     state::fs::write_sensitive_file(&paths.ca_certificate(), &ca.certificate_pem)?;
     state::fs::write_sensitive_file(&paths.ca_private_key(), &ca.private_key_pem)?;
@@ -483,7 +427,7 @@ fn seed_required_checks(
     state::fs::write_sensitive_file(&release_helper, "pv helper\n")?;
     state::fs::write_sensitive_file(
         &release_helper.with_file_name("pv-helper.json"),
-        "{\n  \"version\": \"2.0.0\",\n  \"protocol_version\": 2,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+        "{\n  \"version\": \"3.0.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
     )?;
 
     if include_manifest_cache {
@@ -491,11 +435,6 @@ fn seed_required_checks(
     }
 
     Ok(())
-}
-
-fn utf8_path_buf(path: &Path, label: &str) -> anyhow::Result<Utf8PathBuf> {
-    Utf8PathBuf::from_path_buf(path.to_path_buf())
-        .map_err(|path| anyhow::anyhow!("{label} is not UTF-8: {}", path.display()))
 }
 
 #[expect(
@@ -558,18 +497,6 @@ fn write_file(path: &Utf8Path, contents: &str) -> anyhow::Result<()> {
     std::fs::write(path, contents)?;
 
     Ok(())
-}
-
-#[expect(
-    clippy::disallowed_methods,
-    reason = "CLI doctor tests delete fixture files"
-)]
-fn delete_optional_file(path: &Utf8Path) -> anyhow::Result<()> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
 }
 
 fn assert_doctor_snapshot(name: &'static str, tempdir: &Utf8Path, snapshot: impl std::fmt::Debug) {

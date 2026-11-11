@@ -207,22 +207,6 @@ impl PvPaths {
         &self.config
     }
 
-    pub fn resolver_config(&self) -> Utf8PathBuf {
-        self.config().join("resolver/test")
-    }
-
-    pub fn pf_anchor_config(&self) -> Utf8PathBuf {
-        self.config().join("pf/com.prvious.pv")
-    }
-
-    pub fn pf_conf_reference_config(&self) -> Utf8PathBuf {
-        self.config().join("pf/pf.conf")
-    }
-
-    pub fn ports_config(&self) -> Utf8PathBuf {
-        self.config().join("ports")
-    }
-
     pub fn gateway_root_config(&self) -> Utf8PathBuf {
         self.config().join("gateway/Caddyfile")
     }

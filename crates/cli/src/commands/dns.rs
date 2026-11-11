@@ -6,7 +6,7 @@ use platform::{ResolverConfig, ResolverFileState};
 use state::{Database, PortOwner, PortRequest, PvPaths, StateError};
 
 use crate::environment::Environment;
-use crate::error::{CliError, ExecuteError};
+use crate::error::ExecuteError;
 use crate::output::{Line, Mark, Output, Streams};
 
 pub(crate) fn status(
@@ -14,93 +14,44 @@ pub(crate) fn status(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let prepared_path = paths.resolver_config();
-    let system_path = resolver_test_path(environment)?;
-    let prepared_state = platform::inspect_resolver_file(&prepared_path, None);
-    let expected_config = resolver_config_from_state(&prepared_state);
-    let system_state = environment.inspect_resolver_file(&system_path, expected_config.as_ref());
+    let dns_port = match Database::open_read_only(&paths)? {
+        Some(database) => assigned_dns_port(&database)?,
+        None => None,
+    };
+    let system_state =
+        environment.inspect_system_resolver(dns_port.map(ResolverConfig::new).as_ref());
     let output = &mut streams.out;
 
     output.heading("dns:status", Some("DNS resolver status"))?;
-    write_resolver_state(output, "Prepared resolver config", &prepared_state)?;
+    match dns_port {
+        Some(port) => output.status(Mark::Success, format!("DNS port: {port}"))?,
+        None => {
+            output.status(Mark::Idle, "DNS port: not assigned")?;
+            output.detail("Run `pv setup`.")?;
+        }
+    }
     write_resolver_state(output, "System resolver config", &system_state)?;
     Ok(ExitCode::SUCCESS)
 }
 
-pub(crate) fn install(
+/// Assigns PV's DNS port when `pv.db` has none, then points the system's `.test` lookups at it.
+pub(crate) fn configure(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
-) -> Result<ExitCode, ExecuteError> {
-    install_inner(environment, streams, true)
-}
-
-pub(crate) fn install_config_only(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-) -> Result<ExitCode, ExecuteError> {
-    install_inner(environment, streams, false)
-}
-
-fn install_inner(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-    ensure_daemon: bool,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let system_path = resolver_test_path(environment)?;
     let mut database = Database::open(&paths)?;
-    let had_dns_assignment = database
-        .assigned_ports()?
-        .iter()
-        .any(|assignment| assignment.owner == PortOwner::Dns);
-    let dns_port = prepared_dns_port(&mut database)?;
-    let config = ResolverConfig::new(dns_port);
-    let prepared_path = paths.resolver_config();
-
-    if let Err(error) = state::fs::write_sensitive_file(&prepared_path, &config.render()) {
-        release_new_dns_port(&mut database, had_dns_assignment)?;
-
-        return Err(error.into());
-    }
-
-    let system_state = environment.inspect_resolver_file(&system_path, Some(&config));
+    let assigned = assigned_dns_port(&database)?;
+    let dns_port = match assigned {
+        Some(port) => port,
+        None => {
+            database
+                .assign_port(PortRequest::pv_dns(), daemon::dns_port_available)?
+                .port
+        }
+    };
+    let system_state = environment.inspect_system_resolver(Some(&ResolverConfig::new(dns_port)));
     let output = &mut streams.out;
-
-    output.success("Prepared PV DNS resolver config")?;
-    output.detail(Line::field("path: ", &prepared_path))?;
-    output.detail(Line::field("DNS resolver port: ", dns_port))?;
-
-    match &system_state {
-        ResolverFileState::Current { .. }
-        | ResolverFileState::Missing { .. }
-        | ResolverFileState::Stale { .. } => {}
-        ResolverFileState::Conflict { path } => {
-            release_new_dns_port(&mut database, had_dns_assignment)?;
-            write_resolver_conflict(output, path)?;
-
-            return Ok(ExitCode::FAILURE);
-        }
-        ResolverFileState::Unreadable { path, message } => {
-            release_new_dns_port(&mut database, had_dns_assignment)?;
-            super::write_left_in_place(
-                output,
-                "System resolver config could not be inspected: ",
-                path,
-                Some(message),
-            )?;
-
-            return Ok(ExitCode::FAILURE);
-        }
-    }
-
-    if ensure_daemon {
-        let exit_code = ensure_daemon_running(&paths, output)?;
-        if exit_code != ExitCode::SUCCESS {
-            release_new_dns_port(&mut database, had_dns_assignment)?;
-
-            return Ok(exit_code);
-        }
-    }
 
     match system_state {
         ResolverFileState::Current { path, port } => {
@@ -112,8 +63,8 @@ fn install_inner(
             )?;
         }
         ResolverFileState::Missing { path } | ResolverFileState::Stale { path, .. } => {
-            if let Err(error) = environment.install_resolver_config(&prepared_path, &system_path) {
-                release_new_dns_port(&mut database, had_dns_assignment)?;
+            if let Err(error) = environment.apply_system_resolver(dns_port) {
+                release_new_dns_port(&mut database, assigned)?;
 
                 return Err(error.into());
             }
@@ -123,8 +74,23 @@ fn install_inner(
             } else {
                 output.success(Line::field("Installed system resolver config: ", &path))?;
             }
+            output.detail(Line::field("DNS resolver port: ", dns_port))?;
         }
-        ResolverFileState::Conflict { .. } | ResolverFileState::Unreadable { .. } => {
+        ResolverFileState::Conflict { path } => {
+            release_new_dns_port(&mut database, assigned)?;
+            write_resolver_conflict(output, &path)?;
+
+            return Ok(ExitCode::FAILURE);
+        }
+        ResolverFileState::Unreadable { path, message } => {
+            release_new_dns_port(&mut database, assigned)?;
+            super::write_left_in_place(
+                output,
+                "System resolver config could not be inspected: ",
+                &path,
+                Some(&message),
+            )?;
+
             return Ok(ExitCode::FAILURE);
         }
     }
@@ -132,66 +98,15 @@ fn install_inner(
     Ok(ExitCode::SUCCESS)
 }
 
-fn release_new_dns_port(
-    database: &mut Database,
-    had_dns_assignment: bool,
-) -> Result<(), ExecuteError> {
-    if !had_dns_assignment {
-        database.release_port(PortOwner::Dns)?;
-    }
-
-    Ok(())
-}
-
-fn ensure_daemon_running(
-    paths: &PvPaths,
-    output: &mut Output<'_>,
-) -> Result<ExitCode, ExecuteError> {
-    let daemon_socket = paths.daemon_socket();
-
-    let cause = if daemon_socket.exists() {
-        match ::daemon::wait_until_healthy_blocking(paths.clone()) {
-            Ok(()) => {
-                output.status(Mark::Running, "PV daemon is running.")?;
-
-                return Ok(ExitCode::SUCCESS);
-            }
-            Err(error) => Line::from(error.to_string()),
-        }
-    } else {
-        Line::field("socket: ", &daemon_socket)
-    };
-    output.failure("PV daemon is not running; .test lookups will not resolve yet.")?;
-    output.detail("Run `pv setup` or `pv daemon:enable`, then retry `pv dns:install`.")?;
-    output.detail(cause)?;
-
-    Ok(ExitCode::FAILURE)
-}
-
-pub(crate) fn uninstall(
+/// Removes PV's `.test` resolver configuration. The DNS port stays in `pv.db` until uninstall
+/// deletes PV's state.
+pub(crate) fn remove(
     environment: &impl Environment,
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
-    let paths = pv_paths(environment)?;
-    let prepared_path = paths.resolver_config();
-    let system_path = resolver_test_path(environment)?;
-    let deleted_prepared = delete_optional_file(&prepared_path)?;
-    let system_state = environment.inspect_resolver_file(&system_path, None);
     let output = &mut streams.out;
 
-    if deleted_prepared {
-        output.success(Line::field(
-            "Deleted prepared DNS resolver config: ",
-            &prepared_path,
-        ))?;
-    } else {
-        output.note(Line::field(
-            "Prepared DNS resolver config already absent: ",
-            &prepared_path,
-        ))?;
-    }
-
-    match system_state {
+    match environment.inspect_system_resolver(None) {
         ResolverFileState::Missing { path } => {
             output.note(Line::field(
                 "System resolver config already absent: ",
@@ -219,7 +134,7 @@ pub(crate) fn uninstall(
         | ResolverFileState::Stale { path, .. }
         | ResolverFileState::Conflict { path }
         | ResolverFileState::Unreadable { path, .. } => {
-            environment.remove_resolver_config(&system_path)?;
+            environment.remove_system_resolver()?;
             if output.surface().decorated() {
                 output.success(".test domain routing removed")?;
                 output.detail(Line::default().value(path.as_str()))?;
@@ -233,6 +148,18 @@ pub(crate) fn uninstall(
             Ok(ExitCode::SUCCESS)
         }
     }
+}
+
+/// Releases a DNS port this run assigned, so a failed setup leaves `pv.db` as it found it.
+fn release_new_dns_port(
+    database: &mut Database,
+    assigned: Option<u16>,
+) -> Result<(), ExecuteError> {
+    if assigned.is_none() {
+        database.release_port(PortOwner::Dns)?;
+    }
+
+    Ok(())
 }
 
 fn write_resolver_conflict(output: &mut Output<'_>, path: &Utf8Path) -> io::Result<()> {
@@ -285,44 +212,13 @@ fn write_resolver_state(
     }
 }
 
-fn prepared_dns_port(database: &mut Database) -> Result<u16, StateError> {
-    if let Some(assignment) = database
+/// The DNS port PV's resolver listens on, from `pv.db`.
+pub(crate) fn assigned_dns_port(database: &Database) -> Result<Option<u16>, StateError> {
+    Ok(database
         .assigned_ports()?
         .into_iter()
         .find(|assignment| assignment.owner == PortOwner::Dns)
-    {
-        return Ok(assignment.port);
-    }
-
-    let assignment = database.assign_port(PortRequest::pv_dns(), daemon::dns_port_available)?;
-
-    Ok(assignment.port)
-}
-
-fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
-    match state {
-        ResolverFileState::Current { port, .. }
-        | ResolverFileState::Stale {
-            actual_port: Some(port),
-            ..
-        } => Some(ResolverConfig::new(*port)),
-        ResolverFileState::Missing { .. }
-        | ResolverFileState::Stale {
-            actual_port: None, ..
-        }
-        | ResolverFileState::Conflict { .. }
-        | ResolverFileState::Unreadable { .. } => None,
-    }
-}
-
-fn delete_optional_file(path: &Utf8Path) -> Result<bool, ExecuteError> {
-    match state::fs::delete_file(path) {
-        Ok(()) => Ok(true),
-        Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {
-            Ok(false)
-        }
-        Err(error) => Err(error.into()),
-    }
+        .map(|assignment| assignment.port))
 }
 
 fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
@@ -330,9 +226,4 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
-}
-
-fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.resolver_test_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
 }

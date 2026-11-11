@@ -6,12 +6,15 @@ pub mod clock;
 mod command;
 mod daemon_registration;
 mod error;
+mod gateway_listeners;
 mod helper;
 pub mod hooks;
+// This is probably temporary. We should remember to remove it on the next release.
+#[cfg(any(target_os = "macos", test))]
+mod legacy_pf;
 #[cfg(target_os = "linux")]
 mod linux_host;
 mod low_port;
-mod pf;
 mod port;
 mod process;
 mod resolver;
@@ -19,6 +22,8 @@ mod resolver;
 mod systemd;
 mod target;
 mod trust;
+#[cfg(target_os = "linux")]
+mod unprivileged_ports;
 
 #[cfg(target_os = "linux")]
 pub use process::inspect_process_comm;
@@ -38,6 +43,10 @@ pub use daemon_registration::{
     write_daemon_registration_file,
 };
 pub use error::PlatformError;
+pub use gateway_listeners::{
+    GATEWAY_HTTP_PORT, GATEWAY_HTTP_SOCKET, GATEWAY_HTTPS_PORT, GATEWAY_HTTPS_SOCKET,
+    GatewayListenerError, GatewayListenerSource, GatewayListeners,
+};
 #[cfg(target_os = "linux")]
 pub use helper::run_privileged_helper_lifecycle;
 
@@ -50,18 +59,9 @@ pub use helper::{
 #[cfg(target_os = "linux")]
 pub use linux_host::{check_linux_resolved_stub, check_linux_setup_host};
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
-pub use pf::{
-    ActivePfRedirectInspection, PfConfReference, PfFileState, PfRedirectConfig,
-    SYSTEM_PF_ANCHOR_PATH, SYSTEM_PF_CONF_PATH, active_pf_redirect_config,
-    inspect_active_pf_redirects_unprivileged, inspect_pf_anchor_file, inspect_pf_conf_reference,
-    install_pf_redirects, remove_pf_redirects,
-};
-#[cfg(target_os = "linux")]
-pub use pf::{
-    SYSTEM_SOCKET_PROXY_DIRECTORY, inspect_socket_proxy_unit, render_socket_proxy_units,
-    repairable_socket_proxy_ports, socket_proxy_files_current, socket_proxy_unit_names,
-    socket_proxy_units_absent,
-};
+// This is probably temporary. We should remember to remove it on the next release.
+#[cfg(target_os = "macos")]
+pub use legacy_pf::legacy_pf_present;
 pub use port::loopback_tcp_port_available;
 pub use process::{
     BootSessionId, ProcessEvents, ProcessExitWatch, ProcessIdentity, ProcessStartIdentity,
@@ -70,7 +70,7 @@ pub use process::{
 };
 pub use resolver::{
     DNS_LISTEN_ADDRESS, ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH,
-    inspect_resolver_file, install_resolver_config, remove_resolver_config,
+    apply_system_resolver, inspect_system_resolver, remove_system_resolver,
 };
 #[cfg(target_os = "linux")]
 pub use resolver::{start_resolver_link, stop_resolver_link};
@@ -80,6 +80,10 @@ pub use trust::{
     TrustDomainState, browser_ca_databases, inspect_browser_ca_trust, inspect_system_ca_trust,
     trust_browser_ca, trust_system_ca, trusted_pv_ca_fingerprints, untrust_browser_ca,
     untrust_system_ca,
+};
+#[cfg(target_os = "linux")]
+pub use unprivileged_ports::{
+    UNPRIVILEGED_PORTS_PATH, UnprivilegedPortsState, inspect_unprivileged_ports,
 };
 
 #[cfg(test)]

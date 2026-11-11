@@ -438,9 +438,6 @@ fn repair_reason_from_ca_error(error: PlatformError) -> CaRepairReason {
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         PlatformError::ProcessIdentityInspection { .. } => CaRepairReason::InvalidCaShape,
         #[cfg(target_os = "linux")]
-        PlatformError::LowPortProcfs(_)
-        | PlatformError::PortProxyBus(_)
-        | PlatformError::PortProxyIo(_)
-        | PlatformError::PortProxyMutation { .. } => CaRepairReason::InvalidCaShape,
+        PlatformError::LowPortProcfs(_) => CaRepairReason::InvalidCaShape,
     }
 }

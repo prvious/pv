@@ -4,7 +4,6 @@ use std::cell::RefCell;
 use std::ffi::OsString;
 use std::io;
 use std::path::PathBuf;
-use std::process::ExitCode;
 
 use anyhow::{Result, anyhow};
 use camino::{Utf8Path, Utf8PathBuf};
@@ -12,12 +11,11 @@ use camino_tempfile::tempdir;
 use cli::Environment;
 use insta::{Settings, assert_debug_snapshot};
 use platform::{
-    ActivePfRedirectInspection, KeychainCertificate, LowPortInspection, PlatformError,
-    PlatformTarget, PrivilegedHelperStatus, ResolverConfig, ResolverFileState,
-    SYSTEM_RESOLVER_TEST_PATH,
+    KeychainCertificate, LowPortInspection, PlatformError, PlatformTarget, PrivilegedHelperStatus,
+    ResolverConfig, ResolverFileState, SYSTEM_RESOLVER_TEST_PATH,
 };
 use serde_json::{Value, json};
-use state::{Database, PortOwner, PvPaths, fs};
+use state::{Database, PortOwner, PvPaths};
 
 use crate::support::run_pv;
 
@@ -75,57 +73,28 @@ impl Environment for TestEnvironment {
         Ok(())
     }
 
-    fn inspect_resolver_file(
-        &self,
-        path: &Utf8Path,
-        _expected: Option<&ResolverConfig>,
-    ) -> ResolverFileState {
-        assert_eq!(path, Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH));
+    fn inspect_system_resolver(&self, _expected: Option<&ResolverConfig>) -> ResolverFileState {
         self.resolver.borrow().clone()
     }
 
-    fn install_resolver_config(
-        &self,
-        prepared_path: &Utf8Path,
-        system_path: &Utf8Path,
-    ) -> Result<(), PlatformError> {
-        assert_eq!(system_path, Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH));
-        let content = fs::read_to_string(prepared_path)
-            .map_err(|error| PlatformError::SystemIntegration(error.to_string()))?;
-        let config = ResolverConfig::parse(&content).ok_or_else(|| {
-            PlatformError::SystemIntegration("fixture received invalid prepared config".to_owned())
-        })?;
-        self.operations
-            .borrow_mut()
-            .push(Operation::Apply(config.port));
+    fn apply_system_resolver(&self, port: u16) -> Result<(), PlatformError> {
+        self.operations.borrow_mut().push(Operation::Apply(port));
         *self.resolver.borrow_mut() = ResolverFileState::Current {
-            path: system_path.into(),
-            port: config.port,
+            path: SYSTEM_RESOLVER_TEST_PATH.into(),
+            port,
         };
         Ok(())
     }
 
-    fn remove_resolver_config(&self, system_path: &Utf8Path) -> Result<(), PlatformError> {
-        assert_eq!(system_path, Utf8Path::new(SYSTEM_RESOLVER_TEST_PATH));
+    fn remove_system_resolver(&self) -> Result<(), PlatformError> {
         self.operations.borrow_mut().push(Operation::Remove);
         *self.resolver.borrow_mut() = ResolverFileState::Missing {
-            path: system_path.into(),
+            path: SYSTEM_RESOLVER_TEST_PATH.into(),
         };
         Ok(())
     }
 
-    fn pf_anchor_path(&self) -> PathBuf {
-        self.home.join("etc/pf.anchor").into_std_path_buf()
-    }
-    fn pf_conf_path(&self) -> PathBuf {
-        self.home.join("etc/pf.conf").into_std_path_buf()
-    }
     fn inspect_low_ports(&self) -> Result<LowPortInspection, PlatformError> {
-        Err(PlatformError::PrivilegedHelperUnavailable)
-    }
-    fn inspect_active_pf_redirects_unprivileged(
-        &self,
-    ) -> Result<ActivePfRedirectInspection, PlatformError> {
         Err(PlatformError::PrivilegedHelperUnavailable)
     }
     fn privileged_helper_status(&self) -> Result<PrivilegedHelperStatus, PlatformError> {
@@ -143,8 +112,6 @@ fn linux_dns_status_and_doctor_report_conflicts_and_unreadable_state_without_mut
     let environment = TestEnvironment::new(&directory.path().join("home"));
     let paths = environment.paths();
     let port = pv_fake::seed_dns_port(&paths)?;
-    let prepared = ResolverConfig::new(port).render();
-    fs::write_sensitive_file(&paths.resolver_config(), &prepared)?;
     let path = Utf8PathBuf::from(SYSTEM_RESOLVER_TEST_PATH);
     let mut observed = Vec::new();
     for (case, state) in [
@@ -166,7 +133,6 @@ fn linux_dns_status_and_doctor_report_conflicts_and_unreadable_state_without_mut
         let doctor = run_pv(&["doctor", "--json"], &environment)?;
         assert!(dns.stderr.is_empty() && status.stderr.is_empty() && doctor.stderr.is_empty());
         assert_eq!(dns_port(&paths)?, Some(port));
-        assert_eq!(fs::read_to_string(&paths.resolver_config())?, prepared);
         let status: Value = serde_json::from_str(&status.stdout)?;
         let doctor: Value = serde_json::from_str(&doctor.stdout)?;
         let check = doctor["sections"]
@@ -180,42 +146,6 @@ fn linux_dns_status_and_doctor_report_conflicts_and_unreadable_state_without_mut
     }
     assert!(environment.operations.borrow().is_empty());
     snapshot_settings(directory.path(), &[port]).bind(|| assert_debug_snapshot!(observed));
-    Ok(())
-}
-
-#[test]
-fn linux_dns_install_refuses_state_that_needs_manual_repair() -> Result<()> {
-    let directory = tempdir()?;
-    let mut observed = Vec::new();
-    let mut ports = Vec::new();
-    for (case, state) in [
-        (
-            "conflict",
-            ResolverFileState::Conflict {
-                path: SYSTEM_RESOLVER_TEST_PATH.into(),
-            },
-        ),
-        (
-            "unreadable",
-            ResolverFileState::Unreadable {
-                path: SYSTEM_RESOLVER_TEST_PATH.into(),
-                message: "fixture resolved unavailable".to_owned(),
-            },
-        ),
-    ] {
-        let environment = TestEnvironment::new(&directory.path().join(case));
-        let paths = environment.paths();
-        let port = pv_fake::seed_dns_port(&paths)?;
-        *environment.resolver.borrow_mut() = state;
-        let install = run_pv(&["dns:install"], &environment)?;
-        let uninstall = run_pv(&["dns:uninstall"], &environment)?;
-        assert_eq!(uninstall.exit_code, ExitCode::SUCCESS);
-        assert_eq!(dns_port(&paths)?, Some(port));
-        assert_eq!(*environment.operations.borrow(), [Operation::Remove]);
-        ports.push(port);
-        observed.push((case, install, uninstall));
-    }
-    snapshot_settings(directory.path(), &ports).bind(|| assert_debug_snapshot!(observed));
     Ok(())
 }
 

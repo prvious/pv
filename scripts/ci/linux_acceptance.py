@@ -17,6 +17,9 @@ EVIDENCE = Path(os.environ["PV_ACCEPTANCE_EVIDENCE_DIR"])
 APP = INPUTS / "app"
 RELEASE = APP / "pv-release"
 PV = PV_HOME / "bin/pv"
+PORTS_SETTING = Path("/etc/sysctl.d/99-pv-ports.conf")
+UNPRIVILEGED_PORT_START = Path("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+DNS_UNIT = Path("/etc/systemd/system/pv-dns.service")
 PLATFORM = "linux-arm64" if os.uname().machine == "aarch64" else "linux-amd64"
 EXPECTED = {
     "php": {"8.3", "8.4", "8.5"}, "frankenphp": {"8.3", "8.4", "8.5"},
@@ -146,6 +149,9 @@ def install():
     # Seed downloads after --prune, which removes the first installation's cache.
     prepare_artifacts()
     run("reinstall", "bash", str(installer), "--yes", "--no-setup", timeout=180)
+    # Docker starts a container's network namespace at 0; a distribution starts at 1024.
+    run("unprivileged-ports-default", "sudo", "-n", "sh", "-c",
+        f"echo 1024 > {UNPRIVILEGED_PORT_START}")
     run("setup", str(PV), "setup", "--yes", timeout=600)
 
 
@@ -169,8 +175,24 @@ def https_ready():
     return True
 
 
+def test_domain_resolves():
+    result = subprocess.run(["getent", "ahostsv4", "probe.test"], stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, check=False)
+    return result.returncode == 0 and "127.0.0.1" in result.stdout
+
+
+def dns_repaired():
+    return DNS_UNIT.exists() and test_domain_resolves()
+
+
+def unprivileged_port_start():
+    return UNPRIVILEGED_PORT_START.read_text().strip()
+
+
 def system_acceptance():
     run("helper-active", "systemctl", "is-active", "pv-helper.socket")
+    assert PORTS_SETTING.read_text() == "# Managed by PV\nnet.ipv4.ip_unprivileged_port_start=80\n"
+    assert unprivileged_port_start() == "80"
     run("dns-active", "systemctl", "is-active", "pv-dns.service")
     assert "127.0.0.1" in run("getaddrinfo", "getent", "ahostsv4", "probe.test")
     run("resolved-query", "resolvectl", "query", "probe.test")
@@ -197,6 +219,11 @@ def system_acceptance():
     wait_for("restart reconciliation", lambda: reconciliation_ready(previous_jobs))
     wait_for("HTTPS after daemon restart", https_ready)
     assert runtime_pids() == before, "daemon restart replaced a managed runtime"
+    # The daemon's health tick, every 30 s, puts PV's DNS routing back.
+    run("dns-unit-stop", "sudo", "-n", "systemctl", "stop", "pv-dns.service")
+    run("dns-unit-delete", "sudo", "-n", "rm", "-f", str(DNS_UNIT))
+    run("dns-unit-reload", "sudo", "-n", "systemctl", "daemon-reload")
+    wait_for("DNS repaired by the daemon", dns_repaired, 40)
     run("daemon-disable", str(PV), "daemon:disable", timeout=60)
     run("enable-after-stop", str(PV), "daemon:enable", timeout=300)
     wait_for("resources after stop", https_ready)
@@ -217,6 +244,8 @@ def system_acceptance():
     for directory in ["/etc/systemd/system", "/run/systemd/system"]:
         assert not list(Path(directory).rglob("pv-*.service")), "PV service remains"
         assert not list(Path(directory).rglob("pv-*.socket")), "PV socket remains"
+    assert not PORTS_SETTING.exists(), "PV's port setting remains"
+    assert unprivileged_port_start() == "1024"
     for directory in ["/usr/local/share/ca-certificates", "/etc/pki/ca-trust/source/anchors"]:
         assert not list(Path(directory).glob("pv-local-ca-*")), "PV CA anchor remains"
     for bundle in ["/etc/ssl/certs/ca-certificates.crt",

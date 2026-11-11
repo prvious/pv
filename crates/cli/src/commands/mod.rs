@@ -25,9 +25,7 @@ mod linux_distribution;
 mod logs;
 mod mailpit;
 mod mysql;
-mod pf_diagnostics;
 mod php;
-mod ports;
 mod postgres;
 mod project;
 mod project_hooks;
@@ -61,15 +59,6 @@ where
     }
     let runtime_lifecycle_lock = acquire_runtime_lifecycle(&cli.command, environment)?;
     require_no_update_in_progress(&cli.command, environment)?;
-    #[cfg(target_os = "linux")]
-    let _helper_lifecycle_lock =
-        if matches!(cli.command, Command::PortsInstall | Command::PortsUninstall) {
-            Some(state::HelperLifecycleLock::acquire(&pv_paths(
-                environment,
-            )?)?)
-        } else {
-            None
-        };
 
     match cli.command {
         Command::Env(args) => env::run(args, environment, streams),
@@ -85,11 +74,6 @@ where
         Command::ShimPhp(args) => php::shim(args, environment, runtime_lifecycle_lock),
         Command::ShimComposer(args) => composer::shim(args, environment, runtime_lifecycle_lock),
         Command::DnsStatus => dns::status(environment, streams),
-        Command::DnsInstall => dns::install(environment, streams),
-        Command::DnsUninstall => dns::uninstall(environment, streams),
-        Command::PortsStatus(args) => ports::status(args, environment, streams),
-        Command::PortsInstall => ports::install(environment, streams),
-        Command::PortsUninstall => ports::uninstall(environment, streams),
         Command::CaStatus => ca::status(environment, streams),
         Command::CaTrust => ca::trust(environment, streams),
         Command::CaUntrust => ca::untrust(environment, streams),
@@ -180,7 +164,6 @@ fn acquire_runtime_lifecycle(
                 | Command::Doctor(_)
                 | Command::Jobs(_)
                 | Command::DnsStatus
-                | Command::PortsStatus(_)
                 | Command::CaStatus
         )
     {
@@ -205,11 +188,9 @@ fn require_command_capability(command: &Command) -> Result<(), ExecuteError> {
 
 fn required_capability(command: &Command) -> Option<PlatformCapability> {
     match command {
-        Command::Setup(_)
-        | Command::Uninstall(_)
-        | Command::DnsStatus
-        | Command::DnsInstall
-        | Command::DnsUninstall => Some(PlatformCapability::ResolverIntegration),
+        Command::Setup(_) | Command::Uninstall(_) | Command::DnsStatus => {
+            Some(PlatformCapability::ResolverIntegration)
+        }
         Command::DaemonEnable
         | Command::DaemonDisable
         | Command::DaemonRestart
@@ -221,9 +202,6 @@ fn required_capability(command: &Command) -> Option<PlatformCapability> {
             Some(PlatformCapability::DaemonIpc)
         }
         Command::MonitorRun | Command::MonitorGate => Some(PlatformCapability::ProcessContainment),
-        Command::PortsStatus(_) | Command::PortsInstall | Command::PortsUninstall => {
-            Some(PlatformCapability::LowPortFrontend)
-        }
         Command::CaStatus | Command::CaTrust | Command::CaUntrust => {
             Some(PlatformCapability::TrustStore)
         }
@@ -313,10 +291,6 @@ fn command_blocked_during_update(command: &Command) -> bool {
                 | Command::DaemonEnable
                 | Command::DaemonDisable
                 | Command::DaemonRestart
-                | Command::DnsInstall
-                | Command::DnsUninstall
-                | Command::PortsInstall
-                | Command::PortsUninstall
                 | Command::CaTrust
                 | Command::CaUntrust
                 | Command::Link(_)

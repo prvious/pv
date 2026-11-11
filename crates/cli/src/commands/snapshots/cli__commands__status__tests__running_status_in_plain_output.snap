@@ -9,8 +9,6 @@ Daemon: running
   Socket: healthy
 Integrations:
   DNS: active
-  Ports: active
-    HTTP 80 -> 48080, HTTPS 443 -> 48443
   CA: trusted
 Logs: /home/acme/.pv/logs
 Managed Resources:

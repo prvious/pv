@@ -7,7 +7,9 @@ use platform::{
 };
 use self_update::AppUpdateVersion;
 use serde::Serialize;
-use state::{Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, StateError};
+use state::{
+    Database, JobDiagnosticSubject, PvPaths, RuntimeObservedStatus, RuntimeSubject, StateError,
+};
 
 use crate::args::DoctorArgs;
 use crate::environment::Environment;
@@ -17,7 +19,6 @@ use crate::helper_release::HelperReleaseMetadata;
 use crate::output::{Line, Mark, Output, Streams, Tone};
 
 use super::linux_distribution::LinuxDistribution;
-use super::pf_diagnostics::{PfRoutingDiagnostic, PfRoutingState};
 
 pub(crate) fn run(
     args: DoctorArgs,
@@ -73,8 +74,8 @@ impl DoctorReport {
             DoctorSection {
                 title: "Routing",
                 checks: vec![
-                    dns_check(environment, &paths)?,
-                    ports_check(environment, &paths, database.as_ref())?,
+                    dns_check(environment, database.as_ref())?,
+                    ports_check(environment, database.as_ref())?,
                     ca_check(environment, &paths),
                 ],
             },
@@ -308,8 +309,6 @@ struct DoctorCheck {
     message: String,
     detail: Option<String>,
     repair: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    routing: Option<PfRoutingDiagnostic>,
 }
 
 impl DoctorCheck {
@@ -320,7 +319,6 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: None,
-            routing: None,
         }
     }
 
@@ -331,7 +329,6 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: repair.map(str::to_owned),
-            routing: None,
         }
     }
 
@@ -342,17 +339,11 @@ impl DoctorCheck {
             message: message.into(),
             detail: None,
             repair: Some(repair.into()),
-            routing: None,
         }
     }
 
     fn with_detail(mut self, detail: impl Into<String>) -> Self {
         self.detail = Some(detail.into());
-        self
-    }
-
-    fn with_routing(mut self, routing: PfRoutingDiagnostic) -> Self {
-        self.routing = Some(routing);
         self
     }
 }
@@ -471,70 +462,49 @@ fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileSta
     }
 }
 
-fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCheck, ExecuteError> {
-    let prepared = platform::inspect_resolver_file(&paths.resolver_config(), None);
-    let expected = resolver_config_from_state(&prepared);
-    let system_path = resolver_test_path(environment)?;
-    let system = environment.inspect_resolver_file(&system_path, expected.as_ref());
+fn dns_check(
+    environment: &impl Environment,
+    database: Option<&Database>,
+) -> Result<DoctorCheck, ExecuteError> {
+    let dns_port = match database {
+        Some(database) => super::dns::assigned_dns_port(database)?,
+        None => None,
+    };
+    let Some(dns_port) = dns_port else {
+        return Ok(DoctorCheck::fail(
+            "DNS config",
+            "no DNS port is assigned",
+            "pv setup",
+        ));
+    };
+    let system = environment.inspect_system_resolver(Some(&ResolverConfig::new(dns_port)));
 
-    let check = match (&prepared, &system) {
-        (ResolverFileState::Current { port, .. }, ResolverFileState::Current { .. }) => {
+    let check = match &system {
+        ResolverFileState::Current { port, .. } => {
             DoctorCheck::pass("DNS config", format!("system resolver uses port {port}"))
         }
-        (ResolverFileState::Current { .. }, ResolverFileState::Missing { path }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config is missing",
-                "pv dns:install",
-            )
-            .with_detail(format!("path: {path}"))
-        }
-        (ResolverFileState::Current { .. }, ResolverFileState::Stale { path, .. }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config is PV-owned but stale",
-                "pv dns:install",
-            )
-            .with_detail(format!("path: {path}"))
-        }
-        (ResolverFileState::Current { .. }, ResolverFileState::Conflict { path }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config is not PV-owned",
-                "pv dns:install",
-            )
-            .with_detail(format!("path: {path}"))
-        }
-        (ResolverFileState::Current { .. }, ResolverFileState::Unreadable { path, message }) => {
-            DoctorCheck::fail(
-                "DNS config",
-                "system resolver config could not be inspected",
-                "pv dns:install",
-            )
-            .with_detail(format!("{path}: {message}"))
-        }
-        (ResolverFileState::Missing { path }, _) => DoctorCheck::fail(
+        ResolverFileState::Missing { path } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config is missing",
-            "pv dns:install",
+            "system resolver config is missing",
+            "pv setup",
         )
         .with_detail(format!("path: {path}")),
-        (ResolverFileState::Stale { path, .. }, _) => DoctorCheck::fail(
+        ResolverFileState::Stale { path, .. } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config is PV-owned but stale",
-            "pv dns:install",
+            "system resolver config is PV-owned but stale",
+            "pv setup",
         )
         .with_detail(format!("path: {path}")),
-        (ResolverFileState::Conflict { path }, _) => DoctorCheck::fail(
+        ResolverFileState::Conflict { path } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config is not PV-owned",
-            "pv dns:install",
+            "system resolver config is not PV-owned",
+            "pv setup",
         )
         .with_detail(format!("path: {path}")),
-        (ResolverFileState::Unreadable { path, message }, _) => DoctorCheck::fail(
+        ResolverFileState::Unreadable { path, message } => DoctorCheck::fail(
             "DNS config",
-            "prepared resolver config could not be inspected",
-            "pv dns:install",
+            "system resolver config could not be inspected",
+            "pv setup",
         )
         .with_detail(format!("{path}: {message}")),
     };
@@ -547,40 +517,6 @@ fn dns_check(environment: &impl Environment, paths: &PvPaths) -> Result<DoctorCh
         return Ok(DoctorCheck::warn("DNS config", error.to_string(), None));
     }
     Ok(check)
-}
-
-fn ports_check(
-    environment: &impl Environment,
-    paths: &PvPaths,
-    database: Option<&Database>,
-) -> Result<DoctorCheck, ExecuteError> {
-    let routing = PfRoutingDiagnostic::read(environment, paths, database)?;
-    let message = match routing.state {
-        PfRoutingState::Active => "low-port routing is active",
-        PfRoutingState::Inactive => "low-port redirects are inactive",
-        PfRoutingState::Drifted => "low-port routing has drifted",
-        PfRoutingState::Unknown => "low-port routing could not be verified",
-    };
-    let detail = format!(
-        "evidence: {}; expected: HTTP {}, HTTPS {}; active: HTTP {}, HTTPS {}; observed: {}",
-        routing.evidence.as_str(),
-        display_port(routing.expected_http_port),
-        display_port(routing.expected_https_port),
-        display_port(routing.active_http_port),
-        display_port(routing.active_https_port),
-        routing.observed_at,
-    );
-    let check = if routing.is_active() {
-        DoctorCheck::pass("Port redirect config", message)
-    } else {
-        DoctorCheck::fail("Port redirect config", message, "pv ports:install")
-    };
-
-    Ok(check.with_detail(detail).with_routing(routing))
-}
-
-fn display_port(port: Option<u16>) -> String {
-    port.map_or_else(|| "-".to_owned(), |port| port.to_string())
 }
 
 fn ca_check(environment: &impl Environment, paths: &PvPaths) -> DoctorCheck {
@@ -731,6 +667,93 @@ fn repair_for_job_subject(subject: &JobDiagnosticSubject) -> String {
     }
 }
 
+/// Whether the Gateway has ports 80 and 443, from its latest observation. On Linux it also needs
+/// PV's kernel setting.
+fn ports_check(
+    environment: &impl Environment,
+    database: Option<&Database>,
+) -> Result<DoctorCheck, ExecuteError> {
+    const NAME: &str = "Ports 80 and 443";
+    #[cfg(target_os = "linux")]
+    match environment.inspect_unprivileged_ports() {
+        platform::UnprivilegedPortsState::Current => {}
+        platform::UnprivilegedPortsState::Missing => {
+            return Ok(DoctorCheck::fail(
+                NAME,
+                "PV's kernel setting for ports 80 and 443 is missing",
+                "pv setup",
+            ));
+        }
+        platform::UnprivilegedPortsState::Overridden { value, files } => {
+            return Ok(DoctorCheck::fail(
+                NAME,
+                format!("the kernel still keeps ports below {value} from PV"),
+                "remove or change those files, then run `pv setup`",
+            )
+            .with_detail(format!(
+                "set by: {}",
+                files
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )));
+        }
+        platform::UnprivilegedPortsState::Unreadable { message } => {
+            return Ok(DoctorCheck::warn(
+                NAME,
+                format!("PV's kernel setting could not be read: {message}"),
+                None,
+            ));
+        }
+    }
+    // The Gateway's own failure shows under "Runtime states"; this check only names the programs
+    // holding the ports when that failure says others hold them. Otherwise the ports are PV's: the
+    // daemon and a running or failed Gateway keep them.
+    let ports_held_by_others = match database {
+        Some(database) => database
+            .runtime_observed_states()?
+            .into_iter()
+            .any(|observation| {
+                observation.subject == RuntimeSubject::Gateway
+                    && observation.status == RuntimeObservedStatus::Failed
+                    && observation
+                        .message
+                        .as_deref()
+                        .is_some_and(daemon::gateway_failure_is_port_conflict)
+            }),
+        None => false,
+    };
+    if !ports_held_by_others {
+        return Ok(DoctorCheck::pass(NAME, "no conflict reported"));
+    }
+    let conflicts = match environment.inspect_low_ports() {
+        Ok(inspection) => inspection
+            .ports
+            .iter()
+            .filter(|port| !port.available)
+            .map(platform::LowPortState::conflict_message)
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return Ok(DoctorCheck::warn(
+                NAME,
+                format!("the programs holding them are unknown: {error}"),
+                Some("pv setup"),
+            ));
+        }
+    };
+    if conflicts.is_empty() {
+        return Ok(DoctorCheck::pass(NAME, "no other program holds them"));
+    }
+
+    Ok(DoctorCheck::fail(
+        NAME,
+        "another program holds them; free them, then restart PV's daemon",
+        "pv daemon:restart",
+    )
+    .with_detail(conflicts.join(" ")))
+}
+
 fn runtime_states_check(database: Option<&Database>) -> Result<DoctorCheck, ExecuteError> {
     let Some(database) = database else {
         return Ok(DoctorCheck::warn(
@@ -815,16 +838,6 @@ fn runtime_status_label(status: RuntimeObservedStatus) -> &'static str {
     }
 }
 
-fn resolver_config_from_state(state: &ResolverFileState) -> Option<ResolverConfig> {
-    match state {
-        ResolverFileState::Current { port, .. } => Some(ResolverConfig::new(*port)),
-        ResolverFileState::Missing { .. }
-        | ResolverFileState::Stale { .. }
-        | ResolverFileState::Conflict { .. }
-        | ResolverFileState::Unreadable { .. } => None,
-    }
-}
-
 fn metadata_from_local_ca(state: &CaFileState) -> Option<LocalCaMetadata> {
     match state {
         CaFileState::Current { metadata, .. } => Some(metadata.clone()),
@@ -864,9 +877,4 @@ fn pv_paths(environment: &impl Environment) -> Result<PvPaths, ExecuteError> {
     let home = Utf8PathBuf::from_path_buf(home).map_err(|path| StateError::NonUtf8Home { path })?;
 
     Ok(PvPaths::for_home(home))
-}
-
-fn resolver_test_path(environment: &impl Environment) -> Result<Utf8PathBuf, ExecuteError> {
-    Utf8PathBuf::from_path_buf(environment.resolver_test_path())
-        .map_err(|path| CliError::NonUtf8Path { path }.into())
 }

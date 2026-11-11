@@ -83,24 +83,6 @@ pub(crate) enum Command {
     #[command(name = "dns:status", about = "Show PV .test resolver status")]
     DnsStatus,
 
-    #[command(
-        name = "dns:install",
-        about = "Install or repair PV .test resolver config"
-    )]
-    DnsInstall,
-
-    #[command(name = "dns:uninstall", about = "Remove PV .test resolver config")]
-    DnsUninstall,
-
-    #[command(name = "ports:status", about = "Show PV pf redirect status")]
-    PortsStatus(PortsStatusArgs),
-
-    #[command(name = "ports:install", about = "Install or repair PV pf redirects")]
-    PortsInstall,
-
-    #[command(name = "ports:uninstall", about = "Remove PV pf redirects")]
-    PortsUninstall,
-
     #[command(name = "ca:status", about = "Show PV local CA trust status")]
     CaStatus,
 
@@ -534,12 +516,6 @@ pub(crate) struct ProjectEnvArgs {
 #[derive(Debug, clap::Args)]
 pub(crate) struct StatusArgs {
     #[arg(long, help = "Print whole-system status as JSON")]
-    pub(crate) json: bool,
-}
-
-#[derive(Debug, clap::Args)]
-pub(crate) struct PortsStatusArgs {
-    #[arg(long, help = "Print pf redirect status as JSON")]
     pub(crate) json: bool,
 }
 

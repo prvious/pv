@@ -4,7 +4,7 @@
 //! fakes can't drift from what PV actually depends on.
 #![cfg(unix)]
 
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, TcpStream};
 use std::process::Output;
 use std::time::Duration;
 
@@ -13,16 +13,17 @@ use camino::Utf8Path;
 use camino_tempfile::{Utf8TempDir, tempdir};
 use daemon::gateway::{
     CaddyCliCommand, PhpWorkerRuntimePlan, RuntimeProject, gateway_process_spec,
-    worker_process_spec,
+    gateway_readiness_check, worker_process_spec,
 };
 use daemon::gateway_config::{
-    GatewayConfigInput, PhpWorkerConfigInput, PhpWorkerProject, render_gateway_config,
-    render_php_worker_config, render_php_worker_project_config,
+    GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
+    render_gateway_config, render_gateway_project_config, render_php_worker_config,
+    render_php_worker_project_config,
 };
 use daemon::{
-    CaddyAdminClient, CaddyAdminEndpoint, CaddyAdminError, ProcessSupervisor, ReadinessCheck,
-    wait_for_readiness,
+    CaddyAdminClient, CaddyAdminEndpoint, ProcessSupervisor, ReadinessCheck, wait_for_readiness,
 };
+use platform::GatewayListenerSource;
 use platform::clock::{Limit, real};
 use pv_fake::Persona;
 use resources::{
@@ -42,7 +43,6 @@ const READINESS: Limit = Limit::new("contract readiness", Duration::from_secs(30
 /// Caddy switches listeners before `/load` responds; this only absorbs scheduling delays.
 const RELOAD: Limit = Limit::new("contract reload readiness", Duration::from_secs(5));
 const STOP_GRACE_PERIOD: Duration = Duration::from_secs(10);
-const GATEWAY_SERVER_NAME: &str = "pv-gateway.localhost";
 const WORKER_PHP_TRACK: &str = "8.4";
 
 #[tokio::test]
@@ -104,67 +104,65 @@ async fn real_frankenphp_satisfies_the_worker_contract() -> Result<()> {
     .await
 }
 
-/// PV's Gateway lifecycle: validate the rendered root config, start it through the supervisor,
-/// wait for the admin API and the public identity route over HTTP and HTTPS, reload it onto new
-/// ports, keep serving through a reload that can't bind its port, and stop within the grace
-/// period.
+/// PV's Gateway lifecycle: validate the rendered root config, start it through the supervisor with
+/// two inherited listeners, wait for the admin API and the public identity route over HTTP and
+/// HTTPS, keep serving through two reloads, the second adding a project site, and stop within the
+/// grace period. Caddy's own default ports point at two more free ports, where any listener Caddy
+/// opened by itself would show.
 async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> {
     seed_local_ca(paths)?;
-    let [http_port, https_port, moved_http_port, moved_https_port] = pv_fake::ports()?;
+    let [
+        http_port,
+        https_port,
+        default_http_port,
+        default_https_port,
+        worker_port,
+    ] = pv_fake::ports()?;
+    let listeners = GatewayListenerSource::Bind {
+        http_port,
+        https_port,
+    }
+    .open()?;
     state::fs::ensure_user_dir(&paths.gateway_projects_config_dir())?;
-    let config = gateway_config(paths, http_port, https_port)?;
+    let config = gateway_config(paths, default_http_port, default_https_port)?;
     let config_path = paths.gateway_root_config();
     state::fs::write_sensitive_file(&config_path, &config)?;
     let command = CaddyCliCommand::caddy(executable);
     let endpoint = CaddyAdminEndpoint::new(paths.gateway_admin_socket());
+    let identity = gateway_readiness_check(http_port, https_port, &paths.ca_certificate());
 
     assert_validation_contract(paths, executable, &command, &config_path)?;
     let process = ProcessSupervisor::new(paths.clone())
-        .start(gateway_process_spec(paths, &command))
+        .start_gateway(gateway_process_spec(paths, &command), &listeners)
         .await?;
     let serving = async {
         CaddyAdminClient::new()
             .wait_until_ready(&endpoint, &READINESS)
             .await?;
-        wait_for_readiness(gateway_identity(paths, http_port, https_port), &READINESS).await?;
+        wait_for_readiness(identity.clone(), &READINESS).await?;
 
-        // Caddy has closed the old ports and serves the new identity by the time `/load` returns.
         CaddyAdminClient::new()
-            .load_caddyfile(
-                &endpoint,
-                gateway_config(paths, moved_http_port, moved_https_port)?.as_bytes(),
-            )
+            .load_caddyfile(&endpoint, config.as_bytes())
             .await?;
-        ensure_ports_closed(&[http_port, https_port])?;
-        wait_for_readiness(
-            gateway_identity(paths, moved_http_port, moved_https_port),
-            &RELOAD,
-        )
-        .await?;
+        wait_for_readiness(identity.clone(), &RELOAD).await?;
 
-        // A reload that can't bind its port fails after Caddy's adapter warnings, with a 200, and
-        // leaves the previous config serving.
-        let busy = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))?;
-        let busy_port = busy.local_addr()?.port();
-        let busy_load = CaddyAdminClient::new()
-            .load_caddyfile(
-                &endpoint,
-                gateway_config(paths, busy_port, moved_https_port)?.as_bytes(),
-            )
-            .await;
-        ensure!(
-            matches!(
-                &busy_load,
-                Err(CaddyAdminError::LoadReportedFailure { status: 200, detail, .. })
-                    if detail.ends_with("bind: address already in use")
-            ),
-            "expected a reported bind failure, got {busy_load:?}"
-        );
-        wait_for_readiness(
-            gateway_identity(paths, moved_http_port, moved_https_port),
-            &RELOAD,
-        )
-        .await?;
+        state::fs::write_sensitive_file(
+            &paths
+                .gateway_projects_config_dir()
+                .join("contract.Caddyfile"),
+            &render_gateway_project_config(&GatewayProjectRoute {
+                id: "contract".to_owned(),
+                render_config: true,
+                primary_hostname: "contract.test".to_owned(),
+                worker_port,
+                access_log_path: paths.gateway_access_log(),
+            })?,
+        )?;
+        CaddyAdminClient::new()
+            .load_caddyfile(&endpoint, config.as_bytes())
+            .await?;
+        wait_for_readiness(identity.clone(), &RELOAD).await?;
+        ensure_ports_closed(&[default_http_port, default_https_port])?;
         Ok::<(), anyhow::Error>(())
     }
     .await;
@@ -307,32 +305,30 @@ fn assert_validation_contract(
     Ok(())
 }
 
-fn gateway_config(paths: &PvPaths, http_port: u16, https_port: u16) -> Result<String> {
-    with_skip_install_trust(&render_gateway_config(&GatewayConfigInput {
-        http_port,
-        https_port,
-        admin_socket_path: paths.gateway_admin_socket(),
-        ca_certificate_path: paths.ca_certificate(),
-        ca_private_key_path: paths.ca_private_key(),
-        storage_path: paths.root().join("certificates/caddy"),
-        access_log_path: paths.gateway_access_log(),
-        error_log_path: paths.gateway_error_log(),
-        projects_config_glob: paths.gateway_projects_config_dir().join("*.Caddyfile"),
-        import_project_configs: true,
-    })?)
-}
-
-fn gateway_identity(paths: &PvPaths, http_port: u16, https_port: u16) -> ReadinessCheck {
-    ReadinessCheck::GatewayIdentity {
-        http_host: Ipv4Addr::LOCALHOST.to_string(),
-        http_port,
-        https_host: Ipv4Addr::LOCALHOST.to_string(),
-        https_port,
-        server_name: GATEWAY_SERVER_NAME.to_owned(),
-        path: "/__pv/health".to_owned(),
-        expected_body: format!("pv-gateway-health-v1:{http_port}:{https_port}"),
-        ca_certificate_path: paths.ca_certificate(),
-    }
+/// The production root config, with Caddy's default ports moved to `default_http_port` and
+/// `default_https_port`.
+fn gateway_config(
+    paths: &PvPaths,
+    default_http_port: u16,
+    default_https_port: u16,
+) -> Result<String> {
+    with_test_global_options(
+        &render_gateway_config(&GatewayConfigInput {
+            admin_socket_path: paths.gateway_admin_socket(),
+            ca_certificate_path: paths.ca_certificate(),
+            ca_private_key_path: paths.ca_private_key(),
+            storage_path: paths.root().join("certificates/caddy"),
+            access_log_path: paths.gateway_access_log(),
+            error_log_path: paths.gateway_error_log(),
+            projects_config_glob: paths.gateway_projects_config_dir().join("*.Caddyfile"),
+            import_project_configs: true,
+        })?,
+        &[
+            "skip_install_trust".to_owned(),
+            format!("http_port {default_http_port}"),
+            format!("https_port {default_https_port}"),
+        ],
+    )
 }
 
 fn worker_identity(port: u16) -> ReadinessCheck {
@@ -373,14 +369,19 @@ fn seed_local_ca(paths: &PvPaths) -> Result<()> {
     Ok(())
 }
 
-/// Real Caddy tries to add a new local CA to the system trust store, which prompts on a
-/// developer machine. The fakes ignore the option.
-fn with_skip_install_trust(config: &str) -> Result<String> {
+/// Adds `options` to the rendered global options block. Real Caddy tries to add a new local CA to
+/// the system trust store, which prompts on a developer machine, so the Gateway's config skips it;
+/// the fakes ignore that option.
+fn with_test_global_options(config: &str, options: &[String]) -> Result<String> {
     let Some(global_options) = config.strip_prefix("{\n") else {
         bail!("rendered Caddyfile does not start with a global options block");
     };
+    let options = options
+        .iter()
+        .map(|option| format!("    {option}\n"))
+        .collect::<String>();
 
-    Ok(format!("{{\n    skip_install_trust\n{global_options}"))
+    Ok(format!("{{\n{options}{global_options}"))
 }
 
 fn run_runtime_cli(executable: &Utf8Path, arguments: &[String]) -> Result<Output> {

@@ -71,14 +71,6 @@ expression: "(paths.summary(), derived)"
             "/tmp/pv-test-home/.pv/certificates/projects/project123/tls.key",
         ),
         (
-            "pf_anchor_config",
-            "/tmp/pv-test-home/.pv/config/pf/com.prvious.pv",
-        ),
-        (
-            "pf_conf_reference_config",
-            "/tmp/pv-test-home/.pv/config/pf/pf.conf",
-        ),
-        (
             "gateway_root_config",
             "/tmp/pv-test-home/.pv/config/gateway/Caddyfile",
         ),

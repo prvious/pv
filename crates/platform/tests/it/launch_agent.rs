@@ -41,6 +41,7 @@ fn launch_agent_file_inspection_reports_missing_current_stale_conflict_and_unrea
     let tempdir = tempdir()?;
     let current_path = tempdir.path().join("current.plist");
     let stale_path = tempdir.path().join("stale.plist");
+    let socketless_path = tempdir.path().join("socketless.plist");
     let conflict_path = tempdir.path().join("conflict.plist");
     let malformed_path = tempdir.path().join("malformed.plist");
     let unreadable_path = tempdir.path().join("directory.plist");
@@ -57,6 +58,15 @@ fn launch_agent_file_inspection_reports_missing_current_stale_conflict_and_unrea
 
     fs::write_sensitive_file(&current_path, &expected.render()?)?;
     fs::write_sensitive_file(&stale_path, &stale.render()?)?;
+    // A LaunchAgent written before PV had port sockets.
+    let rendered = expected.render()?;
+    let (before_sockets, _sockets) = rendered
+        .split_once("\t<key>Sockets</key>")
+        .ok_or_else(|| anyhow::anyhow!("rendered plist has no sockets"))?;
+    fs::write_sensitive_file(
+        &socketless_path,
+        &format!("{before_sockets}</dict>\n</plist>"),
+    )?;
     let conflict = expected.render()?.replace("<!-- Managed by PV -->\n", "");
     fs::write_sensitive_file(&conflict_path, &conflict)?;
     fs::write_sensitive_file(
@@ -69,6 +79,7 @@ fn launch_agent_file_inspection_reports_missing_current_stale_conflict_and_unrea
         inspect_daemon_registration_file(&tempdir.path().join("missing.plist"), Some(&expected)),
         inspect_daemon_registration_file(&current_path, Some(&expected)),
         inspect_daemon_registration_file(&stale_path, Some(&expected)),
+        inspect_daemon_registration_file(&socketless_path, Some(&expected)),
         inspect_daemon_registration_file(&conflict_path, Some(&expected)),
         inspect_daemon_registration_file(&malformed_path, Some(&expected)),
         inspect_daemon_registration_file(&unreadable_path, Some(&expected)),

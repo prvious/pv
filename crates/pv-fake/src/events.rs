@@ -28,6 +28,8 @@ pub enum EventKind {
         persona: Persona,
         argv: Vec<String>,
         lifeline_armed: bool,
+        /// The descriptors from 3 up the fake inherited as sockets, like a Gateway's listeners.
+        inherited_sockets: Vec<i32>,
     },
     TcpAccepted,
     TcpReady {

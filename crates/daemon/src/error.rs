@@ -76,6 +76,20 @@ pub enum DaemonError {
     #[error("I/O error: {0}")]
     Io(#[from] io::Error),
 
+    /// The Gateway has no listeners for ports 80 and 443; the message says why and what to do.
+    #[error("{message}")]
+    GatewayListeners { message: String },
+
+    /// Another program held the assigned DNS port, and the helper couldn't point `.test` lookups
+    /// at a new one.
+    #[error("{bind_error}; moving PV's DNS resolver to port {port} failed: {source}")]
+    DnsPortMove {
+        port: u16,
+        bind_error: Box<DaemonError>,
+        #[source]
+        source: platform::PlatformError,
+    },
+
     #[error(
         "{source}; additionally failed to remove daemon socket during startup cleanup: {cleanup}"
     )]

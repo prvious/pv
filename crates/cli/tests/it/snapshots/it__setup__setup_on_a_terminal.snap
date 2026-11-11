@@ -9,7 +9,7 @@ expression: setup.stdout
 ◇  Ensured PV state layout: <tempdir>/home/.pv
 │
 ✓  Administrator helper installed
-│  2.0.0 (protocol 2)
+│  3.0.0 (protocol 3)
 │
 ◇  Backed up shell profile: <tempdir>/home/.zprofile.<timestamp>.pv.bak
 │
@@ -17,19 +17,12 @@ expression: setup.stdout
 │  ↳ Activate now  eval "$(pv env --shell zsh)"
 │
 ✓  .test domains configured
-│  ✓ Prepared PV DNS resolver config
-│    path: <tempdir>/home/.pv/config/resolver/test
-│    DNS resolver port: <dns-port>
 │  ✓ .test domain routing configured
 │    <tempdir>/etc/resolver/test
+│    DNS resolver port: <dns-port>
 │
-✓  Local HTTP and HTTPS configured
-│  ✓ Prepared PV port redirect config
-│    anchor path: <tempdir>/home/.pv/config/pf/com.prvious.pv
-│    pf.conf reference path: <tempdir>/home/.pv/config/pf/pf.conf
-│    HTTP redirect: 127.0.0.1:80 -> 127.0.0.1:48080
-│    HTTPS redirect: 127.0.0.1:443 -> 127.0.0.1:48443
-│  ✓ Local HTTP and HTTPS redirects installed
+✓  Ports 80 and 443 ready
+│  ✓ Ports 80 and 443 are available to PV
 │
 ✓  Local HTTPS certificates trusted
 │  ✓ Prepared PV local CA
@@ -46,7 +39,7 @@ expression: setup.stdout
 │  ✓ Daemon healthy
 │
 ✓  Local HTTPS, .test domains and startup configured
-│  DNS resolver · port redirect · CA trust · daemon registration
+│  DNS resolver · ports 80 and 443 · CA trust · daemon registration
 │
 ◇  System reconciliation completed: stub job completed
 │

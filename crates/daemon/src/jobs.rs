@@ -4,9 +4,8 @@ use std::io;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use crate::DaemonError;
 use crate::gateway::{
-    CADDY_NOT_INSTALLED, GatewayPfRoutingState, ProjectGatewayReconciliationOutcome,
+    CADDY_NOT_INSTALLED, ProjectGatewayReconciliationOutcome,
     reconcile_gateway_runtimes_with_phase_log, reconcile_project_gateway_runtimes_with_phase_log,
 };
 use crate::hooks::DaemonHooks;
@@ -27,6 +26,7 @@ use crate::reconciliation::{
     ReconciliationScope, RunningReconciliation,
 };
 use crate::structured_log::{self, PhaseOutcome, ReconciliationPhase, ReconciliationPhaseLog};
+use crate::{DaemonError, GatewayListenerHolder};
 use platform::clock::{self, Limit};
 use protocol::{DaemonEvent, DaemonResponse, DaemonTransport, write_line};
 use state::{
@@ -326,6 +326,7 @@ fn artifact_subject(artifact: &resources::ManifestArtifact) -> String {
 
 pub(crate) async fn run_job(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     transport: DaemonTransport<LocalStream>,
     kind: &str,
@@ -336,7 +337,15 @@ pub(crate) async fn run_job(
     if kind == "reconcile" {
         return match parsed_scope {
             Ok(parsed_scope) => {
-                run_reconciliation_job(paths, queue, transport, parsed_scope, runtime_catalog).await
+                run_reconciliation_job(
+                    paths,
+                    gateway_listeners,
+                    queue,
+                    transport,
+                    parsed_scope,
+                    runtime_catalog,
+                )
+                .await
             }
             Err(error) => {
                 run_invalid_reconciliation_scope_job(paths, transport, scope, error).await
@@ -344,7 +353,7 @@ pub(crate) async fn run_job(
         };
     }
     if kind == "update" && scope == "system" {
-        return run_update_job(paths, queue, transport, runtime_catalog).await;
+        return run_update_job(paths, gateway_listeners, queue, transport, runtime_catalog).await;
     }
 
     run_started_job(paths, transport, kind, scope).await
@@ -353,13 +362,20 @@ pub(crate) async fn run_job(
 #[cfg(test)]
 pub(crate) async fn run_background_reconciliation_job(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), DaemonError> {
-    run_background_reconciliation_job_with_origin(paths, queue, scope, runtime_catalog)
-        .await
-        .map_err(BackgroundReconciliationError::into_error)
+    run_background_reconciliation_job_with_origin(
+        paths,
+        gateway_listeners,
+        queue,
+        scope,
+        runtime_catalog,
+    )
+    .await
+    .map_err(BackgroundReconciliationError::into_error)
 }
 
 pub(crate) enum BackgroundReconciliationError {
@@ -383,6 +399,7 @@ impl BackgroundReconciliationError {
 #[cfg(test)]
 pub(crate) async fn run_background_reconciliation_job_with_origin(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -394,7 +411,13 @@ pub(crate) async fn run_background_reconciliation_job_with_origin(
         return Ok(());
     };
 
-    complete_queued_background_reconciliation_job(&paths, queued, runtime_catalog).await
+    complete_queued_background_reconciliation_job(
+        &paths,
+        gateway_listeners,
+        queued,
+        runtime_catalog,
+    )
+    .await
 }
 
 pub(crate) fn enqueue_background_reconciliation_job(
@@ -420,6 +443,7 @@ fn project_exists(paths: &PvPaths, project_id: &str) -> Result<bool, DaemonError
 
 pub(crate) async fn run_startup_reconciliation_job(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     mut shutdown: oneshot::Receiver<()>,
@@ -485,6 +509,7 @@ pub(crate) async fn run_startup_reconciliation_job(
 
     complete_running_background_reconciliation_job(
         &paths,
+        gateway_listeners,
         running,
         runtime_catalog,
         Some(&shutdown),
@@ -505,16 +530,25 @@ async fn wait_for_startup_reconciliation_turn(
 
 pub(crate) async fn complete_queued_background_reconciliation_job(
     paths: &PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queued: QueuedReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<(), BackgroundReconciliationError> {
     let running = queued.wait_for_turn().await;
 
-    complete_running_background_reconciliation_job(paths, running, runtime_catalog, None).await
+    complete_running_background_reconciliation_job(
+        paths,
+        gateway_listeners,
+        running,
+        runtime_catalog,
+        None,
+    )
+    .await
 }
 
 pub(crate) async fn complete_running_background_reconciliation_job(
     paths: &PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     running: RunningReconciliation,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     shutdown: Option<&oneshot::Receiver<()>>,
@@ -529,10 +563,10 @@ pub(crate) async fn complete_running_background_reconciliation_job(
         DaemonDownloadProgress::disabled(),
         running.timing(),
         ReconciliationJobOptions {
+            gateway_listeners,
             discard_obsolete_project: true,
             hooks: running.hooks(),
             shutdown,
-            ..ReconciliationJobOptions::default()
         },
     )
     .await;
@@ -558,6 +592,7 @@ pub(crate) async fn complete_running_background_reconciliation_job(
 
 async fn run_reconciliation_job(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     mut transport: DaemonTransport<LocalStream>,
     scope: ReconciliationScope,
@@ -596,6 +631,7 @@ async fn run_reconciliation_job(
                 scope,
                 runtime_catalog,
                 ForegroundReconciliationOptions {
+                    gateway_listeners,
                     timing: running.timing(),
                     hooks: running.hooks(),
                 },
@@ -682,6 +718,7 @@ fn enqueue_startup_reconciliation_job(
 
 async fn run_update_job(
     paths: PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     queue: ReconciliationQueue,
     mut transport: DaemonTransport<LocalStream>,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
@@ -717,7 +754,7 @@ async fn run_update_job(
                 running.timing(),
                 ReconciliationJobOptions {
                     hooks: running.hooks(),
-                    ..ReconciliationJobOptions::default()
+                    ..ReconciliationJobOptions::new(gateway_listeners)
                 },
             )
             .await;
@@ -917,35 +954,8 @@ where
     }
 }
 
-#[cfg(test)]
-async fn stream_started_reconciliation_job<Stream>(
-    paths: PvPaths,
-    transport: DaemonTransport<Stream>,
-    stream_is_open: bool,
-    job_id: &str,
-    scope: ReconciliationScope,
-    runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    timing: ReconciliationJobTiming,
-) -> Result<(), DaemonError>
-where
-    Stream: AsyncWrite + Unpin,
-{
-    stream_started_reconciliation_job_with_options(
-        paths,
-        transport,
-        stream_is_open,
-        job_id,
-        scope,
-        runtime_catalog,
-        ForegroundReconciliationOptions {
-            timing,
-            hooks: None,
-        },
-    )
-    .await
-}
-
-struct ForegroundReconciliationOptions {
+struct ForegroundReconciliationOptions<'a> {
+    gateway_listeners: &'a GatewayListenerHolder,
     timing: ReconciliationJobTiming,
     hooks: Option<DaemonHooks>,
 }
@@ -957,12 +967,16 @@ async fn stream_started_reconciliation_job_with_options<Stream>(
     job_id: &str,
     scope: ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
-    options: ForegroundReconciliationOptions,
+    options: ForegroundReconciliationOptions<'_>,
 ) -> Result<(), DaemonError>
 where
     Stream: AsyncWrite + Unpin,
 {
-    let ForegroundReconciliationOptions { timing, hooks } = options;
+    let ForegroundReconciliationOptions {
+        gateway_listeners,
+        timing,
+        hooks,
+    } = options;
     let scope_text = scope.to_string();
     let started_stream_result = if stream_is_open {
         async {
@@ -1003,7 +1017,7 @@ where
                     timing,
                     ReconciliationJobOptions {
                         hooks,
-                        ..ReconciliationJobOptions::default()
+                        ..ReconciliationJobOptions::new(gateway_listeners)
                     },
                 ),
                 event_receiver,
@@ -1023,7 +1037,7 @@ where
                     timing,
                     ReconciliationJobOptions {
                         hooks,
-                        ..ReconciliationJobOptions::default()
+                        ..ReconciliationJobOptions::new(gateway_listeners)
                     },
                 )
                 .await,
@@ -1387,6 +1401,7 @@ fn abandon_job(
 #[cfg(test)]
 async fn complete_update_job(
     paths: &PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     job_id: &str,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
 ) -> Result<String, DaemonError> {
@@ -1396,7 +1411,7 @@ async fn complete_update_job(
         runtime_catalog,
         DaemonDownloadProgress::disabled(),
         ReconciliationJobTiming::immediate(),
-        ReconciliationJobOptions::default(),
+        ReconciliationJobOptions::new(gateway_listeners),
     )
     .await
     .into_result()
@@ -1504,6 +1519,7 @@ async fn complete_update_job_inner(
     phase_log: &ReconciliationPhaseLog,
     options: ReconciliationJobOptions<'_>,
 ) -> Result<CompletedUpdateJob, FailedUpdateJob> {
+    let gateway_listeners = options.gateway_listeners;
     let report = if runtime_catalog.is_none() {
         let update_paths = paths.clone();
         let update_progress = progress.clone();
@@ -1564,6 +1580,7 @@ async fn complete_update_job_inner(
         Err(error) => {
             return Err(compensate_caddy_update_failure(
                 paths,
+                gateway_listeners,
                 &report,
                 error,
                 failure_subject,
@@ -1586,26 +1603,31 @@ async fn complete_update_job_inner(
 
 async fn compensate_caddy_update_failure(
     paths: &PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     report: &ManagedResourceUpdateReport,
     original_error: DaemonError,
     subject: JobDiagnosticSubject,
     phase_log: &ReconciliationPhaseLog,
 ) -> FailedUpdateJob {
     match report.rollback_caddy(paths) {
-        Ok(true) => match reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await {
-            Ok(_summary) => FailedUpdateJob::new(
-                original_error,
-                if subject == JobDiagnosticSubject::GatewayRuntime {
-                    JobDiagnosticSubject::UpdateAssessment
-                } else {
-                    subject
-                },
-            ),
-            Err(recovery_error) => FailedUpdateJob::new(
-                caddy_compensation_error(original_error, recovery_error),
-                subject,
-            ),
-        },
+        Ok(true) => {
+            match reconcile_gateway_runtimes_with_phase_log(paths, gateway_listeners, phase_log)
+                .await
+            {
+                Ok(_summary) => FailedUpdateJob::new(
+                    original_error,
+                    if subject == JobDiagnosticSubject::GatewayRuntime {
+                        JobDiagnosticSubject::UpdateAssessment
+                    } else {
+                        subject
+                    },
+                ),
+                Err(recovery_error) => FailedUpdateJob::new(
+                    caddy_compensation_error(original_error, recovery_error),
+                    subject,
+                ),
+            }
+        }
         Ok(false) => FailedUpdateJob::new(original_error, subject),
         Err(rollback_error) => FailedUpdateJob::new(
             caddy_compensation_error(original_error, rollback_error),
@@ -1819,7 +1841,7 @@ async fn complete_managed_resource_reconciliation_with_progress(
         runtime_catalog,
         progress,
         phase_log,
-        ReconciliationJobOptions::default(),
+        None,
     )
     .await
 }
@@ -1831,7 +1853,7 @@ async fn complete_managed_resource_reconciliation_with_options(
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
-    options: ReconciliationJobOptions<'_>,
+    hooks: Option<&DaemonHooks>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
     let dependent_projects = Database::open(paths)?
         .projects_demanding_managed_resource_track(name.as_str(), track.as_str())?;
@@ -1865,7 +1887,7 @@ async fn complete_managed_resource_reconciliation_with_options(
         ProjectApplyStage::RecordRequirements,
         &linked_projects(paths)?,
         &skip_projects,
-        options.hooks.as_ref(),
+        hooks,
     )
     .await;
     finish_project_phase(record_timer, &record_result);
@@ -1913,7 +1935,7 @@ async fn complete_managed_resource_reconciliation_with_options(
         ProjectApplyStage::CompleteStagedApply,
         &dependent_projects,
         &skip_projects,
-        options.hooks.as_ref(),
+        hooks,
     )
     .await;
     finish_project_phase(project_timer, &project_result);
@@ -2010,12 +2032,12 @@ fn reconcile_persisted_project_envs(
 #[cfg(test)]
 async fn complete_reconciliation_job_with_progress(
     paths: &PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     job_id: &str,
     scope: &ReconciliationScope,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     timing: ReconciliationJobTiming,
-    pf_routing_state: Option<GatewayPfRoutingState>,
 ) -> Result<String, DaemonError> {
     complete_reconciliation_job_with_progress_outcome(
         paths,
@@ -2024,10 +2046,7 @@ async fn complete_reconciliation_job_with_progress(
         runtime_catalog,
         progress,
         timing,
-        ReconciliationJobOptions {
-            pf_routing_state,
-            ..ReconciliationJobOptions::default()
-        },
+        ReconciliationJobOptions::new(gateway_listeners),
     )
     .await
     .into_result()
@@ -2057,13 +2076,23 @@ impl ReconciliationJobCompletion {
     }
 }
 
-#[derive(Default)]
 struct ReconciliationJobOptions<'a> {
+    gateway_listeners: &'a GatewayListenerHolder,
     discard_obsolete_project: bool,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     hooks: Option<DaemonHooks>,
     /// The startup job's shutdown signal; only the system scope reads it.
     shutdown: Option<&'a oneshot::Receiver<()>>,
+}
+
+impl<'a> ReconciliationJobOptions<'a> {
+    fn new(gateway_listeners: &'a GatewayListenerHolder) -> Self {
+        Self {
+            gateway_listeners,
+            discard_obsolete_project: false,
+            hooks: None,
+            shutdown: None,
+        }
+    }
 }
 
 async fn complete_reconciliation_job_with_progress_outcome(
@@ -2075,8 +2104,8 @@ async fn complete_reconciliation_job_with_progress_outcome(
     timing: ReconciliationJobTiming,
     options: ReconciliationJobOptions<'_>,
 ) -> ReconciliationJobCompletion {
+    let gateway_listeners = options.gateway_listeners;
     let discard_obsolete_project = options.discard_obsolete_project;
-    let pf_routing_state = options.pf_routing_state;
     let scope_text = scope.to_string();
     let phase_log = ReconciliationPhaseLog::new(paths, job_id, "reconcile", &scope_text)
         .with_progress(progress.phase_sender.clone());
@@ -2129,7 +2158,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
             ReconciliationScope::Resource { name, .. }
                 if gateway_runtime_resource(name.as_str()) =>
             {
-                complete_gateway_reconciliation(paths, &phase_log).await
+                complete_gateway_reconciliation(paths, gateway_listeners, &phase_log).await
             }
             ReconciliationScope::Resource { name, track } => {
                 complete_managed_resource_reconciliation_with_options(
@@ -2139,7 +2168,7 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     runtime_catalog,
                     progress,
                     &phase_log,
-                    options,
+                    options.hooks.as_ref(),
                 )
                 .await
             }
@@ -2152,9 +2181,8 @@ async fn complete_reconciliation_job_with_progress_outcome(
                     &phase_log,
                     &mut failure_subject,
                     ReconciliationJobOptions {
-                        pf_routing_state,
                         hooks: options.hooks,
-                        ..ReconciliationJobOptions::default()
+                        ..ReconciliationJobOptions::new(gateway_listeners)
                     },
                 )
                 .await
@@ -2259,9 +2287,11 @@ fn fail_reconciliation_job(
 
 async fn complete_gateway_reconciliation(
     paths: &PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     phase_log: &ReconciliationPhaseLog,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    let summary = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await?;
+    let summary =
+        reconcile_gateway_runtimes_with_phase_log(paths, gateway_listeners, phase_log).await?;
 
     Ok(CompletedReconciliationJob {
         summary,
@@ -2277,6 +2307,7 @@ async fn complete_system_reconciliation_with_progress(
     options: ReconciliationJobOptions<'_>,
     mut failure_subject: Option<&mut JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
+    let gateway_listeners = options.gateway_listeners;
     // Worktree discovery links, moves, and unlinks Projects, so it runs before PV reads them.
     if let Some(context) = &options.hooks {
         context.stop_obsolete().await?;
@@ -2370,7 +2401,8 @@ async fn complete_system_reconciliation_with_progress(
     if let Some(subject) = failure_subject.as_deref_mut() {
         *subject = JobDiagnosticSubject::GatewayRuntime;
     }
-    let gateway_result = reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await;
+    let gateway_result =
+        reconcile_gateway_runtimes_with_phase_log(paths, gateway_listeners, phase_log).await;
     // The Gateway now runs without removed worktrees' routes, so their data can go. Cleanup keeps
     // its failures on the cleanup list instead of failing this job.
     if gateway_result.is_ok() {
@@ -2425,11 +2457,11 @@ async fn complete_system_reconciliation_with_progress(
 #[cfg(test)]
 async fn complete_project_reconciliation_with_progress(
     paths: &PvPaths,
+    gateway_listeners: &GatewayListenerHolder,
     id: &crate::reconciliation::ReconciliationScopeComponent,
     runtime_catalog: Option<&ManagedResourceRuntimeCatalog>,
     progress: DaemonDownloadProgress,
     phase_log: &ReconciliationPhaseLog,
-    pf_routing_state: Option<GatewayPfRoutingState>,
     failure_subject: &mut Option<JobDiagnosticSubject>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
     complete_project_reconciliation_with_options(
@@ -2439,10 +2471,7 @@ async fn complete_project_reconciliation_with_progress(
         progress,
         phase_log,
         failure_subject,
-        ReconciliationJobOptions {
-            pf_routing_state,
-            ..ReconciliationJobOptions::default()
-        },
+        ReconciliationJobOptions::new(gateway_listeners),
     )
     .await
 }
@@ -2456,7 +2485,7 @@ async fn complete_project_reconciliation_with_options(
     failure_subject: &mut Option<JobDiagnosticSubject>,
     options: ReconciliationJobOptions<'_>,
 ) -> Result<CompletedReconciliationJob, DaemonError> {
-    let pf_routing_state = options.pf_routing_state;
+    let gateway_listeners = options.gateway_listeners;
     let project_result = reconcile_project_env_and_missing_resources_with_progress(
         paths,
         id.as_str(),
@@ -2469,7 +2498,13 @@ async fn complete_project_reconciliation_with_options(
     let project_env_summary = match project_result {
         Ok(summary) => summary,
         Err(project_error) => {
-            return match reconcile_gateway_runtimes_with_phase_log(paths, phase_log).await {
+            return match reconcile_gateway_runtimes_with_phase_log(
+                paths,
+                gateway_listeners,
+                phase_log,
+            )
+            .await
+            {
                 Ok(_summary) => Err(project_error),
                 Err(gateway_error) => Err(combined_system_reconciliation_error(vec![
                     project_error,
@@ -2480,8 +2515,8 @@ async fn complete_project_reconciliation_with_options(
     };
     let gateway_outcome = reconcile_project_gateway_runtimes_with_phase_log(
         paths,
+        gateway_listeners,
         id.as_str(),
-        pf_routing_state,
         phase_log,
     )
     .await?;
@@ -3205,6 +3240,19 @@ async fn run_started_job(
 
 #[cfg(test)]
 mod tests {
+    /// Two test ports for the Gateway, shared by every reconciliation in a test, as the daemon
+    /// shares its listeners.
+    fn test_gateway_listeners() -> anyhow::Result<crate::GatewayListenerHolder> {
+        let [http_port, https_port] = pv_fake::ports()?;
+
+        Ok(crate::GatewayListenerHolder::new(
+            platform::GatewayListenerSource::Bind {
+                http_port,
+                https_port,
+            },
+        ))
+    }
+
     use std::collections::{BTreeMap, BTreeSet, VecDeque};
     use std::fs;
     use std::io::{self, Write};
@@ -3228,7 +3276,7 @@ mod tests {
     use rusqlite::{Connection, Error as SqliteError};
     use serde_json::json;
     use state::{
-        Database, GatewayPort, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput,
+        Database, JobDiagnosticSubject, JobStatus, JobsLock, LinkProjectInput,
         ManagedResourceDesiredState, PortRequest, ProjectEnvObservedStatus,
         ProjectEnvObservedWarningInput, ProjectManagedResourceInput, ProjectMode,
         ProjectPhpRuntimeInput, ProjectReconciliationStateInput, PvPaths, ResourceAllocationInput,
@@ -3239,17 +3287,15 @@ mod tests {
     use tokio::net::UnixStream;
     use tokio::sync::{mpsc::channel, oneshot, watch};
 
-    use crate::gateway::{
-        GatewayPfRoutingState, reconcile_gateway_runtimes_with_pf_state_for_test,
-    };
+    use crate::gateway::reconcile_gateway_runtimes;
     use crate::project_env::reconcile_project_env_from_persisted_state;
 
     #[cfg(target_os = "macos")]
     use super::run_reconciliation_job;
     use super::{
         DaemonDownloadProgress, FOREGROUND_JOB_HEARTBEAT_INTERVAL, FOREGROUND_JOB_PROGRESS_BUFFER,
-        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent, ReconciliationJobOptions,
-        SystemProjectReconciliationReport, abandon_reconciliation_job,
+        FOREGROUND_JOB_STREAM_WRITE_TIMEOUT, ForegroundJobEvent, ForegroundReconciliationOptions,
+        ReconciliationJobOptions, SystemProjectReconciliationReport, abandon_reconciliation_job,
         complete_managed_resource_reconciliation_with_progress,
         complete_project_reconciliation_with_progress, complete_reconciliation_job_with_progress,
         complete_streamed_job_with_heartbeat, complete_streamed_job_with_heartbeat_and_events,
@@ -3262,7 +3308,7 @@ mod tests {
         reconcile_system_projects, record_background_reconciliation_error,
         run_background_reconciliation_job, run_startup_reconciliation_job,
         start_reconciliation_job, start_update_job, stop_undemanded_system_resource_runtimes,
-        stream_started_reconciliation_job, stream_started_update_job,
+        stream_started_reconciliation_job_with_options, stream_started_update_job,
         unready_established_resource_projects, wait_for_foreground_turn,
         wait_for_startup_reconciliation_turn, write_coalesced_update_response,
         write_foreground_terminal_event,
@@ -3290,6 +3336,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_project_config_does_not_block_crashed_worker_recovery() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
@@ -3322,8 +3369,7 @@ mod tests {
             |_port| true,
         )?;
         drop(database);
-        reconcile_gateway_runtimes_with_pf_state_for_test(&paths, GatewayPfRoutingState::Inactive)
-            .await?;
+        reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
         let supervisor = ProcessSupervisor::new(paths.clone());
         let worker = supervisor
             .adopt_recorded(&paths.worker_runtime_metadata("8.4"))?
@@ -3333,6 +3379,7 @@ mod tests {
         let scope = ReconciliationScope::project(project.id.clone())?;
         let result = run_background_reconciliation_job(
             paths.clone(),
+            &gateway_listeners,
             ReconciliationQueue::new(),
             scope,
             None,
@@ -3372,6 +3419,7 @@ mod tests {
 
     #[tokio::test]
     async fn project_and_gateway_recovery_failures_are_both_reported() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
@@ -3390,6 +3438,7 @@ mod tests {
             .project;
         let result = run_background_reconciliation_job(
             paths.clone(),
+            &gateway_listeners,
             ReconciliationQueue::new(),
             ReconciliationScope::project(project.id)?,
             None,
@@ -3412,6 +3461,7 @@ mod tests {
     #[tokio::test]
     async fn resource_only_project_without_active_route_excludes_gateway_coverage()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project_path = tempdir.path().join("resource-only");
@@ -3436,11 +3486,7 @@ mod tests {
         drop(database);
         seed_installed_caddy(&paths)?;
         let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
-            &paths,
-            crate::gateway::GatewayPfRoutingState::Inactive,
-        )
-        .await?;
+        crate::gateway::reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
         let mut database = Database::open(&paths)?;
         let uncertain = database
             .link_project(LinkProjectInput {
@@ -3465,11 +3511,11 @@ mod tests {
 
         let completed = complete_project_reconciliation_with_progress(
             &paths,
+            &gateway_listeners,
             id,
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
             &mut None,
         )
         .await?;
@@ -3503,6 +3549,7 @@ mod tests {
 
     #[tokio::test]
     async fn targeted_skip_refreshes_failed_gateway_observation() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project_path = tempdir.path().join("resource-only");
@@ -3524,11 +3571,7 @@ mod tests {
         drop(database);
         seed_installed_caddy(&paths)?;
         let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-        crate::gateway::reconcile_gateway_runtimes_with_pf_state_for_test(
-            &paths,
-            crate::gateway::GatewayPfRoutingState::Inactive,
-        )
-        .await?;
+        crate::gateway::reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
         let mut database = Database::open(&paths)?;
         database.record_runtime_observed_snapshot(
             RuntimeSubject::Gateway,
@@ -3549,11 +3592,11 @@ mod tests {
         );
         let completed = complete_project_reconciliation_with_progress(
             &paths,
+            &gateway_listeners,
             id,
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
             &mut None,
         )
         .await?;
@@ -3569,12 +3612,10 @@ mod tests {
             .into_iter()
             .find(|state| state.subject == RuntimeSubject::Gateway)
             .ok_or_else(|| anyhow::anyhow!("missing Gateway observation"))?;
-        assert_eq!(gateway_observation.status, RuntimeObservedStatus::Degraded);
+        assert_eq!(gateway_observation.status, RuntimeObservedStatus::Running);
         assert_eq!(
             gateway_observation.message.as_deref(),
-            Some(
-                "Low-port routing is inactive; run `pv ports:install` to restore ports 80 and 443"
-            )
+            Some("Gateway runtime reconciled")
         );
 
         stop_seeded_caddy(&paths).await?;
@@ -3593,8 +3634,8 @@ mod tests {
         );
         let outcome = crate::gateway::reconcile_project_gateway_runtimes_with_phase_log(
             &paths,
+            &gateway_listeners,
             &project.id,
-            Some(crate::gateway::GatewayPfRoutingState::Inactive),
             &failed_probe_phase_log,
         )
         .await?;
@@ -3623,6 +3664,7 @@ mod tests {
     #[tokio::test]
     async fn uncertain_project_gateway_plan_promotes_to_system_reconciliation() -> anyhow::Result<()>
     {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let target_path = tempdir.path().join("target");
@@ -3675,11 +3717,11 @@ mod tests {
 
         let completed = complete_project_reconciliation_with_progress(
             &paths,
+            &gateway_listeners,
             id,
             None,
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            None,
             &mut None,
         )
         .await?;
@@ -4214,6 +4256,7 @@ mod tests {
     #[tokio::test]
     async fn targeted_resource_job_fails_when_project_lookup_failure_cannot_be_recorded()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let mut database = Database::open(&paths)?;
@@ -4258,6 +4301,7 @@ mod tests {
         let scope = ReconciliationScope::resource("mailpit", MAILPIT_TEST_TRACK)?;
         run_background_reconciliation_job(
             paths.clone(),
+            &gateway_listeners,
             ReconciliationQueue::new(),
             scope.clone(),
             Some(&catalog),
@@ -4285,6 +4329,7 @@ mod tests {
         ))?;
         let result = run_background_reconciliation_job(
             paths.clone(),
+            &gateway_listeners,
             ReconciliationQueue::new(),
             scope,
             Some(&catalog),
@@ -5040,13 +5085,13 @@ mod tests {
     #[tokio::test]
     async fn system_reconciliation_verifies_php_for_project_linked_after_discovery()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let mut mixed_errors = Vec::new();
         for (fail_install, fail_env) in [(false, false), (true, false), (true, true)] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
             seed_cached_php_pair(&paths, tempdir.path())?;
             let mut caddy_guard = SeededRuntimeGuard::new(paths.clone())?;
-            seed_gateway_ports(&mut Database::open(&paths)?)?;
             seed_local_ca(&paths)?;
             if fail_install {
                 let sha256 = sha256_file(&tempdir.path().join(PHP_TEST_ARCHIVE_FILE_NAME))?;
@@ -5125,14 +5170,18 @@ mod tests {
             let mut streamed_error = None;
             let result = if fail_env {
                 let (client, daemon) = duplex(64 * 1024);
-                stream_started_reconciliation_job(
+                stream_started_reconciliation_job_with_options(
                     paths.clone(),
                     protocol::transport(daemon),
                     true,
                     &job_id,
                     ReconciliationScope::System,
                     Some(&catalog),
-                    ReconciliationJobTiming::immediate(),
+                    ForegroundReconciliationOptions {
+                        gateway_listeners: &gateway_listeners,
+                        timing: ReconciliationJobTiming::immediate(),
+                        hooks: None,
+                    },
                 )
                 .await?;
                 let mut reader = protocol::transport(client);
@@ -5157,7 +5206,7 @@ mod tests {
                     Some(&catalog),
                     progress,
                     &phase_log,
-                    ReconciliationJobOptions::default(),
+                    ReconciliationJobOptions::new(&gateway_listeners),
                     None,
                 )
                 .await
@@ -5354,6 +5403,7 @@ mod tests {
     #[tokio::test]
     async fn system_reconciliation_pins_discovered_php_track_across_manifest_refresh()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let project_path = tempdir.path().join("project");
@@ -5449,7 +5499,7 @@ mod tests {
             Some(&catalog),
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            ReconciliationJobOptions::default(),
+            ReconciliationJobOptions::new(&gateway_listeners),
             None,
         )
         .await?;
@@ -5502,6 +5552,7 @@ mod tests {
     #[tokio::test]
     async fn system_install_failure_preserves_unrelated_php_project_application()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_cached_php_pair(&paths, tempdir.path())?;
@@ -5554,7 +5605,7 @@ mod tests {
             Some(&catalog),
             super::DaemonDownloadProgress::disabled(),
             &phase_log,
-            ReconciliationJobOptions::default(),
+            ReconciliationJobOptions::new(&gateway_listeners),
             None,
         )
         .await;
@@ -5616,6 +5667,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_install_failure_preserves_previous_project_runtime() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
@@ -5713,7 +5765,7 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
-                ReconciliationJobOptions::default(),
+                ReconciliationJobOptions::new(&gateway_listeners),
                 None,
             )
             .await;
@@ -5825,6 +5877,7 @@ mod tests {
     #[tokio::test]
     async fn system_reconciliation_recovers_initial_artifact_download_failure() -> anyhow::Result<()>
     {
+        let gateway_listeners = test_gateway_listeners()?;
         for download_failures in [1, 2] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -5876,7 +5929,7 @@ mod tests {
                 Some(&catalog),
                 progress,
                 &phase_log,
-                ReconciliationJobOptions::default(),
+                ReconciliationJobOptions::new(&gateway_listeners),
                 None,
             )
             .await
@@ -5978,6 +6031,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_recovery_uses_applied_project_demand() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         for replacement in [false, true] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -6035,7 +6089,7 @@ mod tests {
                 Some(&catalog),
                 progress,
                 &phase_log,
-                ReconciliationJobOptions::default(),
+                ReconciliationJobOptions::new(&gateway_listeners),
                 None,
             )
             .await
@@ -6141,6 +6195,7 @@ mod tests {
     #[tokio::test]
     async fn system_cleanup_failure_still_reconciles_gateway_and_preserves_errors()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         for fail_gateway in [false, true] {
             let tempdir = tempdir()?;
             let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -6203,7 +6258,7 @@ mod tests {
                 Some(&catalog),
                 super::DaemonDownloadProgress::disabled(),
                 &phase_log,
-                ReconciliationJobOptions::default(),
+                ReconciliationJobOptions::new(&gateway_listeners),
                 None,
             )
             .await;
@@ -6757,6 +6812,7 @@ mod tests {
 
     #[tokio::test]
     async fn foreground_update_records_actual_queue_wait() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         Database::open(&paths)?;
@@ -6793,7 +6849,7 @@ mod tests {
             &job_id,
             Some(&catalog),
             running.timing(),
-            ReconciliationJobOptions::default(),
+            ReconciliationJobOptions::new(&gateway_listeners),
         )
         .await?;
         running.finish();
@@ -6814,6 +6870,7 @@ mod tests {
 
     #[tokio::test]
     async fn no_op_update_preserves_prior_reconciliation_failure_coverage() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_cached_php_pair(&paths, tempdir.path())?;
@@ -6851,7 +6908,8 @@ mod tests {
         )?;
         let job_id = start_update_job(&paths)?;
 
-        let summary = complete_update_job(&paths, &job_id, Some(&catalog)).await?;
+        let summary =
+            complete_update_job(&paths, &gateway_listeners, &job_id, Some(&catalog)).await?;
 
         assert_eq!(summary, "current");
         let database = Database::open(&paths)?;
@@ -7020,6 +7078,7 @@ mod tests {
     #[tokio::test]
     async fn caddy_update_rolls_back_artifact_and_recovers_gateway_after_failure()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         seed_installed_caddy(&paths)?;
@@ -7038,7 +7097,7 @@ mod tests {
         )?;
         let job_id = start_update_job(&paths)?;
 
-        let update_error = complete_update_job(&paths, &job_id, Some(&catalog))
+        let update_error = complete_update_job(&paths, &gateway_listeners, &job_id, Some(&catalog))
             .await
             .err()
             .ok_or_else(|| anyhow::anyhow!("Caddy update unexpectedly succeeded"))?;
@@ -7206,6 +7265,7 @@ mod tests {
     #[tokio::test]
     async fn foreground_reconciliation_streams_manifest_before_held_fetch_finishes()
     -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let (resource_client, _total_bytes) = scripted_artifact_client(
@@ -7241,14 +7301,18 @@ mod tests {
         let task_job_id = job_id.clone();
         let task_catalog = Arc::clone(&catalog);
         let mut task = tokio::spawn(async move {
-            stream_started_reconciliation_job(
+            stream_started_reconciliation_job_with_options(
                 task_paths,
                 protocol::transport(daemon),
                 true,
                 &task_job_id,
                 ReconciliationScope::System,
                 Some(task_catalog.as_ref()),
-                ReconciliationJobTiming::immediate(),
+                ForegroundReconciliationOptions {
+                    gateway_listeners: &gateway_listeners,
+                    timing: ReconciliationJobTiming::immediate(),
+                    hooks: None,
+                },
             )
             .await
         });
@@ -7293,6 +7357,7 @@ mod tests {
     #[tokio::test]
     async fn failed_system_reconciliation_streams_and_persists_failure_phases() -> anyhow::Result<()>
     {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let mut database = Database::open(&paths)?;
@@ -7312,14 +7377,18 @@ mod tests {
         )?;
         let (client, daemon) = duplex(64 * 1024);
 
-        stream_started_reconciliation_job(
+        stream_started_reconciliation_job_with_options(
             paths.clone(),
             protocol::transport(daemon),
             true,
             &job_id,
             ReconciliationScope::System,
             Some(&catalog),
-            ReconciliationJobTiming::immediate(),
+            ForegroundReconciliationOptions {
+                gateway_listeners: &gateway_listeners,
+                timing: ReconciliationJobTiming::immediate(),
+                hooks: None,
+            },
         )
         .await?;
 
@@ -8534,11 +8603,13 @@ mod tests {
 
     #[tokio::test]
     async fn background_reconciliation_rejects_jobs_lock_without_job() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let jobs_lock = JobsLock::acquire(&paths)?;
         let result = run_background_reconciliation_job(
             paths.clone(),
+            &gateway_listeners,
             ReconciliationQueue::new(),
             ReconciliationScope::System,
             None,
@@ -8560,6 +8631,7 @@ mod tests {
 
     #[tokio::test]
     async fn startup_shutdown_preserves_enqueue_failure() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         state::fs::write_sensitive_file(paths.db(), "not a database")?;
@@ -8570,6 +8642,7 @@ mod tests {
 
         let result = run_startup_reconciliation_job(
             paths,
+            &gateway_listeners,
             ReconciliationQueue::new(),
             None,
             shutdown_receiver,
@@ -8587,12 +8660,14 @@ mod tests {
 
     #[tokio::test]
     async fn background_reconciliation_discards_removed_project_scopes() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         Database::open(&paths)?;
 
         run_background_reconciliation_job(
             paths.clone(),
+            &gateway_listeners,
             ReconciliationQueue::new(),
             ReconciliationScope::project("removed-before-admission")?,
             None,
@@ -8618,7 +8693,14 @@ mod tests {
         let queued_paths = paths.clone();
         let queued_queue = queue.clone();
         let queued_task = tokio::spawn(async move {
-            run_background_reconciliation_job(queued_paths, queued_queue, scope, None).await
+            run_background_reconciliation_job(
+                queued_paths,
+                &gateway_listeners,
+                queued_queue,
+                scope,
+                None,
+            )
+            .await
         });
         wait_for_job_scope(&paths, &scope_text).await?;
         Database::open(&paths)?.unlink_project(&project_id)?;
@@ -8719,6 +8801,7 @@ mod tests {
 
     #[tokio::test]
     async fn queued_background_reconciliation_reserves_only_jobs_lock() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let queue = ReconciliationQueue::new();
@@ -8737,7 +8820,14 @@ mod tests {
         let queued_queue = queue.clone();
         let queued_scope = ReconciliationScope::project(project_id.clone())?;
         let queued_task = tokio::spawn(async move {
-            run_background_reconciliation_job(queued_paths, queued_queue, queued_scope, None).await
+            run_background_reconciliation_job(
+                queued_paths,
+                &gateway_listeners,
+                queued_queue,
+                queued_scope,
+                None,
+            )
+            .await
         });
 
         wait_for_job_scope(&paths, &format!("project:{project_id}")).await?;
@@ -8845,6 +8935,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn queued_foreground_reconciliation_streams_only_after_its_turn() -> anyhow::Result<()> {
+        let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let queue = ReconciliationQueue::new();
@@ -8857,6 +8948,7 @@ mod tests {
         let task = tokio::spawn(async move {
             run_reconciliation_job(
                 task_paths,
+                &gateway_listeners,
                 task_queue,
                 protocol::transport(server),
                 scope,
@@ -8911,6 +9003,7 @@ mod tests {
 
     #[tokio::test]
     async fn background_reconciliation_coalesces_under_daemon_jobs_lock() -> anyhow::Result<()> {
+        let gateway_listeners = std::sync::Arc::new(test_gateway_listeners()?);
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
         let queue = ReconciliationQueue::new();
@@ -8929,12 +9022,27 @@ mod tests {
         let queued_paths = paths.clone();
         let queued_queue = queue.clone();
         let queued_scope = scope.clone();
+        let queued_gateway_listeners = std::sync::Arc::clone(&gateway_listeners);
         let queued_task = tokio::spawn(async move {
-            run_background_reconciliation_job(queued_paths, queued_queue, queued_scope, None).await
+            run_background_reconciliation_job(
+                queued_paths,
+                &queued_gateway_listeners,
+                queued_queue,
+                queued_scope,
+                None,
+            )
+            .await
         });
 
         wait_for_job_scope(&paths, &format!("project:{project_id}")).await?;
-        run_background_reconciliation_job(paths.clone(), queue.clone(), scope, None).await?;
+        run_background_reconciliation_job(
+            paths.clone(),
+            &gateway_listeners,
+            queue.clone(),
+            scope,
+            None,
+        )
+        .await?;
 
         queued_task.abort();
         let _join_result = queued_task.await;
@@ -9062,16 +9170,21 @@ mod tests {
         scope: ReconciliationScope,
         catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let gateway_listeners = test_gateway_listeners()?;
         let (client, daemon) = duplex(64 * 1024);
 
-        stream_started_reconciliation_job(
+        stream_started_reconciliation_job_with_options(
             paths,
             protocol::transport(daemon),
             true,
             job_id,
             scope,
             Some(catalog),
-            ReconciliationJobTiming::immediate(),
+            ForegroundReconciliationOptions {
+                gateway_listeners: &gateway_listeners,
+                timing: ReconciliationJobTiming::immediate(),
+                hooks: None,
+            },
         )
         .await?;
 
@@ -9130,15 +9243,16 @@ mod tests {
         scope: ReconciliationScope,
         catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
     ) -> anyhow::Result<(Vec<serde_json::Value>, bool)> {
+        let gateway_listeners = test_gateway_listeners()?;
         let job_id = start_reconciliation_job(paths, &scope.to_string())?;
         let succeeded = complete_reconciliation_job_with_progress(
             paths,
+            &gateway_listeners,
             &job_id,
             &scope,
             Some(catalog),
             DaemonDownloadProgress::disabled(),
             ReconciliationJobTiming::immediate(),
-            None,
         )
         .await
         .is_ok();
@@ -9239,6 +9353,7 @@ mod tests {
         job_id: &str,
         catalog: &crate::managed_resources::ManagedResourceRuntimeCatalog,
     ) -> anyhow::Result<Vec<serde_json::Value>> {
+        let gateway_listeners = test_gateway_listeners()?;
         let (client, daemon) = duplex(64 * 1024);
 
         stream_started_update_job(
@@ -9248,7 +9363,7 @@ mod tests {
             job_id,
             Some(catalog),
             ReconciliationJobTiming::immediate(),
-            ReconciliationJobOptions::default(),
+            ReconciliationJobOptions::new(&gateway_listeners),
         )
         .await?;
 
@@ -9328,7 +9443,6 @@ mod tests {
         seed_local_ca(paths)?;
 
         let mut database = Database::open(paths)?;
-        seed_gateway_ports(&mut database)?;
         database.record_managed_resource_track_installed(
             "caddy",
             CADDY_TEST_TRACK,
@@ -9347,23 +9461,7 @@ mod tests {
         Ok(())
     }
 
-    fn seed_gateway_ports(database: &mut Database) -> anyhow::Result<()> {
-        let [http_port, https_port] = pv_fake::ports()?;
-        for (gateway_port, port) in [
-            (GatewayPort::Http, http_port),
-            (GatewayPort::Https, https_port),
-        ] {
-            database.assign_port(
-                PortRequest::gateway(gateway_port, port, port, port),
-                |_port| true,
-            )?;
-        }
-
-        Ok(())
-    }
-
     fn write_caddy_fixture(executable: &Utf8Path) -> anyhow::Result<()> {
-        crate::gateway::route_public_probes_to_gateway_for_test();
         pv_fake::install(executable, Persona::Caddy)?;
 
         Ok(())

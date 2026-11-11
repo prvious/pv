@@ -10,7 +10,6 @@ mod update_lock;
 pub use app_release::{AppReleaseInstall, AppReleaseLayout};
 pub use database::{
     DNS_PREFERRED_PORT, Database, DatabaseInspection, DiscoveredProjectRecord, EnvContextValues,
-    GATEWAY_HTTP_PREFERRED_PORT, GATEWAY_HTTPS_PREFERRED_PORT, GatewayPort, GatewayPortAssignments,
     JobDiagnosticSubject, JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput,
     LinkProjectResult, LinkProjectStatus, ManagedResourceDesiredState,
     ManagedResourceTrackDesiredInput, ManagedResourceTrackInstallInput, ManagedResourceTrackRecord,

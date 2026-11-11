@@ -1,0 +1,26 @@
+---
+source: crates/daemon/src/dns.rs
+expression: decisions
+---
+[
+    (
+        "Current { path: \"/etc/resolver/test\", port: 15353 }",
+        LeaveAlone,
+    ),
+    (
+        "Missing { path: \"/etc/resolver/test\" }",
+        Apply,
+    ),
+    (
+        "Stale { path: \"/etc/resolver/test\", expected_port: Some(15353), actual_port: Some(15354) }",
+        Apply,
+    ),
+    (
+        "Conflict { path: \"/etc/resolver/test\" }",
+        Report,
+    ),
+    (
+        "Unreadable { path: \"/etc/resolver/test\", message: \"permission denied\" }",
+        Report,
+    ),
+]

@@ -1,4 +1,4 @@
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
 use hickory_proto::op::{Message, MessageType, OpCode, Query, ResponseCode};
@@ -14,8 +14,8 @@ use rustix::process::getpgid;
 use rustix::process::{Pid, Signal, kill_process_group};
 use serde_json::{Value, json};
 use state::{
-    DNS_PREFERRED_PORT, Database, GatewayPort, JobRecord, JobStatus, JobsLock, LinkProjectInput,
-    PortOwner, PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
+    DNS_PREFERRED_PORT, Database, JobRecord, JobStatus, JobsLock, LinkProjectInput, PortOwner,
+    PortRequest, PvPaths, RUNTIME_PORT_FALLBACK_END, RUNTIME_PORT_FALLBACK_START,
     RuntimeObservedStatus, RuntimeSubject, UpdateLock,
 };
 use std::future::Future;
@@ -80,13 +80,14 @@ const FALLBACK_SUBPROCESS_RELEASE: &str = "PV_DAEMON_FALLBACK_SUBPROCESS_RELEASE
 #[cfg(unix)]
 #[tokio::test]
 async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
 
     let lines_result = async {
@@ -147,6 +148,7 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
 
 #[tokio::test]
 async fn gateway_lookup_failure_streams_and_records_failed_gateway_phase() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
@@ -158,7 +160,7 @@ async fn gateway_lookup_failure_streams_and_records_failed_gateway_phase() -> Re
     )?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
     let response = request_lines(
         &paths,
@@ -241,7 +243,7 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     let lines = request_lines(
         &paths,
@@ -278,6 +280,7 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
 
 #[tokio::test]
 async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let _admission = state::RuntimeLifecycleLock::acquire_shared(&paths)?;
@@ -288,7 +291,7 @@ async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
 
     let result = async {
@@ -356,21 +359,24 @@ async fn exclusive_lifecycle_admission_blocks_daemon_before_layout_creation() ->
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let _admission = state::RuntimeLifecycleLock::acquire_exclusive(&paths)?;
-    assert!(matches!(daemon::RunningDaemon::start(paths.clone()).await,
+    assert!(
+        matches!(daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await,
         Err(daemon::DaemonError::State(state::StateError::CoordinationLockHeld { path }))
-            if path == paths.runtime_lifecycle_lock()));
+            if path == paths.runtime_lifecycle_lock())
+    );
     assert!(!state::fs::path_entry_exists(paths.root())?);
     Ok(())
 }
 
 #[tokio::test]
 async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
 
     real::timeout(Duration::from_secs(1), daemon.shutdown()).await??;
     drop(jobs_lock);
@@ -384,6 +390,7 @@ async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() 
 
 #[tokio::test]
 async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let (caddy, release_validation) = seed_barrier_foundation_caddy(&paths)?;
@@ -392,7 +399,8 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
     let result = async {
         pv_fake::seed_dns_port(&paths)?;
         let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
         gateway_guard.attach_daemon(daemon);
         wait_for_fake_hold(&caddy).await?;
         wait_for_job_scope_status(&paths, "system", JobStatus::Running).await?;
@@ -432,6 +440,7 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "run by seeded_gateway_drop_does_not_block_current_thread_runtime"]
 async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
+    let host = crate::host::test_host()?;
     let home = std::env::vars_os()
         .find_map(|(key, value)| (key == FALLBACK_SUBPROCESS_HOME).then_some(value))
         .ok_or_else(|| anyhow!("nested fallback subprocess home was missing"))?;
@@ -455,7 +464,7 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
     wait_for_succeeded_job_scope(&paths, "system").await?;
     state::fs::write_sensitive_file(
@@ -549,6 +558,7 @@ fn captured_validation_process_group(leader: Pid) -> Result<Pid> {
 
 #[tokio::test]
 async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
+    let host = crate::host::test_host()?;
     let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -557,7 +567,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
     let health_lines = request_lines(
         &paths,
@@ -596,15 +606,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
         let recovered_gateway = supervisor
             .adopt_recorded(&paths.gateway_runtime_metadata())?
             .ok_or_else(|| anyhow!("health recovery did not restart the Gateway"))?;
-        let database = Database::open(&paths)?;
-        let http_port = database
-            .assigned_ports()?
-            .into_iter()
-            .find_map(|assignment| {
-                (assignment.owner == PortOwner::Gateway(GatewayPort::Http))
-                    .then_some(assignment.port)
-            })
-            .ok_or_else(|| anyhow!("Gateway HTTP port was not assigned"))?;
+        let (http_port, _https_port) = host.gateway_listeners.ports();
         daemon::wait_for_readiness(
             daemon::ReadinessCheck::Http {
                 host: "127.0.0.1".to_owned(),
@@ -638,6 +640,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> {
+    let host = crate::host::test_host()?;
     let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -647,7 +650,7 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
     wait_for_succeeded_job_scope(&paths, "system").await?;
     wait_for_seeded_worker(&paths, "8.4", worker_port).await?;
@@ -732,6 +735,7 @@ impl resources::ResourceHttpClient for BlockedStartupDownloadClient {
 
 #[tokio::test]
 async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let started = Arc::new(AtomicBool::new(false));
@@ -744,6 +748,7 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
+            host,
             TEST_ARTIFACT_MANIFEST_URL,
             client,
         )
@@ -788,6 +793,7 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
 
 #[tokio::test]
 async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
@@ -796,7 +802,8 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
 
     let result = async {
         let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
         gateway_guard.attach_daemon(daemon);
         wait_for_succeeded_job_id(&paths, "job_000001").await?;
         let initial_pid = recorded_runtime_pid(&paths.gateway_runtime_metadata())?
@@ -806,7 +813,8 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
         gateway_guard.shutdown_daemon().await?;
 
         let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
         gateway_guard.attach_daemon(daemon);
         wait_for_succeeded_job_id(&paths, "job_000002").await?;
         let adopted_pid = recorded_runtime_pid(&paths.gateway_runtime_metadata())?
@@ -829,9 +837,252 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
     Ok(())
 }
 
+/// The Gateway's monitor hands it the daemon's listeners at fds 3 and 4, and the Gateway serves
+/// them through reloads by later daemons, which adopt it without listeners of their own. No other
+/// runtime, and no `validate` run, inherits them.
+#[tokio::test]
+async fn only_the_gateway_inherits_the_listeners_and_serves_them_through_reloads() -> Result<()> {
+    let host = crate::host::test_host()?;
+    let (http_port, https_port) = host.gateway_listeners.ports();
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy = seed_foundation_caddy(&paths)?;
+    seed_foundation_php_project_after_caddy(
+        &paths,
+        &tempdir.path().join("project"),
+        "php: \"8.4\"\n",
+    )?;
+    let worker = pv_fake::install(&foundation_worker_executable(&paths), Persona::FrankenPhp)?;
+    let second_project = tempdir.path().join("second");
+    state::fs::write_sensitive_file(&second_project.join("pv.yml"), "php: \"8.4\"\n")?;
+    pv_fake::seed_dns_port(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        let started_pid = recorded_runtime_pid(&paths.gateway_runtime_metadata())?;
+
+        // Linking and unlinking a Project each make the next daemon reload the Gateway.
+        gateway_guard.shutdown_daemon().await?;
+        let second = Database::open(&paths)?
+            .link_project(LinkProjectInput {
+                path: second_project.clone(),
+                original_path: second_project.clone(),
+                primary_hostname: "second.test".to_owned(),
+                config_path: second_project.join("pv.yml"),
+                desired_php_track: None,
+            })?
+            .project;
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000002").await?;
+        gateway_guard.shutdown_daemon().await?;
+        Database::open(&paths)?.unlink_project(&second.id)?;
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000003").await?;
+        daemon::wait_for_readiness(
+            daemon::gateway::gateway_readiness_check(
+                http_port,
+                https_port,
+                &paths.ca_certificate(),
+            ),
+            &RUNTIME_READINESS,
+        )
+        .await?;
+        let reloaded_pid = recorded_runtime_pid(&paths.gateway_runtime_metadata())?;
+
+        Ok::<_, anyhow::Error>((started_pid, reloaded_pid))
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let (started_pid, reloaded_pid) = propagate_after_cleanup(result, cleanup_result)?;
+    let caddy = inherited_sockets(&caddy)?;
+    let worker = inherited_sockets(&worker)?;
+    let baseline = caddy.baseline()?;
+
+    assert_eq!(reloaded_pid, started_pid);
+    assert_eq!(beyond(&caddy.runs, baseline), [vec![3, 4]]);
+    assert!(!worker.runs.is_empty());
+    assert!(
+        beyond(&worker.runs, baseline)
+            .iter()
+            .chain(&beyond(&worker.others, baseline))
+            .all(Vec::is_empty)
+    );
+
+    Ok(())
+}
+
+/// A Gateway an older PV started on its own ports lacks the listener marker, so the daemon replaces
+/// it instead of loading a config that binds fd/3 into it.
+#[tokio::test]
+async fn startup_replaces_a_gateway_started_without_inherited_listeners() -> Result<()> {
+    let host = crate::host::test_host()?;
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let caddy = seed_foundation_caddy(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
+    let [old_port] = pv_fake::ports()?;
+    state::fs::write_sensitive_file(
+        &paths.gateway_root_config(),
+        &format!(
+            "{{\n    admin \"unix/{}|0600\"\n}}\n\nhttp://pv-gateway.localhost:{old_port} {{\n    bind \
+             127.0.0.1\n}}\n",
+            paths.gateway_admin_socket()
+        ),
+    )?;
+    let mut old_spec = daemon::gateway::gateway_process_spec(
+        &paths,
+        &daemon::gateway::CaddyCliCommand::caddy(caddy.executable()),
+    );
+    old_spec.private_environment.remove("PV_GATEWAY_LISTENERS");
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+
+    let result = async {
+        daemon::ProcessSupervisor::new(paths.clone())
+            .start(old_spec)
+            .await?;
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_succeeded_job_id(&paths, "job_000001").await?;
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    propagate_after_cleanup(result, cleanup_result)?;
+    let caddy = inherited_sockets(&caddy)?;
+
+    assert_eq!(beyond(&caddy.runs, caddy.baseline()?), [vec![], vec![3, 4]]);
+
+    Ok(())
+}
+
+/// A held Gateway port fails only the Gateway, with the failure's repair; the worker still starts.
+#[tokio::test]
+async fn a_held_gateway_port_fails_the_gateway_and_still_starts_the_worker() -> Result<()> {
+    let host = crate::host::test_host()?;
+    let (http_port, _https_port) = host.gateway_listeners.ports();
+    let _held = StdTcpListener::bind((Ipv4Addr::LOCALHOST, http_port))?;
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let (_project_id, worker_port) =
+        seed_foundation_php_project(&paths, &tempdir.path().join("project"), "php: \"8.4\"\n")?;
+    pv_fake::seed_dns_port(&paths)?;
+    let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
+
+    let result = async {
+        let daemon =
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
+        gateway_guard.attach_daemon(daemon);
+        wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
+        wait_for_seeded_worker(&paths, "8.4", worker_port).await?;
+        Ok::<_, anyhow::Error>(Database::open(&paths)?.runtime_observed_states()?)
+    }
+    .await;
+    let cleanup_result = gateway_guard.shutdown_and_cleanup().await;
+    let states = propagate_after_cleanup(result, cleanup_result)?;
+    let gateway = states
+        .iter()
+        .find(|state| state.subject == RuntimeSubject::Gateway)
+        .context("the Gateway has no observed state")?;
+
+    assert_eq!(gateway.status, RuntimeObservedStatus::Failed);
+    assert_eq!(
+        gateway.message.as_deref(),
+        Some(
+            format!(
+                "Port {http_port} is in use by another program; free it, then run `pv \
+                 daemon:restart`."
+            )
+            .as_str()
+        )
+    );
+    assert!(states.iter().any(|state| {
+        state.subject
+            == RuntimeSubject::PhpWorker {
+                php_track: "8.4".to_owned(),
+            }
+            && state.status == RuntimeObservedStatus::Running
+    }));
+
+    Ok(())
+}
+
+/// The sockets each start of a fake inherited, split into `run`s and other commands.
+struct InheritedSockets {
+    runs: Vec<Vec<i32>>,
+    others: Vec<Vec<i32>>,
+}
+
+impl InheritedSockets {
+    /// The sockets this test process hands every child, such as a CI runner's own descriptors.
+    /// `validate` runs, which the daemon starts itself, inherit only those.
+    fn baseline(&self) -> Result<&[i32]> {
+        let baseline = self
+            .others
+            .first()
+            .context("the fake never validated a config")?;
+        ensure!(
+            self.others.iter().all(|sockets| sockets == baseline),
+            "validate runs inherited different sockets: {:?}",
+            self.others
+        );
+
+        Ok(baseline)
+    }
+}
+
+/// Each start's sockets without the ones every child of this test process inherits.
+fn beyond(starts: &[Vec<i32>], baseline: &[i32]) -> Vec<Vec<i32>> {
+    starts
+        .iter()
+        .map(|sockets| {
+            sockets
+                .iter()
+                .copied()
+                .filter(|fd| !baseline.contains(fd))
+                .collect()
+        })
+        .collect()
+}
+
+fn inherited_sockets(fake: &InstalledFake) -> Result<InheritedSockets> {
+    let mut runs = Vec::new();
+    let mut others = Vec::new();
+    for event in fake.events()? {
+        if let EventKind::Started {
+            argv,
+            inherited_sockets,
+            ..
+        } = event.kind
+        {
+            if argv.get(1).is_some_and(|command| command == "run") {
+                runs.push(inherited_sockets);
+            } else {
+                others.push(inherited_sockets);
+            }
+        }
+    }
+
+    Ok(InheritedSockets { runs, others })
+}
+
 #[tokio::test]
 async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_daemon_was_down()
 -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
@@ -840,7 +1091,8 @@ async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_dae
 
     let result = async {
         let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
         gateway_guard.attach_daemon(daemon);
         wait_for_succeeded_job_id(&paths, "job_000001").await?;
         let killed_pid = recorded_runtime_pid(&paths.gateway_runtime_metadata())?;
@@ -849,7 +1101,8 @@ async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_dae
         kill_process_group(killed_pid, Signal::KILL)?;
 
         let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
         gateway_guard.attach_daemon(daemon);
         wait_for_succeeded_job_id(&paths, "job_000002").await?;
         let replacement_pid = recorded_runtime_pid(&paths.gateway_runtime_metadata())?;
@@ -877,6 +1130,7 @@ async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_dae
 
 #[tokio::test]
 async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let (caddy, release_validation) = seed_barrier_foundation_caddy(&paths)?;
@@ -885,7 +1139,8 @@ async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Re
     let result = async {
         pv_fake::seed_dns_port(&paths)?;
         let daemon =
-            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+            daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
+                .await?;
         gateway_guard.attach_daemon(daemon);
         wait_for_fake_hold(&caddy).await?;
 
@@ -986,6 +1241,7 @@ async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Re
 
 #[tokio::test]
 async fn daemon_start_writes_migration_failed_startup_marker() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     Database::open(&paths)?;
@@ -996,7 +1252,7 @@ async fn daemon_start_writes_migration_failed_startup_marker() -> Result<()> {
     )?;
 
     let result =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await;
 
     assert!(result.is_err());
     let marker = state::fs::read_to_string(&paths.daemon_startup_error())?;
@@ -1007,6 +1263,7 @@ async fn daemon_start_writes_migration_failed_startup_marker() -> Result<()> {
 
 #[tokio::test]
 async fn daemon_start_removes_stale_startup_marker_before_health() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     state::fs::ensure_layout(&paths)?;
@@ -1017,7 +1274,7 @@ async fn daemon_start_removes_stale_startup_marker_before_health() -> Result<()>
 
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     let health_lines = request_lines(
         &paths,
         json!({
@@ -1038,6 +1295,7 @@ async fn daemon_start_removes_stale_startup_marker_before_health() -> Result<()>
 
 #[tokio::test]
 async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
@@ -1048,7 +1306,7 @@ async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
 
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     daemon.shutdown().await?;
     drop(jobs_lock);
 
@@ -1064,6 +1322,7 @@ async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
 
 #[tokio::test]
 async fn duplicate_daemon_start_does_not_fail_live_running_jobs() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let mut database = Database::open(&paths)?;
@@ -1073,7 +1332,7 @@ async fn duplicate_daemon_start_does_not_fail_live_running_jobs() -> Result<()> 
     let _listener = UnixListener::bind(paths.daemon_socket())?;
 
     let result =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await;
 
     assert!(matches!(
         result,
@@ -1093,6 +1352,7 @@ async fn duplicate_daemon_start_does_not_fail_live_running_jobs() -> Result<()> 
 
 #[tokio::test]
 async fn managed_resource_update_check_returns_success_response() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
@@ -1102,6 +1362,7 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
+            host,
             TEST_ARTIFACT_MANIFEST_URL,
             manifest_client,
         )
@@ -1138,11 +1399,11 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
 #[tokio::test]
 async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_success() -> Result<()>
 {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let caddy_path = paths.resources().join("caddy/2/releases/2.11.4-pv1");
     let caddy_executable = caddy_path.join("bin/caddy");
-    daemon::gateway::route_public_probes_to_gateway_for_test();
     pv_fake::install(&caddy_executable, Persona::Caddy)?;
     state::fs::symlink_file(
         camino::Utf8Path::new("releases/2.11.4-pv1"),
@@ -1159,6 +1420,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
+            host,
             TEST_ARTIFACT_MANIFEST_URL,
             manifest_client,
         )
@@ -1207,6 +1469,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
 
 #[tokio::test]
 async fn jobs_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
@@ -1216,6 +1479,7 @@ async fn jobs_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
+            host,
             TEST_ARTIFACT_MANIFEST_URL,
             manifest_client,
         )
@@ -1271,27 +1535,16 @@ fn seed_foundation_caddy(paths: &PvPaths) -> Result<InstalledFake> {
 
 fn seed_foundation_caddy_with(paths: &PvPaths, settings: FakeSettings) -> Result<InstalledFake> {
     let release_path = paths.home().join("fake-caddy-release");
-    daemon::gateway::route_public_probes_to_gateway_for_test();
     let caddy =
         pv_fake::install_with_settings(&release_path.join("bin/caddy"), Persona::Caddy, settings)?;
     seed_local_ca(paths)?;
 
     let mut database = Database::open(paths)?;
-    let http_port = pv_fake::port()?;
-    let https_port = pv_fake::port()?;
     database.record_managed_resource_track_installed(
         "caddy",
         "2",
         "fake-caddy-pv1",
         &release_path,
-    )?;
-    database.assign_port(
-        PortRequest::gateway(GatewayPort::Http, http_port, http_port, http_port),
-        |_port| true,
-    )?;
-    database.assign_port(
-        PortRequest::gateway(GatewayPort::Https, https_port, https_port, https_port),
-        |_port| true,
     )?;
 
     Ok(caddy)
@@ -1665,6 +1918,7 @@ fn propagate_after_cleanup<T>(
 
 #[tokio::test]
 async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
@@ -1678,7 +1932,7 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
 
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
     let client_paths = paths.clone();
     let completed_result = async {
@@ -1779,6 +2033,7 @@ async fn targeted_gateway_phases_are_disjoint() -> Result<()> {
 }
 
 async fn run_targeted_gateway_phase_scenario() -> Result<(JobStatus, Vec<Value>)> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
@@ -1850,7 +2105,7 @@ async fn run_targeted_gateway_phase_scenario() -> Result<(JobStatus, Vec<Value>)
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
     let operation_result = real::timeout(TARGETED_SCENARIO_TIMEOUT, async {
         let initial_lines = request_lines(
@@ -1919,6 +2174,7 @@ fn required_response_job_id(lines: &[Value]) -> Result<&str> {
 #[tokio::test]
 async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project_config()
 -> Result<()> {
+    let host = crate::host::test_host()?;
     let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -1930,7 +2186,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let initial_daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_succeeded_job_scope(&paths, "system").await?;
     initial_daemon.shutdown().await?;
     let supervisor = daemon::ProcessSupervisor::new(paths.clone());
@@ -1941,7 +2197,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     state::fs::write_sensitive_file(&config_path, "php: [\n")?;
 
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
     let operation_result = async {
         wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
@@ -1962,14 +2218,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
         let recovered_worker_pid = wait_for_seeded_worker(&paths, "8.4", worker_port).await?;
 
         let database = Database::open(&paths)?;
-        let assignments = database.assigned_ports()?;
-        let http_port = assignments
-            .iter()
-            .find_map(|assignment| {
-                (assignment.owner == PortOwner::Gateway(GatewayPort::Http))
-                    .then_some(assignment.port)
-            })
-            .ok_or_else(|| anyhow!("Gateway HTTP port was not assigned"))?;
+        let (http_port, _https_port) = host.gateway_listeners.ports();
         daemon::wait_for_readiness(
             daemon::ReadinessCheck::Http {
                 host: "127.0.0.1".to_owned(),
@@ -2088,7 +2337,7 @@ async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     let lines = request_lines(
         &paths,
@@ -2120,7 +2369,7 @@ async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let _jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     let lines = request_lines(
         &paths,
@@ -2148,7 +2397,7 @@ async fn malformed_request_does_not_stop_accepting_connections() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     send_raw_request(&paths, "not-json\n").await?;
     let lines = request_lines(
@@ -2172,7 +2421,7 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let mut idle_stream = UnixStream::connect(paths.daemon_socket()).await?;
 
     idle_stream.write_all(b"{").await?;
@@ -2199,6 +2448,7 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
 #[tokio::test]
 #[cfg(target_os = "linux")]
 async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
+    let host = crate::host::test_host()?;
     let clock = platform::clock::install_fake_for_test();
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -2248,19 +2498,21 @@ async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
             }) if recorded_pid == pid => false,
             Err(error) => return Err(error.into()),
         };
-        let admitted =
-            match daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone())
-                .await
-            {
-                Ok(daemon) => {
-                    daemon.shutdown().await?;
-                    true
-                }
-                Err(daemon::DaemonError::RuntimeCleanupUnproven {
-                    pid: recorded_pid, ..
-                }) if recorded_pid == pid => false,
-                Err(error) => return Err(error.into()),
-            };
+        let admitted = match daemon::RunningDaemon::start_without_managed_resource_adapters(
+            paths.clone(),
+            host,
+        )
+        .await
+        {
+            Ok(daemon) => {
+                daemon.shutdown().await?;
+                true
+            }
+            Err(daemon::DaemonError::RuntimeCleanupUnproven {
+                pid: recorded_pid, ..
+            }) if recorded_pid == pid => false,
+            Err(error) => return Err(error.into()),
+        };
 
         assert_eq!(
             state::fs::read_to_string(&paths.daemon_process_record())?,
@@ -2297,7 +2549,7 @@ async fn start_removes_stale_socket_before_binding() -> Result<()> {
     drop(stale_listener);
 
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let lines = request_lines(
         &paths,
         json!({
@@ -2316,13 +2568,14 @@ async fn start_removes_stale_socket_before_binding() -> Result<()> {
 
 #[tokio::test]
 async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
 
     let request_result = async {
@@ -2399,7 +2652,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
         Ok(())
     })?;
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     write_file_after_modified_time_tick(
         &config_path,
@@ -2425,6 +2678,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
 
 #[tokio::test]
 async fn project_config_watcher_follows_a_project_linked_after_startup() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let project_path = tempdir.path().join("project");
@@ -2432,7 +2686,7 @@ async fn project_config_watcher_follows_a_project_linked_after_startup() -> Resu
     state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
 
     // `pv link` commits the Project, then asks the daemon to reconcile it.
     let mut database = Database::open(&paths)?;
@@ -2477,6 +2731,7 @@ async fn project_config_watcher_follows_a_project_linked_after_startup() -> Resu
 
 #[tokio::test]
 async fn worktree_discovery_follows_git_worktree_events() -> Result<()> {
+    let host = crate::host::test_host()?;
     let tempdir = tempdir()?;
     let root = state::fs::canonicalize(tempdir.path())?;
     let paths = PvPaths::for_home(root.join("home"));
@@ -2492,7 +2747,7 @@ async fn worktree_discovery_follows_git_worktree_events() -> Result<()> {
     })?;
     pv_fake::seed_dns_port(&paths)?;
     let daemon =
-        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone()).await?;
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     // Startup reconciliation can't install the Gateway without an artifact manifest, so it fails
     // after discovery ran.
     let startup = wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await;
@@ -2535,7 +2790,7 @@ async fn dns_resolver_answers_udp_and_tcp_queries_and_survives_malformed_udp() -
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let port = dns_port(&paths)?;
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
     socket
@@ -2592,7 +2847,7 @@ async fn dns_resolver_falls_back_when_preferred_port_is_unavailable() -> Result<
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let preferred_dns_port_blockers = bind_preferred_dns_port_pair().await?;
-    let daemon = daemon::RunningDaemon::start(paths.clone()).await?;
+    let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let port = dns_port(&paths)?;
 
     if preferred_dns_port_blockers.is_none() && port == DNS_PREFERRED_PORT {
@@ -2620,7 +2875,7 @@ async fn dns_resolver_start_does_not_reassign_persisted_port_on_bind_conflict() 
     )?;
     drop(database);
 
-    let result = daemon::RunningDaemon::start(paths.clone()).await;
+    let result = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await;
     if let Ok(daemon) = result {
         daemon.shutdown().await?;
         return Err(anyhow!(

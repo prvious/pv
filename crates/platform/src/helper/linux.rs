@@ -7,7 +7,6 @@ use camino::{Utf8Path, Utf8PathBuf};
 use rustix::fs::{AtFlags, CWD, FlockOperation, Mode, OFlags, flock, open, unlinkat};
 use rustix::process::{Uid, geteuid, getuid};
 use rustix::thread::set_thread_res_uid;
-use sha2::{Digest, Sha256};
 use tokio::io::{AsyncBufReadExt as _, AsyncReadExt as _, AsyncWriteExt as _, BufReader};
 use tokio::net::UnixStream;
 use zbus::Proxy;
@@ -680,10 +679,6 @@ fn require_identity(
         )));
     }
     Ok(())
-}
-
-pub(crate) fn checksum_bytes(content: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(content))
 }
 
 /// Puts back a file the transaction moved aside, or removes one it created. A file that existed
