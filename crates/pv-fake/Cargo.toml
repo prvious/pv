@@ -36,3 +36,6 @@ rustix = { workspace = true, features = ["pipe"] }
 [dev-dependencies]
 camino-tempfile = { workspace = true }
 platform = { path = "../platform", features = ["test-support"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+command-fds = { workspace = true }

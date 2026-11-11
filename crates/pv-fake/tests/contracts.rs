@@ -12,6 +12,7 @@ use std::time::Duration;
 use anyhow::{Result, anyhow, bail};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
+use command_fds::{CommandFdExt, FdMapping};
 use platform::clock::{self, real};
 use pv_fake::{EventKind, FakeSettings, InstalledFake, Persona, Scenario};
 use rustix::io::{FdFlags, fcntl_setfd};
@@ -187,6 +188,88 @@ fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
         body.starts_with("pv-fake: GET /config/: parsing ")
             && body.contains("fake-admin-control.json: EOF while parsing"),
         "{body}"
+    );
+
+    Ok(())
+}
+
+#[test]
+fn gateway_fake_serves_an_inherited_listener_and_keeps_it_through_loads() -> Result<()> {
+    let tempdir = tempdir()?;
+    let root = tempdir.path();
+    let [port] = pv_fake::ports()?;
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    let admin_socket = root.join("admin.sock");
+    let config = |health: &str| {
+        format!(
+            "{{\n    admin \"unix/{admin_socket}|0600\"\n}}\n\nhttp://pv-gateway.localhost {{\n    \
+             bind fd/3\n    respond /__pv/health \"{health}\" 200\n}}\n"
+        )
+    };
+    let (fake, mut process) = spawn_gateway_command(
+        root,
+        "run",
+        &config("started"),
+        FakeSettings::default(),
+        vec![FdMapping {
+            parent_fd: listener.into(),
+            child_fd: 3,
+        }],
+    )?;
+    if let Err(error) = wait_until(|| Ok(UnixStream::connect(&admin_socket).is_ok())) {
+        let stderr = state::fs::read_to_string(&root.join("caddy.stderr")).unwrap_or_default();
+        bail!(
+            "the Gateway fake didn't start ({error}); exit status {:?}; events {:?}; stderr:\n{stderr}",
+            process.0.try_wait()?,
+            fake.events()?
+        );
+    }
+
+    let started = http_get(port, "/__pv/health")?;
+    let first_load = exchange(
+        UnixStream::connect(&admin_socket)?,
+        "POST",
+        "/load",
+        &config("first load"),
+    )?;
+    let after_first_load = http_get(port, "/__pv/health")?;
+    let second_load = exchange(
+        UnixStream::connect(&admin_socket)?,
+        "POST",
+        "/load",
+        &config("second load"),
+    )?;
+    let after_second_load = http_get(port, "/__pv/health")?;
+
+    assert_eq!(started, (200, "started".to_owned()));
+    assert_eq!(first_load.0, 200);
+    assert_eq!(after_first_load, (200, "first load".to_owned()));
+    assert_eq!(second_load.0, 200);
+    assert_eq!(after_second_load, (200, "second load".to_owned()));
+
+    Ok(())
+}
+
+#[test]
+fn gateway_fake_refuses_to_run_without_the_listener_its_config_binds() -> Result<()> {
+    let tempdir = tempdir()?;
+    let root = tempdir.path();
+    let config = format!(
+        "{{\n    admin \"unix/{}|0600\"\n}}\n\nhttp://pv-gateway.localhost {{\n    bind fd/3\n}}\n",
+        root.join("admin.sock")
+    );
+    let (_fake, mut process) =
+        spawn_gateway_command(root, "run", &config, FakeSettings::default(), Vec::new())?;
+    let status = wait_for_exit(&mut process)?;
+    let stderr = state::fs::read_to_string(&root.join("caddy.stderr"))?;
+
+    assert_eq!(status.code(), Some(1));
+    assert!(
+        stderr.starts_with(
+            "pv-fake: loading initial config: loading new config: http app module: start: \
+             listening on fd/3: "
+        ),
+        "{stderr}"
     );
 
     Ok(())
@@ -930,21 +1013,24 @@ fn spawn_gateway(
     config: &str,
     settings: FakeSettings,
 ) -> Result<(InstalledFake, FakeProcess)> {
-    spawn_gateway_command(root, "run", config, settings)
+    spawn_gateway_command(root, "run", config, settings, Vec::new())
 }
 
-/// Starts `caddy <subcommand>` with `config` at `<root>/config/Caddyfile`.
+/// Starts `caddy <subcommand>` with `config` at `<root>/config/Caddyfile`, passing `listeners` at
+/// their descriptor numbers, as the daemon's monitor passes the Gateway's.
 fn spawn_gateway_command(
     root: &Utf8Path,
     subcommand: &str,
     config: &str,
     settings: FakeSettings,
+    listeners: Vec<FdMapping>,
 ) -> Result<(InstalledFake, FakeProcess)> {
     let fake = install_gateway(root, settings)?;
     let config_path = root.join("config/Caddyfile");
     state::fs::write_sensitive_file(&config_path, config)?;
     let process = FakeProcess(
         FakeCommand::new(fake.executable())
+            .fd_mappings(listeners)?
             .args([
                 subcommand,
                 "--config",

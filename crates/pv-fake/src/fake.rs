@@ -51,6 +51,11 @@ pub(crate) fn run() -> Result<ExitCode> {
     let scenario: Scenario = serde_json::from_value(scenario_file.scenario)
         .with_context(|| format!("parsing {scenario_path}"))?;
     let events = EventLog::new(events_path(&executable));
+    // Before the runtime opens its own descriptors, which would take free numbers.
+    let inherited = match scenario.persona {
+        Persona::Caddy | Persona::FrankenPhp => gateway::InheritedListeners::adopt(&argv)?,
+        _ => gateway::InheritedListeners::default(),
+    };
 
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -62,7 +67,7 @@ pub(crate) fn run() -> Result<ExitCode> {
                 .with_context(|| format!("descendant parent pipe {parent_fd}"))?;
             runtime.block_on(run_descendant(scenario, parent_fd, events))
         }
-        _ => runtime.block_on(run_persona(scenario, argv, events)),
+        _ => runtime.block_on(run_persona(scenario, argv, events, inherited)),
     };
     // The lifeline watcher blocks on its pipe until the test process exits; don't wait for it.
     runtime.shutdown_background();
@@ -70,7 +75,12 @@ pub(crate) fn run() -> Result<ExitCode> {
     result
 }
 
-async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) -> Result<ExitCode> {
+async fn run_persona(
+    scenario: Scenario,
+    argv: Vec<String>,
+    events: EventLog,
+    inherited: gateway::InheritedListeners,
+) -> Result<ExitCode> {
     // Install handlers first, so a SIGTERM that arrives during startup is handled, not fatal.
     let mut signals = Signals::new()?;
     let lifeline_armed = match scenario.lifeline_fd {
@@ -90,7 +100,7 @@ async fn run_persona(scenario: Scenario, argv: Vec<String>, events: EventLog) ->
 
     // Signals end a fake even while it is paused during startup.
     let started = tokio::select! {
-        started = start_persona(&scenario, &argv, &events) => Ok(started?),
+        started = start_persona(&scenario, &argv, &events, inherited) => Ok(started?),
         received = signals.next() => Err(received),
     };
     let code = match started {
@@ -141,7 +151,12 @@ enum Started {
     ServingUntilSigterm,
 }
 
-async fn start_persona(scenario: &Scenario, argv: &[String], events: &EventLog) -> Result<Started> {
+async fn start_persona(
+    scenario: &Scenario,
+    argv: &[String],
+    events: &EventLog,
+    inherited: gateway::InheritedListeners,
+) -> Result<Started> {
     let exit_code = match scenario.persona {
         Persona::LongRunning => None,
         Persona::TcpHolder => {
@@ -149,7 +164,7 @@ async fn start_persona(scenario: &Scenario, argv: &[String], events: &EventLog) 
             None
         }
         Persona::Caddy | Persona::FrankenPhp => {
-            gateway::start(argv, &scenario.settings, events).await?
+            gateway::start(argv, &scenario.settings, events, inherited).await?
         }
         Persona::RedisServer => redis::start(argv).await?,
         Persona::Mailpit => mailpit::start(argv).await?,

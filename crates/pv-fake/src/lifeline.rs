@@ -11,7 +11,7 @@ use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::{Mutex, PoisonError};
 
 use anyhow::Result;
-use rustix::io::{FdFlags, fcntl_setfd};
+use rustix::io::{FdFlags, fcntl_dupfd_cloexec, fcntl_setfd};
 use rustix::process::{Signal, getpgrp, getpid, kill_process, kill_process_group};
 
 use crate::events::{EventKind, EventLog};
@@ -35,6 +35,13 @@ pub(crate) fn test_process_read_fd() -> Result<i32> {
     // that instant would hold the pipe open and keep fakes alive. If a leak is ever traced here,
     // switch to a per-install named FIFO that the test opens with O_CLOEXEC and fakes open by path.
     fcntl_setfd(&write, FdFlags::CLOEXEC)?;
+    // The Gateway's monitor maps its listeners to descriptors 3 and 4, which would replace a read
+    // end that `pipe` put there, so the inherited read end lives at 10 or above.
+    let read = {
+        let moved = fcntl_dupfd_cloexec(&read, 10)?;
+        fcntl_setfd(&moved, FdFlags::empty())?;
+        moved
+    };
     let read_fd = read.as_raw_fd();
     *lifeline = Some(Lifeline {
         read,
@@ -44,8 +51,10 @@ pub(crate) fn test_process_read_fd() -> Result<i32> {
     Ok(read_fd)
 }
 
-/// Watches the inherited pipe `fd` in the background, recording `fired` and terminating once
-/// every write end is closed. Returns whether it is armed.
+/// Watches the inherited pipe `fd` in the background, recording `fired` once every write end is
+/// closed. A lost test process kills the fake; a descendant whose parent fake is gone exits 0, as
+/// a worker does when its master exits, so its status is the same whether the group's SIGTERM or
+/// the closed pipe reaches it first. Returns whether it is armed.
 pub(crate) fn arm(fd: i32, events: EventLog, fired: EventKind) -> bool {
     let Ok(mut pipe) = state::fs::open_inherited_pipe(fd) else {
         // Nothing to watch, e.g. a fake started by hand; it must not treat this as parent loss.
@@ -55,7 +64,11 @@ pub(crate) fn arm(fd: i32, events: EventLog, fired: EventKind) -> bool {
     tokio::task::spawn_blocking(move || {
         // Returns once every write end is closed: the process holding it is gone.
         let _read_result = io::copy(&mut pipe, &mut io::sink());
+        let parent_exited = fired == EventKind::ParentExited;
         let _record_result = events.record(fired);
+        if parent_exited {
+            std::process::exit(0);
+        }
         terminate();
     });
 
