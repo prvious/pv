@@ -13,7 +13,7 @@ expression: "(output, operations)"
         stderr: "Waiting for the reconciliation slot (elapsed: 0s)\nReconciliation slot acquired after <1s\n",
     },
     [
-        "install helper <tempdir>/home/.pv/bin/releases/0.3.0/pv-helper prepared <tempdir>/home/.pv/config/helper version 3.1.0 protocol 3 sha256 <fingerprint>",
+        "install helper <tempdir>/home/.pv/bin/releases/0.3.1/pv-helper prepared <tempdir>/home/.pv/config/helper version 3.1.0 protocol 3 sha256 <fingerprint>",
         "apply resolver",
         "trust <fingerprint>",
         "bootstrap <tempdir>/Library/LaunchAgents/com.prvious.pv.daemon.plist",
