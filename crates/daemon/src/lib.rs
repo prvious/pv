@@ -178,15 +178,22 @@ impl RunningDaemon {
         let (shutdown, shutdown_receiver) = oneshot::channel();
         let server_paths = paths.clone();
         let runtime_catalog = runtime_catalog.map(Arc::new);
-        let task = tokio::spawn(server::serve(
-            server_paths,
-            listener,
-            shutdown_receiver,
-            runtime_catalog,
-            gateway_listeners,
-            host.dns_repair,
-            project_config_watcher,
-        ));
+        let task = tokio::spawn(async move {
+            // Held open so no other connection closes last while the daemon runs. The last close
+            // checkpoints the WAL under an exclusive lock, and a slow fsync there outlasts other
+            // processes' busy timeout.
+            let _database = database;
+            server::serve(
+                server_paths,
+                listener,
+                shutdown_receiver,
+                runtime_catalog,
+                gateway_listeners,
+                host.dns_repair,
+                project_config_watcher,
+            )
+            .await
+        });
 
         Ok(Self {
             paths,
