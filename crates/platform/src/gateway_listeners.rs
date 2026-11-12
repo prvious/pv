@@ -204,6 +204,10 @@ fn activate_launchd_socket(name: &str) -> Result<OwnedFd, GatewayListenerError> 
     })?;
     // Children the daemon starts must not inherit ports 80 and 443.
     rustix::io::fcntl_setfd(&fd, rustix::io::FdFlags::CLOEXEC).map_err(io::Error::from)?;
+    // Activation leaves the socket blocking, and every copy shares that mode, including a Gateway
+    // that kept running through a daemon restart. Caddy can't stop a blocking `accept`, so after
+    // its next reload the old config would answer one more connection on each port.
+    socket2::SockRef::from(&fd).set_nonblocking(true)?;
 
     Ok(fd)
 }
