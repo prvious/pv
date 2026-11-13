@@ -95,19 +95,18 @@ pub fn binary() -> Result<Utf8PathBuf> {
 )]
 pub fn example_binary(name: &str) -> Result<Utf8PathBuf> {
     let test_executable = Utf8PathBuf::try_from(std::env::current_exe()?)?;
-    // Test executables run from target/<profile>/deps; examples live in target/<profile>/examples.
-    let Some(profile_dir) = test_executable.parent().and_then(Utf8Path::parent) else {
-        bail!("test executable {test_executable} is not inside a Cargo target directory");
-    };
-    let binary = profile_dir.join("examples").join(name);
-    if !state::fs::path_is_file(&binary)? {
-        bail!(
-            "{name} binary {binary} is missing; `cargo nextest run -p daemon` builds the daemon's \
-             examples, `cargo test --lib` does not"
-        );
+    // Examples live in target/<profile>/examples. Test executables run from somewhere below
+    // target/<profile>, and how deep changes between Cargo releases.
+    for directory in test_executable.ancestors().skip(1) {
+        let binary = directory.join("examples").join(name);
+        if state::fs::path_is_file(&binary)? {
+            return Ok(binary);
+        }
     }
-
-    Ok(binary)
+    bail!(
+        "{name} binary is missing above {test_executable}; `cargo nextest run -p daemon` builds \
+         the daemon's examples, `cargo test --lib` does not"
+    );
 }
 
 /// The inheritable read end of this test process's lifeline, for processes a test starts

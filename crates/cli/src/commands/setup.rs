@@ -593,7 +593,7 @@ fn run_required_step(
             return Ok(true);
         }
         let stopped = streams.out.line(&format!("PV stopped during {label}."));
-        result?;
+        let _exit_code = result?;
         stopped?;
 
         return Ok(false);
@@ -636,7 +636,7 @@ fn run_required_step(
     let stopped = streams
         .out
         .flow_end(Mark::Failure, format!("PV stopped during {label}."));
-    result?;
+    let _exit_code = result?;
     replayed?;
     stopped?;
 
