@@ -13,19 +13,16 @@ test-support = []
 [dependencies]
 camino = { workspace = true }
 data-encoding = { workspace = true }
-plist = "1.9.0"
 rcgen = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 socket2 = { workspace = true }
-sha1 = { workspace = true }
 sha2 = { workspace = true }
 state = { path = "../state" }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true }
-wait-timeout = { workspace = true }
 webbrowser = { version = "1.2.4", default-features = false }
 x509-parser = { workspace = true }
 
@@ -33,10 +30,15 @@ x509-parser = { workspace = true }
 libc = { workspace = true }
 raunch = { workspace = true }
 security-framework = { workspace = true }
+sha1 = { workspace = true }
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+plist = "1.9.0"
 
 [target.'cfg(unix)'.dependencies]
 nix = { workspace = true, features = ["event", "ioctl"] }
 rustix = { workspace = true }
+wait-timeout = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 futures-util = { workspace = true }

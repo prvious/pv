@@ -2450,11 +2450,8 @@ fn append_targeted_persisted_runtime_project(
         worker_port,
         access_log_path: paths.gateway_access_log(),
     })?;
-    if gateway_fragment != expected_gateway_fragment {
-        return Ok(false);
-    }
 
-    Ok(true)
+    Ok(gateway_fragment == expected_gateway_fragment)
 }
 
 fn persisted_project_runtime_key(
