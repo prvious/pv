@@ -85,8 +85,6 @@ struct TestEnvironment {
     resolver_path: PathBuf,
     shell: Option<OsString>,
     certificates: Mutex<Vec<KeychainCertificate>>,
-    // This is probably temporary. We should remember to remove it on the next release.
-    legacy_pf: Mutex<bool>,
     operations: Mutex<Vec<String>>,
     client: ScriptedClient,
     target_platform: TargetPlatform,
@@ -110,7 +108,6 @@ impl TestEnvironment {
             resolver_path: paths.resolver_path.as_std_path().to_path_buf(),
             shell,
             certificates: Mutex::new(Vec::new()),
-            legacy_pf: Mutex::new(false),
             operations: Mutex::new(Vec::new()),
             client: ScriptedClient::new(),
             target_platform,
@@ -421,19 +418,6 @@ impl Environment for TestEnvironment {
         Ok(outcome)
     }
 
-    // This is probably temporary. We should remember to remove it on the next release.
-    fn legacy_pf_present(&self) -> Result<bool, platform::PlatformError> {
-        Ok(*lock(&self.legacy_pf))
-    }
-
-    // This is probably temporary. We should remember to remove it on the next release.
-    fn remove_legacy_pf(&self) -> Result<(), platform::PlatformError> {
-        *lock(&self.legacy_pf) = false;
-        lock(&self.operations).push("remove legacy pf".to_owned());
-
-        Ok(())
-    }
-
     fn remove_privileged_helper(&self) -> Result<(), platform::PlatformError> {
         *lock(&self.helper_status) = None;
         lock(&self.operations).push("remove helper".to_string());
@@ -691,36 +675,14 @@ fn setup_installs_missing_helper_before_system_integrations() -> anyhow::Result<
     let operations = fixture.environment.operations();
 
     assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.contains("Installed privileged helper 3.0.0"));
+    assert!(output.stdout.contains("Installed privileged helper 4.0.0"));
     assert!(operations.first().is_some_and(|operation| {
         operation == &format!(
-            "install helper {}/bin/pv-helper prepared {}/home/.pv/config/helper version 3.0.0 protocol 3 sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "install helper {}/bin/pv-helper prepared {}/home/.pv/config/helper version 4.0.0 protocol 4 sha256 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             tempdir.path(),
             tempdir.path()
         )
     }));
-
-    Ok(())
-}
-
-// This is probably temporary. We should remember to remove it on the next release.
-#[test]
-fn setup_removes_an_older_pvs_pf_redirect_before_system_integrations() -> anyhow::Result<()> {
-    let tempdir = tempdir()?;
-    let fixture = Fixture::new(tempdir.path());
-    seed_online_setup_manifest(&fixture)?;
-    *lock(&fixture.environment.legacy_pf) = true;
-    let daemon = DaemonFixture::start(&fixture.paths)?;
-
-    let output = run_pv(&["setup", "--no-path"], fixture.environment.as_ref())?;
-    let _daemon_requests = daemon.finish()?;
-
-    assert_eq!(output.exit_code, ExitCode::SUCCESS);
-    assert!(output.stdout.contains("Removed PV's old pf port redirect"));
-    assert_eq!(
-        fixture.environment.operations().first().map(String::as_str),
-        Some("remove legacy pf")
-    );
 
     Ok(())
 }
@@ -756,7 +718,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     let fixture = Fixture::new(tempdir.path());
     seed_online_setup_manifest(&fixture)?;
     fixture.environment.set_helper_missing();
-    let helper_bytes = b"pv helper 3.1.0\n";
+    let helper_bytes = b"pv helper 4.1.0\n";
     let helper_sha256 = format!("{:x}", Sha256::digest(helper_bytes));
     let release_version = env!("CARGO_PKG_VERSION");
     let app_source = tempdir.path().join("release-pv");
@@ -768,7 +730,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     state::fs::write_sensitive_file(
         &release_helper.with_file_name("pv-helper.json"),
         &format!(
-            "{{\n  \"version\": \"3.1.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"{helper_sha256}\"\n}}\n"
+            "{{\n  \"version\": \"4.1.0\",\n  \"protocol_version\": 4,\n  \"sha256\": \"{helper_sha256}\"\n}}\n"
         ),
     )?;
     layout.activate_release(release_version)?;
@@ -785,7 +747,7 @@ fn setup_repairs_from_active_release_helper_metadata() -> anyhow::Result<()> {
     assert_eq!(
         operations.first(),
         Some(&format!(
-            "install helper {release_helper} prepared {}/config/helper version 3.1.0 protocol 3 sha256 {helper_sha256}",
+            "install helper {release_helper} prepared {}/config/helper version 4.1.0 protocol 4 sha256 {helper_sha256}",
             fixture.paths.root()
         ))
     );
@@ -1386,7 +1348,7 @@ fn seed_bundled_helper_metadata(fixture: &Fixture) -> anyhow::Result<()> {
         .with_file_name("pv-helper.json");
     write_file(
         &path,
-        "{\n  \"version\": \"3.0.0\",\n  \"protocol_version\": 3,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
+        "{\n  \"version\": \"4.0.0\",\n  \"protocol_version\": 4,\n  \"sha256\": \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n}\n",
     )
 }
 

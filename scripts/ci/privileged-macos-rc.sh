@@ -57,42 +57,6 @@ collect_file() {
   fi
 }
 
-pv_pf_rules_absent() {
-  local filter_rules
-  local nat_rules
-  filter_rules=$(sudo pfctl -sr) || return 1
-  nat_rules=$(sudo pfctl -s nat) || return 1
-  printf 'filter rules:\n%s\nnat rules:\n%s\n' "$filter_rules" "$nat_rules"
-  if printf '%s\n%s\n' "$filter_rules" "$nat_rules" | grep -Fq "com.prvious.pv"; then
-    return 1
-  fi
-
-  return 0
-}
-
-# This is probably temporary. We should remember to remove it on the next release.
-# Leaves the pf redirect a PV release before launchd sockets installed: its anchor, and its lines
-# in /etc/pf.conf, loaded.
-seed_legacy_pf() {
-  local seeded="$PV_RC_EVIDENCE_DIR/pf.conf.seeded"
-  printf '%s\n' '# Managed by PV' \
-    'rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 80 -> 127.0.0.1 port 48080' \
-    'rdr pass on lo0 inet proto tcp from any to 127.0.0.1 port 443 -> 127.0.0.1 port 48443' |
-    sudo tee /etc/pf.anchors/com.prvious.pv > /dev/null || return 1
-  awk '{ print }
-    /^rdr-anchor "com\.apple\/\*"/ {
-      print "# Managed by PV"
-      print "# Source: PV prepared pf.conf reference for /etc/pf.conf"
-      print "rdr-anchor \"com.prvious.pv\""
-    }
-    END { print "load anchor \"com.prvious.pv\" from \"/etc/pf.anchors/com.prvious.pv\"" }' \
-    /etc/pf.conf > "$seeded" || return 1
-  grep -Fxq 'rdr-anchor "com.prvious.pv"' "$seeded" || return 1
-  sudo install -m 0644 "$seeded" /etc/pf.conf || return 1
-  sudo pfctl -f /etc/pf.conf || return 1
-  sudo pfctl -s nat | grep -Fq 'com.prvious.pv'
-}
-
 pv_ca_trust_removed() {
   "$PV_RC_BIN" ca:status | grep -F "System keychain trust: not trusted"
 }
@@ -373,7 +337,6 @@ cat > "$PV_RC_EVIDENCE_DIR/checklist.txt" <<'CHECKLIST'
 Privileged macOS RC evidence checklist:
 - candidate install.sh downloaded and used to install PV
 - /etc/resolver/test installed and removed
-- an older PV's pf redirect removed by setup
 - System keychain CA trust installed and removed
 - root helper executable, launchd registration, metadata, and socket installed and removed
 - root helper replacement transaction completed and cleaned its temporary files
@@ -387,13 +350,7 @@ Privileged macOS RC evidence checklist:
 - Update check and diagnostics executed
 CHECKLIST
 
-# This is probably temporary. We should remember to remove it on the next release.
-record_status legacy-pf-seed required seed_legacy_pf
 record_status setup required pv setup --yes --no-path
-# This is probably temporary. We should remember to remove it on the next release.
-record_status legacy-pf-removed-by-setup required pv_pf_rules_absent
-# This is probably temporary. We should remember to remove it on the next release.
-record_status legacy-pf-anchor-removed-by-setup required test ! -e /etc/pf.anchors/com.prvious.pv
 record_status helper-executable required sudo test -x /Library/PrivilegedHelperTools/com.prvious.pv.helper
 collect_file helper-launch-daemon /Library/LaunchDaemons/com.prvious.pv.helper.plist
 collect_file helper-metadata "/Library/Application Support/PV/helper.json"
@@ -462,10 +419,6 @@ record_status logs evidence pv logs --all
 record_status uninstall required pv uninstall
 collect_file resolver-after-uninstall /etc/resolver/test
 record_status resolver-removed required test ! -e /etc/resolver/test
-record_status pf-rules-after-uninstall evidence sudo pfctl -sr
-record_status pf-nat-rules-after-uninstall evidence sudo pfctl -s nat
-record_status pf-anchor-removed required test ! -e /etc/pf.anchors/com.prvious.pv
-record_status pf-rules-removed required pv_pf_rules_absent
 record_status ca-status-after-uninstall evidence "$PV_RC_BIN" ca:status
 record_status ca-trust-removed required pv_ca_trust_removed
 record_status launch-agent-removed required test ! -e "$HOME/Library/LaunchAgents/com.prvious.pv.daemon.plist"

@@ -161,8 +161,8 @@ impl HelperFixture {
             metadata,
             json!({
                 "owner_uid": self.owner_uid,
-                "helper_version": "3.0.0",
-                "protocol_version": 3,
+                "helper_version": "4.0.0",
+                "protocol_version": 4,
             })
         );
 
@@ -266,8 +266,8 @@ impl HelperFixture {
             HELPER_PROTOCOL_VERSION,
         )?;
         assert_eq!(outcome.status().owner_uid, self.owner_uid);
-        assert_eq!(outcome.status().version, "3.0.0");
-        assert_eq!(outcome.status().protocol_version, 3);
+        assert_eq!(outcome.status().version, "4.0.0");
+        assert_eq!(outcome.status().protocol_version, 4);
         ensure!(outcome.cleanup_warning().is_none(), "{outcome:?}");
         Ok(())
     }
@@ -332,8 +332,8 @@ impl HelperFixture {
     fn capture_process(&mut self) -> Result<(u32, ProcessStartIdentity)> {
         let status = PrivilegedHelperClient.status()?;
         assert_eq!(status.owner_uid, self.owner_uid);
-        assert_eq!(status.version, "3.0.0");
-        assert_eq!(status.protocol_version, 3);
+        assert_eq!(status.version, "4.0.0");
+        assert_eq!(status.protocol_version, 4);
         assert_eq!(
             service_property("pv-helper.socket", "ActiveState")?,
             "active"

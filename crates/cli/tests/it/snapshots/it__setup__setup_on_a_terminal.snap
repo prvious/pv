@@ -9,7 +9,7 @@ expression: setup.stdout
 ◇  Ensured PV state layout: <tempdir>/home/.pv
 │
 ✓  Administrator helper installed
-│  3.0.0 (protocol 3)
+│  4.0.0 (protocol 4)
 │
 ◇  Backed up shell profile: <tempdir>/home/.zprofile.<timestamp>.pv.bak
 │

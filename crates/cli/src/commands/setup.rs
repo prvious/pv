@@ -130,18 +130,6 @@ pub(crate) fn setup(
         return Ok(ExitCode::FAILURE);
     }
     let mut replay_error = None;
-    // This is probably temporary. We should remember to remove it on the next release.
-    if environment.legacy_pf_present()?
-        && !run_required_step(
-            "old pf redirect removal",
-            streams,
-            &mut replay_error,
-            |streams| remove_legacy_pf(environment, streams),
-        )?
-    {
-        return Ok(ExitCode::FAILURE);
-    }
-
     if configure_shell_integration(&args, environment, &paths, streams)? != ExitCode::SUCCESS {
         return Ok(ExitCode::FAILURE);
     }
@@ -412,8 +400,6 @@ pub(crate) fn uninstall(
     }
     // The daemon that listened on the DNS port is stopped by now, so the port can go.
     Database::open(&paths)?.release_port(PortOwner::Dns)?;
-    // This is probably temporary. We should remember to remove it on the next release.
-    remove_legacy_pf_or_warn(environment, streams)?;
     // An installation without setup never wrote PV's port setting, and has no helper to ask.
     #[cfg(target_os = "linux")]
     if !matches!(
@@ -541,36 +527,6 @@ fn ensure_low_ports(
     output.success("Ports 80 and 443 are available to PV")?;
 
     Ok(ExitCode::SUCCESS)
-}
-
-// This is probably temporary. We should remember to remove it on the next release.
-/// Removes the pf port redirect an older PV installed on this Mac, when there is one.
-fn remove_legacy_pf(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-) -> Result<ExitCode, ExecuteError> {
-    if environment.legacy_pf_present()? {
-        environment.remove_legacy_pf()?;
-        streams.out.success("Removed PV's old pf port redirect")?;
-    }
-
-    Ok(ExitCode::SUCCESS)
-}
-
-// This is probably temporary. We should remember to remove it on the next release.
-/// For `pv uninstall` and the update continuation, where a leftover redirect shouldn't stop the
-/// rest: shows the error and carries on.
-pub(super) fn remove_legacy_pf_or_warn(
-    environment: &impl Environment,
-    streams: &mut Streams<'_>,
-) -> Result<(), ExecuteError> {
-    if let Err(error) = remove_legacy_pf(environment, streams) {
-        streams.err.warning(&format!(
-            "Could not remove PV's old pf port redirect: {error}"
-        ))?;
-    }
-
-    Ok(())
 }
 
 fn run_required_step(
