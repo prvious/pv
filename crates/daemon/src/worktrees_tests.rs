@@ -228,19 +228,20 @@ fn discovery_maps_a_subfolder_source_and_skips_what_it_does_not_own() -> Result<
 }
 
 #[test]
-fn discovery_changes_nothing_for_a_source_with_an_unreadable_entry() -> Result<()> {
+fn discovery_removes_nothing_but_still_links_while_an_entry_is_unreadable() -> Result<()> {
     let fixture = Fixture::new()?;
     let repo = fixture.main_checkout("repo")?;
     fixture.link("repo", "repo.test")?;
     let feat = fixture.add_worktree(&repo, "feat", "worktrees/feat")?;
     discover_worktrees(&fixture.paths)?;
-    let before = fixture.discovered()?;
 
-    // Git removed `feat`, but a new entry has no `gitdir` yet, as while `git worktree add` runs.
+    // Git removed `feat`, but a new entry has no `gitdir` yet, as while `git worktree add` runs
+    // or after a removal that stopped partway. Another worktree is added meanwhile.
     fixture.remove(&fixture.root.join("worktrees/feat"))?;
     fixture.remove(&feat)?;
     let new = repo.join(".git/worktrees/new");
     state::fs::ensure_user_dir(&new)?;
+    fixture.add_worktree(&repo, "other", "worktrees/other")?;
     discover_worktrees(&fixture.paths)?;
     let while_unreadable = fixture.discovered()?;
 
@@ -253,13 +254,21 @@ fn discovery_changes_nothing_for_a_source_with_an_unreadable_entry() -> Result<(
     discover_worktrees(&fixture.paths)?;
     let readable = fixture.discovered()?;
 
-    assert_eq!(while_unreadable, before);
-    assert_eq!(
-        readable
+    let slugs_and_paths = |discovered: Vec<Discovered>| {
+        let mut slugs_and_paths = discovered
             .into_iter()
-            .map(|(_worktree_id, slug, _hostname, path)| (slug, path))
-            .collect::<Vec<_>>(),
-        [("repo-new".to_string(), "worktrees/new".to_string())]
+            .map(|(_worktree_id, slug, _hostname, path)| format!("{slug} {path}"))
+            .collect::<Vec<_>>();
+        slugs_and_paths.sort();
+        slugs_and_paths
+    };
+    assert_eq!(
+        slugs_and_paths(while_unreadable),
+        ["repo-feat worktrees/feat", "repo-other worktrees/other"]
+    );
+    assert_eq!(
+        slugs_and_paths(readable),
+        ["repo-new worktrees/new", "repo-other worktrees/other"]
     );
 
     Ok(())
