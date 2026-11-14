@@ -75,8 +75,6 @@ pub(crate) fn run_managed_resource_continuation(
     let layout = state::AppReleaseLayout::new(paths.clone());
     let current_version = AppUpdateVersion::current()?;
     validate_active_release(&layout, &current_version)?;
-    // This is probably temporary. We should remember to remove it on the next release.
-    super::setup::remove_legacy_pf_or_warn(environment, streams)?;
     // The previous version normalized the registration against its own template. This version's
     // LaunchAgent declares the Gateway's sockets, which launchd opens only when it loads it.
     let (registration_path, rewritten) = normalize_daemon_registration(environment, &paths)?;

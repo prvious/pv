@@ -25,8 +25,8 @@ use sha2::{Digest, Sha256};
 use crate::clock::{self, Deadline, Limit};
 use crate::{LowPortInspection, PlatformError, ResolverConfig};
 
-pub const HELPER_PROTOCOL_VERSION: u32 = 3;
-pub const PRIVILEGED_HELPER_VERSION: &str = "3.0.0";
+pub const HELPER_PROTOCOL_VERSION: u32 = 4;
+pub const PRIVILEGED_HELPER_VERSION: &str = "4.0.0";
 #[cfg(not(target_os = "linux"))]
 pub const HELPER_EXECUTABLE_PATH: &str = "/Library/PrivilegedHelperTools/com.prvious.pv.helper";
 #[cfg(target_os = "linux")]
@@ -168,8 +168,6 @@ enum HelperOperation {
     DnsApply { port: u16 },
     DnsRemove,
     LowPortInspect,
-    // This is probably temporary. We should remember to remove it on the next release.
-    PfRemove,
     CaApply { fingerprint: String },
     CaRemove { fingerprint: String },
     UnprivilegedPortsApply,
@@ -246,12 +244,6 @@ impl PrivilegedHelperClient {
             HelperPayload::LowPorts(inspection) => Ok(inspection),
             payload => Err(unexpected_payload("low-port inspection", &payload)),
         }
-    }
-
-    // This is probably temporary. We should remember to remove it on the next release.
-    /// macOS: removes the pf port redirect an older PV installed.
-    pub fn remove_legacy_pf(&self) -> Result<(), PlatformError> {
-        expect_empty(self.call(HelperOperation::PfRemove)?)
     }
 
     pub fn apply_ca(&self, fingerprint: &str) -> Result<(), PlatformError> {
@@ -1622,12 +1614,6 @@ fn dispatch_request(
         HelperOperation::LowPortInspect => Ok(HelperPayload::LowPorts(
             crate::low_port::inspect_loopback_ports(&[80, 443])?,
         )),
-        // This is probably temporary. We should remember to remove it on the next release.
-        #[cfg(target_os = "macos")]
-        HelperOperation::PfRemove => {
-            crate::legacy_pf::remove_legacy_pf_privileged()?;
-            Ok(HelperPayload::Empty)
-        }
         #[cfg(target_os = "macos")]
         HelperOperation::CaApply { fingerprint } => {
             validate_fingerprint(&fingerprint)?;
@@ -1673,12 +1659,6 @@ fn dispatch_request(
             crate::trust::untrust_system_ca_privileged(&fingerprint)?;
             Ok(HelperPayload::Empty)
         }
-        // This is probably temporary. We should remember to remove it on the next release.
-        #[cfg(target_os = "linux")]
-        HelperOperation::PfRemove => Err(PlatformError::Unsupported {
-            capability: crate::PlatformCapability::LowPortFrontend,
-            target: crate::PlatformTarget::Linux,
-        }),
         #[cfg(target_os = "linux")]
         HelperOperation::CaApply { fingerprint } => {
             crate::trust::linux::apply_system_ca_privileged(metadata.owner_uid, &fingerprint)?;

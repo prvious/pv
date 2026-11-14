@@ -9,9 +9,6 @@ mod error;
 mod gateway_listeners;
 mod helper;
 pub mod hooks;
-// This is probably temporary. We should remember to remove it on the next release.
-#[cfg(any(target_os = "macos", test))]
-mod legacy_pf;
 #[cfg(target_os = "linux")]
 mod linux_host;
 mod low_port;
@@ -59,9 +56,6 @@ pub use helper::{
 #[cfg(target_os = "linux")]
 pub use linux_host::{check_linux_resolved_stub, check_linux_setup_host};
 pub use low_port::{LowPortInspection, LowPortState, PortOwner};
-// This is probably temporary. We should remember to remove it on the next release.
-#[cfg(target_os = "macos")]
-pub use legacy_pf::legacy_pf_present;
 pub use port::loopback_tcp_port_available;
 pub use process::{
     BootSessionId, ProcessEvents, ProcessExitWatch, ProcessIdentity, ProcessStartIdentity,

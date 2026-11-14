@@ -152,17 +152,6 @@ pub trait Environment {
         Err(platform::PlatformError::PrivilegedHelperUnavailable)
     }
 
-    // This is probably temporary. We should remember to remove it on the next release.
-    /// Whether an older PV left its pf port redirect on this Mac.
-    fn legacy_pf_present(&self) -> Result<bool, platform::PlatformError> {
-        Ok(false)
-    }
-
-    // This is probably temporary. We should remember to remove it on the next release.
-    fn remove_legacy_pf(&self) -> Result<(), platform::PlatformError> {
-        Err(platform::PlatformError::PrivilegedHelperUnavailable)
-    }
-
     fn trusted_ca_certificates(
         &self,
     ) -> Result<Vec<platform::KeychainCertificate>, platform::PlatformError> {
@@ -322,17 +311,6 @@ impl Environment for ProcessEnvironment {
     #[cfg(target_os = "linux")]
     fn remove_unprivileged_ports(&self) -> Result<(), platform::PlatformError> {
         platform::PrivilegedHelperClient.remove_unprivileged_ports()
-    }
-
-    // This is probably temporary. We should remember to remove it on the next release.
-    #[cfg(target_os = "macos")]
-    fn legacy_pf_present(&self) -> Result<bool, platform::PlatformError> {
-        platform::legacy_pf_present()
-    }
-
-    // This is probably temporary. We should remember to remove it on the next release.
-    fn remove_legacy_pf(&self) -> Result<(), platform::PlatformError> {
-        platform::PrivilegedHelperClient.remove_legacy_pf()
     }
 
     fn var_os(&self, key: &str) -> Option<OsString> {
