@@ -30,6 +30,8 @@ struct HookState {
     queued: VecDeque<HookRun>,
     active: BTreeMap<String, ActiveRun>,
     prepares: BTreeMap<String, PrepareState>,
+    /// The worktree discovery changes that failed in the last discovery run.
+    failed_worktree_changes: Vec<worktrees::ChangeAttempt>,
 }
 
 struct PrepareState {
@@ -106,6 +108,15 @@ impl DaemonHooks {
         self.state()
             .prepares
             .remove(&worktree_scope(source, worktree));
+    }
+
+    pub(crate) fn remember_failed_worktree_changes(&self, failed: Vec<worktrees::ChangeAttempt>) {
+        self.state().failed_worktree_changes = failed;
+    }
+
+    /// Whether `attempt` failed in the last discovery run and nothing it depends on has changed.
+    pub(crate) fn worktree_change_failed(&self, attempt: &worktrees::ChangeAttempt) -> bool {
+        self.state().failed_worktree_changes.contains(attempt)
     }
 
     pub(crate) fn queue_prepare(

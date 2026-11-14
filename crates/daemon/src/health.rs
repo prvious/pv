@@ -470,10 +470,15 @@ fn collect_runtime_health_probes(
         ),
     };
     // System reconciliation applies worktree changes. A source whose worktrees can't be read is
-    // reported here, on every scan, until it can.
+    // reported here, on every scan, until it can. A change that failed in the last discovery run
+    // waits for something it depends on to change, or for another system reconciliation.
     match crate::worktrees::plan_worktree_changes_with_hooks(&database, hooks) {
         Ok(plan) => {
-            if !plan.changes.is_empty() {
+            if plan.changes.iter().any(|change| {
+                !hooks.is_some_and(|hooks| {
+                    hooks.worktree_change_failed(&crate::worktrees::change_attempt(change))
+                })
+            }) {
                 maintenance_scopes.push(ReconciliationScope::System);
             }
             errors.extend(plan.skipped.into_iter().map(|(project_id, error)| {
