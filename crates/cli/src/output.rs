@@ -898,7 +898,7 @@ mod tests {
             Mark::Failure,
             "Loopback TCP port 80 already has a listener.",
         )?;
-        output.detail("Stop the conflicting service, then run `pv ports:install` again.")?;
+        output.detail("Stop the conflicting service, then run `pv setup` again.")?;
         output.flow_end(Mark::Failure, "pv init cancelled; no files changed.")
     }
 
@@ -1026,7 +1026,7 @@ mod tests {
         ◇  Project config preview:
         │  php: '8.4'
         │  ✗ Loopback TCP port 80 already has a listener.
-        │    Stop the conflicting service, then run `pv ports:install` again.
+        │    Stop the conflicting service, then run `pv setup` again.
         │
         └  ✗ pv init cancelled; no files changed.
         ");
@@ -1037,7 +1037,7 @@ mod tests {
         Project config preview:
         php: '8.4'
         Loopback TCP port 80 already has a listener.
-          Stop the conflicting service, then run `pv ports:install` again.
+          Stop the conflicting service, then run `pv setup` again.
         pv init cancelled; no files changed.
         ");
     }
