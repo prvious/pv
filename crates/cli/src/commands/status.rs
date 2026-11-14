@@ -918,8 +918,10 @@ mod tests {
         snapshot.overall = "failed";
         snapshot.system_failure = true;
         snapshot.runtimes[0].status = "failed";
-        snapshot.runtimes[0].message =
-            Some("Gateway failed to start: port 48443 is occupied".to_string());
+        snapshot.runtimes[0].message = Some(
+            "Port 443 is in use by another program; free it, then run `pv daemon:restart`."
+                .to_string(),
+        );
         snapshot.runtimes[0].failure = true;
         snapshot.runtimes[0].mark = Mark::Failure;
         let mut bytes = Vec::new();

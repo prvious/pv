@@ -282,7 +282,7 @@ async fn gateway_identity_readiness_rejects_generic_tcp_listeners() -> Result<()
             https_port,
             server_name: "pv-gateway.localhost".to_owned(),
             path: "/__pv/health".to_owned(),
-            expected_body: "pv-gateway-health-v1:48080:48443".to_owned(),
+            expected_body: "pv-gateway-health-v2".to_owned(),
             ca_certificate_path,
         },
         &READINESS,
