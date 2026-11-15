@@ -434,7 +434,7 @@ fn daemon_disable_stops_live_runtimes_without_a_plist_or_database() -> anyhow::R
     let _mysql_socket = UnixListener::bind(paths.run().join("resources/mysql-8.4.sock"))?;
     // A runtime that stopped earlier leaves only its config proofs.
     let retained_proof = paths.resource_runtime_metadata("redis", "7");
-    state::fs::write_sensitive_file(&retained_proof, r#"{"staged_config_fingerprint":"a"}"#)?;
+    state::fs::write_sensitive_file(&retained_proof, r#"{"desired_config_fingerprint":"a"}"#)?;
     let mut watch = platform::ProcessExitWatch::new(fixtures[0].descendant_pid()?)?;
     // Maintenance stop must work even when the database cannot be opened.
     state::fs::write_sensitive_file(paths.db(), "invalid database")?;

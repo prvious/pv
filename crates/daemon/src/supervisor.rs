@@ -127,9 +127,8 @@ pub struct ManagedProcess {
 pub(crate) enum RecordedConfigFingerprint {
     /// Bytes committed as applied; service readiness may remain unverified under the preserve policy.
     Applied(String),
-    /// Exact promoted bytes prepared for a transaction; this proves neither application nor
-    /// readiness.
-    Staged(String),
+    /// A transaction marked the runtime for replacement; its config is unproven.
+    Pending,
 }
 
 /// A runtime whose monitor still runs it as its record names.
@@ -219,8 +218,6 @@ struct RuntimeMetadata {
     applied_config_fingerprint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     desired_config_fingerprint: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    staged_config_fingerprint: Option<String>,
     log_path: String,
     started_at: String,
 }
@@ -425,19 +422,13 @@ impl ProcessSupervisor {
     pub fn mark_replacement_required(
         &self,
         spec: &ProcessSpec,
-        staged_config_fingerprint: &str,
+        desired_config_fingerprint: &str,
     ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(
-            spec,
-            true,
-            None,
-            Some(staged_config_fingerprint),
-            Some(staged_config_fingerprint),
-        )
+        self.set_config_application_state(spec, true, None, Some(desired_config_fingerprint))
     }
 
     pub fn clear_replacement_required(&self, spec: &ProcessSpec) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, None, None, None)
+        self.set_config_application_state(spec, false, None, None)
     }
 
     pub fn record_applied_config(
@@ -445,7 +436,7 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         fingerprint: &str,
     ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, Some(fingerprint), None, Some(fingerprint))
+        self.set_config_application_state(spec, false, Some(fingerprint), Some(fingerprint))
     }
 
     pub(crate) fn record_restored_config(
@@ -453,7 +444,7 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         fingerprint: &str,
     ) -> Result<bool, DaemonError> {
-        self.set_config_application_state(spec, false, Some(fingerprint), None, None)
+        self.set_config_application_state(spec, false, Some(fingerprint), None)
     }
 
     fn set_config_application_state(
@@ -461,7 +452,6 @@ impl ProcessSupervisor {
         spec: &ProcessSpec,
         replacement_required: bool,
         applied_config_fingerprint: Option<&str>,
-        staged_config_fingerprint: Option<&str>,
         desired_config_fingerprint: Option<&str>,
     ) -> Result<bool, DaemonError> {
         require_process_containment()?;
@@ -478,7 +468,6 @@ impl ProcessSupervisor {
 
         metadata.replacement_required = replacement_required;
         metadata.applied_config_fingerprint = applied_config_fingerprint.map(str::to_owned);
-        metadata.staged_config_fingerprint = staged_config_fingerprint.map(str::to_owned);
         if let Some(desired_config_fingerprint) = desired_config_fingerprint {
             metadata.desired_config_fingerprint = Some(desired_config_fingerprint.to_owned());
         } else if metadata.desired_config_fingerprint.is_none()
@@ -533,7 +522,7 @@ impl ProcessSupervisor {
             replacement_required: metadata.replacement_required,
             applied_config_fingerprint: match metadata.recorded_config_fingerprint() {
                 Some(RecordedConfigFingerprint::Applied(fingerprint)) => Some(fingerprint),
-                Some(RecordedConfigFingerprint::Staged(_)) | None => None,
+                Some(RecordedConfigFingerprint::Pending) | None => None,
             },
             desired_config_fingerprint: metadata.desired_config_fingerprint,
         }))
@@ -1276,7 +1265,6 @@ fn write_runtime_metadata(
         replacement_required: false,
         applied_config_fingerprint: None,
         desired_config_fingerprint: None,
-        staged_config_fingerprint: None,
         log_path: spec.log_path.to_string(),
         started_at,
     };
@@ -1331,14 +1319,11 @@ impl RuntimeMetadata {
         match (
             self.replacement_required,
             self.applied_config_fingerprint.as_deref(),
-            self.staged_config_fingerprint.as_deref(),
         ) {
-            (false, Some(fingerprint), None) => {
+            (false, Some(fingerprint)) => {
                 Some(RecordedConfigFingerprint::Applied(fingerprint.to_owned()))
             }
-            (true, None, Some(fingerprint)) => {
-                Some(RecordedConfigFingerprint::Staged(fingerprint.to_owned()))
-            }
+            (true, None) => Some(RecordedConfigFingerprint::Pending),
             _ => None,
         }
     }
