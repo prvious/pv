@@ -175,7 +175,7 @@ fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
             .with_file_name("fake-admin-control.json"),
         "{\"load_statuses\": [422",
     )?;
-    let (status, body) = gateway.admin("GET", "/config/", "")?;
+    let (status, body) = gateway.admin("POST", "/load", "")?;
 
     let unknown = unknown.err().map(|error| format!("{error:#}"));
     assert!(
@@ -186,7 +186,7 @@ fn gateway_controls_reject_unknown_keys_and_malformed_files() -> Result<()> {
     );
     assert_eq!(status, 500);
     assert!(
-        body.starts_with("pv-fake: GET /config/: parsing ")
+        body.starts_with("pv-fake: POST /load: parsing ")
             && body.contains("fake-admin-control.json: EOF while parsing"),
         "{body}"
     );

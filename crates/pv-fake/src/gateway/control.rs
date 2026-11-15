@@ -23,20 +23,10 @@ const VALIDATOR_SPAWNS_FILE: &str = "fake-validator-spawns.log";
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Control {
-    /// Holds `GET /config/` until this path exists.
-    admin_response_gate: Option<Setting<Utf8PathBuf>>,
     /// Statuses for `POST /load`; anything but 2xx rejects the load without applying it.
     load_statuses: Option<Setting<u16>>,
     /// `false` accepts a load without applying it.
     apply_load: Option<Setting<bool>>,
-    /// Holds `POST /load`, after recording it, until this path exists.
-    load_response_gate: Option<Setting<Utf8PathBuf>>,
-    /// Replaces the `/load` response body.
-    load_response_body: Option<Setting<String>>,
-    /// Written once a load is accepted.
-    load_accepted_marker: Option<Setting<Utf8PathBuf>>,
-    /// Exits 0 shortly after accepting a load.
-    exit_after_load: Option<Setting<bool>>,
     /// Closes the HTTP listener on its next connection and keeps the process running.
     pub(crate) stop_service: Option<bool>,
 }
@@ -56,30 +46,13 @@ fn next<T: Clone>(setting: &mut Option<Setting<T>>) -> Option<T> {
     }
 }
 
-/// What the controls say to do with one `GET /config/`.
-pub(crate) struct AdminControl {
-    pub(crate) gate: Option<Utf8PathBuf>,
-}
-
-impl AdminControl {
-    pub(crate) fn take(control: &mut Control) -> Self {
-        Self {
-            gate: next(&mut control.admin_response_gate),
-        }
-    }
-}
-
-/// What the controls say to do with one `POST /load`. Settings that only matter for an accepted
-/// load are used up only by accepted loads.
+/// What the controls say to do with one `POST /load`. `apply_load` is used up only by accepted
+/// loads.
 pub(crate) struct LoadControl {
     /// The response status: `400` for a config the adapter couldn't read, as with Caddy, and
     /// otherwise `load_statuses`.
     pub(crate) status: u16,
     pub(crate) apply: bool,
-    pub(crate) gate: Option<Utf8PathBuf>,
-    pub(crate) response_body: Option<String>,
-    pub(crate) accepted_marker: Option<Utf8PathBuf>,
-    pub(crate) exit_after: bool,
 }
 
 impl LoadControl {
@@ -91,12 +64,6 @@ impl LoadControl {
         Self {
             status,
             apply: accepted && next(&mut control.apply_load).unwrap_or(true),
-            gate: next(&mut control.load_response_gate),
-            response_body: next(&mut control.load_response_body),
-            accepted_marker: accepted
-                .then(|| next(&mut control.load_accepted_marker))
-                .flatten(),
-            exit_after: accepted && next(&mut control.exit_after_load).unwrap_or(false),
         }
     }
 
