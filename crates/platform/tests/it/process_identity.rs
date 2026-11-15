@@ -222,10 +222,14 @@ fn wait_for_exit(watch: &mut ProcessExitWatch) -> Result<std::process::ExitStatu
 
 fn inspect_child(child: &mut ChildGuard) -> Result<platform::ProcessIdentity> {
     let pid = child.0.id();
-    // On Linux, `spawn` returns once the child execs, a moment before the kernel publishes its
-    // arguments.
+    let test_binary =
+        inspect_process_identity(std::process::id())?.map(|identity| identity.executable);
+    // On Linux, `spawn` returns while the child is still in exec: for a moment it can report no
+    // arguments, or this test binary's executable and arguments.
     for _attempt in 0..500 {
-        if let Ok(Some(identity)) = inspect_process_identity(pid) {
+        if let Ok(Some(identity)) = inspect_process_identity(pid)
+            && Some(&identity.executable) != test_binary.as_ref()
+        {
             return Ok(identity);
         }
         clock::poll_blocking(Duration::from_millis(10));
