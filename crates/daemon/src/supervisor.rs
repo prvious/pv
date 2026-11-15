@@ -128,7 +128,7 @@ pub(crate) enum RecordedConfigFingerprint {
     /// Bytes committed as applied; service readiness may remain unverified under the preserve policy.
     Applied(String),
     /// Exact promoted bytes prepared for a transaction; this proves neither application nor
-    /// readiness and can remain useful after the process exits.
+    /// readiness.
     Staged(String),
 }
 
