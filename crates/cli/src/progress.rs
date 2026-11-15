@@ -99,18 +99,17 @@ impl<'output> DownloadProgressRenderer<'output> {
         }
 
         let mut bars = self.bars.borrow_mut();
-        {
-            let bar = bars
-                .entry(key.clone())
-                .or_insert_with(|| self.progress.add(progress_bar(total_bytes, label())));
-            bar.set_position(downloaded_bytes.min(total_bytes));
+        // A report for a finished download must not bring its cleared bar back.
+        if downloaded_bytes >= total_bytes {
+            if let Some(bar) = bars.remove(&key) {
+                bar.finish_and_clear();
+            }
+            return;
         }
 
-        if downloaded_bytes >= total_bytes
-            && let Some(bar) = bars.remove(&key)
-        {
-            bar.finish_and_clear();
-        }
+        bars.entry(key)
+            .or_insert_with(|| self.progress.add(progress_bar(total_bytes, label())))
+            .set_position(downloaded_bytes);
     }
 
     fn start_artifact(&self, artifact: &ManifestArtifact) {
@@ -312,8 +311,9 @@ fn progress_message(message: &str) -> Option<String> {
 }
 
 fn progress_bar(total_bytes: u64, label: String) -> ProgressBar {
-    let bar = ProgressBar::new(total_bytes);
-    bar.set_message(label);
+    // `set_message` would draw the default style straight to stderr before the
+    // bar joins the `MultiProgress`, leaving a line nothing clears.
+    let bar = ProgressBar::new(total_bytes).with_message(label);
     if let Ok(style) = ProgressStyle::with_template(
         "{spinner:.cyan} {msg} {bar:24.green/dim} {percent:>3}% {binary_bytes_per_sec:.dim}",
     ) {
