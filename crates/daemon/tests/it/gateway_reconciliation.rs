@@ -864,7 +864,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         source_content_after_failure.as_deref(),
         Some(old_source_content.as_str())
     );
-    assert!(peer_content_after_failure.contains("old.acme.test"));
+    assert!(!peer_content_after_failure.contains("old.acme.test"));
     assert!(peer_content_after_failure.contains("new.acme.test"));
     assert!(!committed_peer_content.contains("old.acme.test"));
     assert!(committed_peer_content.contains("new.acme.test"));
@@ -2994,12 +2994,7 @@ root: public
         fs::read_to_string(&worker_fragment_path)?
     );
     assert_eq!(gateway_load_bodies, vec![gateway_root.clone()]);
-    // The rename keeps the old sites on the worker until the Gateway stops routing them,
-    // then a cleanup load removes them.
-    assert_eq!(
-        worker_load_bodies,
-        vec![worker_root.clone(), worker_root.clone()]
-    );
+    assert_eq!(worker_load_bodies, vec![worker_root.clone()]);
     assert!(fake_admin_load_bodies(&paths.worker_root_config("8.3"))?.is_empty());
     assert!(gateway_load_bodies[0].ends_with(b"\n"));
     assert!(worker_load_bodies[0].ends_with(b"\n"));
@@ -3020,7 +3015,7 @@ root: public
             .iter()
             .filter(|request| request["method"] == "POST" && request["path"] == "/load")
             .count(),
-        2
+        1
     );
     assert!(
         worker_requests
@@ -3034,10 +3029,9 @@ root: public
 }
 
 #[tokio::test]
-async fn worker_hostname_takeover_drops_the_previous_owners_old_sites() -> Result<()> {
-    // Until the Gateway stops routing a renamed Project's old hostname, the worker keeps the old
-    // sites, but not those another Project on the worker now serves: Caddy rejects a site address
-    // defined twice.
+async fn hostname_takeover_between_projects_on_one_worker_reconciles() -> Result<()> {
+    // Caddy rejects a site address defined twice, so a renamed Project's old sites must not
+    // linger next to the Project that takes them over.
     for (takeover, expected) in [
         (
             "swap",
@@ -3099,86 +3093,6 @@ async fn worker_hostname_takeover_drops_the_previous_owners_old_sites() -> Resul
         cleanup?;
         assert_eq!(sites, expected, "{takeover}");
     }
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn worker_keeps_old_sites_while_the_gateway_rejects_a_rename() -> Result<()> {
-    let gateway_listeners = crate::host::test_gateway_listeners()?;
-    let tempdir = tempdir()?;
-    let paths = PvPaths::for_home(tempdir.path().join("home"));
-    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
-    let acme = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\nroot: public\n")?;
-    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
-    write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
-    link_project_record(&paths, &acme, "laravel.test", Some("8.4"))?;
-    let port = pv_fake::port()?;
-    let mut database = Database::open(&paths)?;
-    database.record_managed_resource_track_installed(
-        "frankenphp",
-        "8.4",
-        "fake-frankenphp-pv1",
-        &frankenphp_release,
-    )?;
-    seed_runtime_ports(&paths, &mut database, &[("8.4", port)])?;
-    drop(database);
-    reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
-
-    // The Gateway rejects every change below, so it keeps routing laravel.test to the worker.
-    fs::write_sensitive_file(&acme.join("web/index.php"), "<?php\n")?;
-    fs::write_sensitive_file(&acme.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
-    link_project_record(&paths, &acme, "renamed.test", Some("8.4"))?;
-    pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"load_statuses": 422}))?;
-    let mut rejections = vec![reconcile_gateway_runtimes(&paths, &gateway_listeners).await];
-    rejections.push(reconcile_gateway_runtimes(&paths, &gateway_listeners).await);
-    let retried_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
-    // Another Project takes laravel.test, then renames away from it.
-    let other =
-        create_project_with_config(tempdir.path(), "other", "php: \"8.4\"\nroot: public\n")?;
-    link_project_record(&paths, &other, "laravel.test", Some("8.4"))?;
-    rejections.push(reconcile_gateway_runtimes(&paths, &gateway_listeners).await);
-    link_project_record(&paths, &other, "third.test", Some("8.4"))?;
-    rejections.push(reconcile_gateway_runtimes(&paths, &gateway_listeners).await);
-    let transferred_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
-    pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"load_statuses": 200}))?;
-    let committed = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
-    let committed_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
-    let cleanup = runtime_guard.cleanup().await;
-
-    for result in rejections {
-        assert!(matches!(
-            result,
-            Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
-                status: 422,
-                ..
-            }))
-        ));
-    }
-    assert_eq!(
-        retried_sites,
-        [
-            "acme/public: http://laravel.test, http://*.laravel.test",
-            "acme/web: http://renamed.test, http://*.renamed.test",
-        ]
-    );
-    assert_eq!(
-        transferred_sites,
-        [
-            "acme/web: http://renamed.test, http://*.renamed.test",
-            "other/public: http://laravel.test, http://*.laravel.test",
-            "other/public: http://third.test, http://*.third.test",
-        ]
-    );
-    committed.context("committed reconciliation")?;
-    cleanup?;
-    assert_eq!(
-        committed_sites,
-        [
-            "acme/web: http://renamed.test, http://*.renamed.test",
-            "other/public: http://third.test, http://*.third.test",
-        ]
-    );
 
     Ok(())
 }

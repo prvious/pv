@@ -571,7 +571,7 @@ async fn reconcile_all_gateway_runtimes(
     };
     let mut worker_commands = Vec::new();
     let mut worker_failures = Vec::new();
-    let mut retained_worker_fragments = BTreeMap::new();
+    let mut moved_worker_fragments = BTreeMap::new();
 
     for worker in &plan.workers {
         match required_installed_worker_runtime(paths, worker) {
@@ -583,15 +583,26 @@ async fn reconcile_all_gateway_runtimes(
                     &worker_runtime.artifact_root,
                 )
                 .and_then(|spec| {
-                    verified_recorded_runtime_config(
+                    verified_recorded_applied_runtime_config(
                         &supervisor,
                         &spec,
                         &paths.worker_root_config(&worker.runtime_key),
                         &paths.worker_projects_config_dir(&worker.runtime_key),
                     )
                 });
-                let snapshot = match snapshot {
-                    Ok(snapshot) => snapshot,
+                match snapshot {
+                    Ok(Some(snapshot)) => {
+                        let moved = moved_project_fragments(
+                            &plan,
+                            worker,
+                            previous_gateway.as_ref(),
+                            snapshot.fragments,
+                        );
+                        if !moved.is_empty() {
+                            moved_worker_fragments.insert(worker.runtime_key.clone(), moved);
+                        }
+                    }
+                    Ok(None) => {}
                     Err(error) => {
                         if let Err(recording) =
                             record_runtime_error(paths, worker_runtime_subject(worker), &error)
@@ -601,76 +612,6 @@ async fn reconcile_all_gateway_runtimes(
                         worker_failures.push((worker.runtime_key.clone(), error));
                         continue;
                     }
-                };
-                if snapshot.is_none()
-                    && previous_gateway.as_ref().is_some_and(|gateway| {
-                        gateway.fragments.iter().any(|(file_name, fragment)| {
-                            gateway_fragment_targets_worker(fragment, worker.port)
-                                && !worker.projects.iter().any(|project| {
-                                    project_config_file_name(&project.id) == *file_name
-                                })
-                        })
-                    })
-                {
-                    let error = DaemonError::UnexpectedProtocolResponse {
-                        reason: format!(
-                            "cannot verify source routes for PHP worker `{}` before Gateway commit",
-                            worker.runtime_key
-                        ),
-                    };
-                    if let Err(recording) =
-                        record_runtime_error(paths, worker_runtime_subject(worker), &error)
-                    {
-                        worker_failures.push((worker.runtime_key.clone(), recording));
-                    }
-                    worker_failures.push((worker.runtime_key.clone(), error));
-                    continue;
-                }
-                if let Some(snapshot) = snapshot {
-                    let desired_fragments = match worker_project_config_fragments(
-                        paths,
-                        worker,
-                        Some(&snapshot.fragments),
-                    ) {
-                        Ok(fragments) => fragments
-                            .into_iter()
-                            .map(|fragment| (fragment.file_name, fragment.content))
-                            .collect::<BTreeMap<_, _>>(),
-                        Err(error) => {
-                            if let Err(recording) =
-                                record_runtime_error(paths, worker_runtime_subject(worker), &error)
-                            {
-                                worker_failures.push((worker.runtime_key.clone(), recording));
-                            }
-                            worker_failures.push((worker.runtime_key.clone(), error));
-                            continue;
-                        }
-                    };
-                    // Keep what the committed Gateway still routes here, whichever Project the
-                    // worker serves it for now; without a committed Gateway, keep everything.
-                    let routed = previous_gateway.as_ref().map(|gateway| {
-                        gateway_routed_worker_addresses(&gateway.fragments, worker.port)
-                    });
-                    let fragments = snapshot
-                        .fragments
-                        .into_iter()
-                        .filter(|(file_name, content)| {
-                            desired_fragments.get(file_name) != Some(content)
-                        })
-                        .map(|(file_name, content)| match &routed {
-                            Some(routed) => {
-                                let content = filter_site_addresses(&content, |address| {
-                                    routed.contains(address)
-                                });
-                                (file_name, content)
-                            }
-                            None => (file_name, content),
-                        })
-                        .filter(|(_file_name, content)| !content.is_empty())
-                        .collect::<BTreeMap<_, _>>();
-                    if !fragments.is_empty() {
-                        retained_worker_fragments.insert(worker.runtime_key.clone(), fragments);
-                    }
                 }
                 worker_commands.push((worker.clone(), worker_runtime));
             }
@@ -679,10 +620,10 @@ async fn reconcile_all_gateway_runtimes(
     }
 
     let workers = bounded_runtime_readiness(worker_commands, |(worker, worker_runtime)| {
-        let retained_fragments = retained_worker_fragments.get(&worker.runtime_key);
+        let moved_fragments = moved_worker_fragments.get(&worker.runtime_key);
         async move {
             let result =
-                reconcile_planned_worker(paths, &worker, &worker_runtime, None, retained_fragments)
+                reconcile_planned_worker(paths, &worker, &worker_runtime, None, moved_fragments)
                     .await;
             (worker.runtime_key.clone(), result)
         }
@@ -741,7 +682,7 @@ async fn reconcile_all_gateway_runtimes(
     });
     let mut cleanup_failures: Vec<(String, DaemonError)> = Vec::new();
     for worker in &plan.workers {
-        if retained_worker_fragments.contains_key(&worker.runtime_key) {
+        if moved_worker_fragments.contains_key(&worker.runtime_key) {
             let result = match required_installed_worker_runtime(paths, worker) {
                 Ok(worker_runtime) => {
                     reconcile_planned_worker(paths, worker, &worker_runtime, None, None).await
@@ -920,14 +861,14 @@ async fn reconcile_planned_worker(
     worker: &PhpWorkerRuntimePlan,
     worker_runtime: &InstalledFrankenphpRuntime,
     preserved_fragments: Option<&BTreeMap<String, String>>,
-    retained_fragments: Option<&BTreeMap<String, String>>,
+    moved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<(), DaemonError> {
     let prepared = prepare_planned_worker(
         paths,
         worker,
         worker_runtime,
         preserved_fragments,
-        retained_fragments,
+        moved_fragments,
     )
     .await?;
     match prepared {
@@ -948,7 +889,7 @@ async fn prepare_planned_worker(
     worker: &PhpWorkerRuntimePlan,
     worker_runtime: &InstalledFrankenphpRuntime,
     preserved_fragments: Option<&BTreeMap<String, String>>,
-    retained_fragments: Option<&BTreeMap<String, String>>,
+    moved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<PreparedWorkerReconciliation, DaemonError> {
     let supervisor = ProcessSupervisor::new(paths.clone());
     let subject = worker_runtime_subject(worker);
@@ -964,7 +905,7 @@ async fn prepare_planned_worker(
         }
     };
     let desired_config =
-        match desired_worker_config(paths, worker, preserved_fragments, retained_fragments) {
+        match desired_worker_config(paths, worker, preserved_fragments, moved_fragments) {
             Ok(desired_config) => desired_config,
             Err(error) => {
                 return Err(record_primary_error(paths, subject.clone(), error));
@@ -974,7 +915,6 @@ async fn prepare_planned_worker(
         check: worker_readiness_check(worker.port),
         budget: RUNTIME_START_READINESS_TIMEOUT,
         admin_endpoint: CaddyAdminEndpoint::new(worker.admin_socket_path.clone()),
-        preserve_staged_config: retained_fragments.is_some_and(|fragments| !fragments.is_empty()),
     };
     let private_environment =
         match worker_config_private_environment(paths, worker, &worker_runtime.artifact_root) {
@@ -1094,7 +1034,6 @@ fn gateway_readiness_plan(
         check: gateway_readiness_check(http_port, https_port, &plan.gateway.ca_certificate_path),
         budget: RUNTIME_START_READINESS_TIMEOUT,
         admin_endpoint: CaddyAdminEndpoint::new(plan.gateway.admin_socket_path.clone()),
-        preserve_staged_config: false,
     }
 }
 
@@ -1104,7 +1043,6 @@ struct RuntimeReadinessPlan {
     /// How long a started runtime gets to become ready.
     budget: Limit,
     admin_endpoint: CaddyAdminEndpoint,
-    preserve_staged_config: bool,
 }
 
 /// Asks the Gateway for its health route over HTTP and HTTPS, which must present a certificate from
@@ -2330,22 +2268,6 @@ fn verified_recorded_applied_runtime_config(
     verified_runtime_config_snapshot(root_path, fragments_directory, &recorded_fingerprint)
 }
 
-fn verified_recorded_runtime_config(
-    supervisor: &ProcessSupervisor,
-    spec: &ProcessSpec,
-    root_path: &Utf8Path,
-    fragments_directory: &Utf8Path,
-) -> Result<Option<ActiveRuntimeConfigSnapshot>, DaemonError> {
-    let Some(recorded_fingerprint) = supervisor.recorded_config_fingerprint(spec)? else {
-        return Ok(None);
-    };
-    let recorded_fingerprint = match recorded_fingerprint {
-        RecordedConfigFingerprint::Applied(fingerprint)
-        | RecordedConfigFingerprint::Staged(fingerprint) => fingerprint,
-    };
-    verified_runtime_config_snapshot(root_path, fragments_directory, &recorded_fingerprint)
-}
-
 fn verified_runtime_config_snapshot(
     root_path: &Utf8Path,
     fragments_directory: &Utf8Path,
@@ -2799,14 +2721,17 @@ fn desired_worker_config(
     paths: &PvPaths,
     worker: &PhpWorkerRuntimePlan,
     preserved_fragments: Option<&BTreeMap<String, String>>,
-    retained_fragments: Option<&BTreeMap<String, String>>,
+    moved_fragments: Option<&BTreeMap<String, String>>,
 ) -> Result<DesiredRuntimeConfigTree, DaemonError> {
     let active_dir = paths.worker_projects_config_dir(&worker.runtime_key);
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let mut fragments = worker_project_config_fragments(paths, worker, preserved_fragments)?;
-    if let Some(retained_fragments) = retained_fragments {
-        retain_unclaimed_worker_sites(&mut fragments, retained_fragments);
-    }
+    fragments.extend(
+        moved_fragments
+            .into_iter()
+            .flatten()
+            .map(|(file_name, content)| preserved_project_config_fragment(file_name, content)),
+    );
     enforce_project_bind_policy(&mut fragments, "127.0.0.1");
     let fragment_project_ids = fragments
         .iter()
@@ -2844,82 +2769,39 @@ fn desired_worker_config(
     })
 }
 
-/// Keeps the previous sites the Gateway may still route to this worker until it commits, each
-/// with its previous body. Caddy rejects a site address defined twice in one config, so a previous
-/// address that a desired fragment on this worker now serves, whichever Project owns it, is left
-/// to that fragment: the Gateway's previous routes reach this worker and the new owner either way.
-fn retain_unclaimed_worker_sites(
-    fragments: &mut Vec<ProjectConfigFragment>,
-    retained_fragments: &BTreeMap<String, String>,
-) {
-    let claimed = fragments
-        .iter()
-        .flat_map(|fragment| site_blocks(&fragment.content))
-        .flat_map(|(addresses, _body)| addresses)
-        .map(str::to_owned)
-        .collect::<BTreeSet<_>>();
-    for (file_name, previous) in retained_fragments {
-        let retained = filter_site_addresses(previous, |address| !claimed.contains(address));
-        if retained.is_empty() {
-            continue;
-        }
-        if let Some(fragment) = fragments
-            .iter_mut()
-            .find(|fragment| fragment.file_name == *file_name)
-        {
-            fragment.content.push_str(&retained);
-        } else {
-            fragments.push(preserved_project_config_fragment(file_name, &retained));
-        }
-    }
-}
-
-/// The worker site addresses for the hostnames the Gateway `fragments` route to the worker on
-/// `port`.
-fn gateway_routed_worker_addresses(
-    fragments: &BTreeMap<String, String>,
-    port: u16,
-) -> BTreeSet<String> {
-    fragments
-        .values()
-        .filter(|fragment| gateway_fragment_targets_worker(fragment, port))
-        .flat_map(|fragment| site_blocks(fragment))
-        .flat_map(|(hostnames, _body)| hostnames)
-        .map(|hostname| format!("http://{hostname}:{port}"))
-        .collect()
-}
-
-/// The site blocks of a generated fragment, keeping only the addresses `keep` accepts and
-/// dropping blocks left without any.
-fn filter_site_addresses(content: &str, keep: impl Fn(&str) -> bool) -> String {
-    site_blocks(content)
+/// The previous fragments on `worker` of Projects that now run on another worker under the same
+/// hostname, while the committed Gateway still sends that hostname here, or can't be verified. The
+/// worker keeps serving them until the Gateway switches, so a new worker that fails to start leaves
+/// the site working where it was. A renamed Project keeps nothing, so no hostname is defined twice.
+fn moved_project_fragments(
+    plan: &RuntimePlan,
+    worker: &PhpWorkerRuntimePlan,
+    previous_gateway: Option<&ActiveRuntimeConfigSnapshot>,
+    previous_fragments: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    previous_fragments
         .into_iter()
-        .filter_map(|(addresses, body)| {
-            let addresses = addresses
-                .into_iter()
-                .filter(|address| keep(address))
-                .collect::<Vec<_>>();
-            (!addresses.is_empty()).then(|| format!("{} {{\n{body}", addresses.join(", ")))
+        .filter(|(file_name, content)| {
+            let moved_with_same_hostname = plan
+                .workers
+                .iter()
+                .filter(|other| other.runtime_key != worker.runtime_key)
+                .flat_map(|other| &other.projects)
+                .any(|project| {
+                    project_config_file_name(&project.id) == *file_name
+                        && content.starts_with(&format!(
+                            "http://{}:{}, ",
+                            project.primary_hostname, worker.port
+                        ))
+                });
+            moved_with_same_hostname
+                && previous_gateway.is_none_or(|gateway| {
+                    gateway.fragments.get(file_name).is_some_and(|fragment| {
+                        gateway_fragment_targets_worker(fragment, worker.port)
+                    })
+                })
         })
         .collect()
-}
-
-/// The site blocks of a generated fragment, as their addresses and the lines after each opening
-/// line. A retained worker fragment can hold several blocks, one per previous document root.
-fn site_blocks(content: &str) -> Vec<(Vec<&str>, String)> {
-    let mut blocks: Vec<(Vec<&str>, String)> = Vec::new();
-    for line in content.split_inclusive('\n') {
-        let header = line
-            .strip_suffix(" {\n")
-            .filter(|_header| !line.starts_with(char::is_whitespace));
-        if let Some(header) = header {
-            blocks.push((header.split(", ").collect(), String::new()));
-        } else if let Some((_addresses, body)) = blocks.last_mut() {
-            body.push_str(line);
-        }
-    }
-
-    blocks
 }
 
 fn enforce_project_bind_policy(fragments: &mut [ProjectConfigFragment], bind: &str) {
@@ -3452,15 +3334,9 @@ async fn begin_runtime_transaction(
         Err(error) => Some(error),
     };
     if let Some(error) = staging_error {
-        return Err(cleanup_fresh_runtime(
-            supervisor,
-            spec,
-            process,
-            desired_fingerprint,
-            false,
-            error,
-        )
-        .await);
+        return Err(
+            cleanup_fresh_runtime(supervisor, spec, process, desired_fingerprint, error).await,
+        );
     }
 
     Ok(StartedRuntimeTransaction::Fresh(Box::new(process)))
@@ -3478,9 +3354,7 @@ async fn finish_runtime_transaction(
         check,
         budget,
         admin_endpoint,
-        preserve_staged_config,
     } = readiness;
-    let preserve_staged_config = *preserve_staged_config;
     let StartedRuntimeTransaction::Fresh(process) = started else {
         // A start budget shorter than a reload's still applies.
         let reload_budget = if budget.duration() < RUNTIME_RELOAD_READINESS_TIMEOUT.duration() {
@@ -3521,15 +3395,9 @@ async fn finish_runtime_transaction(
     .await;
     if let Err(error) = admin_result {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        return Err(cleanup_fresh_runtime(
-            supervisor,
-            spec,
-            process,
-            desired_fingerprint,
-            preserve_staged_config,
-            error,
-        )
-        .await);
+        return Err(
+            cleanup_fresh_runtime(supervisor, spec, process, desired_fingerprint, error).await,
+        );
     }
     let service_readiness = wait_for_owned_readiness(check.clone(), budget, || {
         verify_runtime_ownership(supervisor, spec)
@@ -3543,15 +3411,9 @@ async fn finish_runtime_transaction(
     .await;
     if let Err(error) = service_result {
         record_runtime_readiness_diagnostics(paths, spec, &mut process, &error);
-        return Err(cleanup_fresh_runtime(
-            supervisor,
-            spec,
-            process,
-            desired_fingerprint,
-            preserve_staged_config,
-            error,
-        )
-        .await);
+        return Err(
+            cleanup_fresh_runtime(supervisor, spec, process, desired_fingerprint, error).await,
+        );
     }
 
     let process_exited = match process.has_exited() {
@@ -3562,7 +3424,6 @@ async fn finish_runtime_transaction(
                 spec,
                 process,
                 desired_fingerprint,
-                preserve_staged_config,
                 error,
             )
             .await);
@@ -3570,15 +3431,9 @@ async fn finish_runtime_transaction(
     };
     if process_exited {
         let error = runtime_exited_before_readiness_error(&spec.name);
-        return Err(cleanup_fresh_runtime(
-            supervisor,
-            spec,
-            process,
-            desired_fingerprint,
-            preserve_staged_config,
-            error,
-        )
-        .await);
+        return Err(
+            cleanup_fresh_runtime(supervisor, spec, process, desired_fingerprint, error).await,
+        );
     }
     record_applied_runtime_config(supervisor, spec, desired_fingerprint)?;
 
@@ -3604,7 +3459,6 @@ async fn cleanup_fresh_runtime(
     spec: &ProcessSpec,
     process: ManagedProcess,
     staged_config_fingerprint: &str,
-    preserve_staged_config: bool,
     readiness_error: DaemonError,
 ) -> RuntimeTransactionError {
     if let Err(cleanup_error) = process.stop(Duration::from_secs(1)).await {
@@ -3626,26 +3480,6 @@ async fn cleanup_fresh_runtime(
                     runtime_cleanup_failed_error(&spec.name, cleanup_error, replacement_error),
                 ));
             }
-        }
-    }
-
-    if preserve_staged_config {
-        // The previous Gateway may still reference these source routes. Keep exact staged bytes
-        // and their metadata so a retry can verify them after the failed process has stopped.
-        match supervisor.recorded_config_fingerprint(spec) {
-            Ok(Some(RecordedConfigFingerprint::Staged(fingerprint)))
-                if fingerprint == staged_config_fingerprint =>
-            {
-                return RuntimeTransactionError::pending_preserve(readiness_error);
-            }
-            Err(proof_error) => {
-                return RuntimeTransactionError::pending_preserve(runtime_cleanup_failed_error(
-                    &spec.name,
-                    readiness_error,
-                    proof_error,
-                ));
-            }
-            Ok(_) => {}
         }
     }
 
@@ -4681,12 +4515,17 @@ mod tests {
                 desired.to_owned(),
             )])),
             Some(&BTreeMap::from([(
-                "project.Caddyfile".to_owned(),
+                "moved.Caddyfile".to_owned(),
                 previous.to_owned(),
             )])),
         )?
         .fragments;
-        assert_debug_snapshot!(fragments[0].content);
+        assert_debug_snapshot!(
+            fragments
+                .iter()
+                .map(|fragment| fragment.content.as_str())
+                .collect::<Vec<_>>()
+        );
         let normalized = fragments.clone();
         enforce_project_bind_policy(&mut fragments, "127.0.0.1");
         assert_eq!(fragments, normalized);
@@ -4695,10 +4534,10 @@ mod tests {
         let active_dir = tempdir.path().join("active");
         let candidate_dir = tempdir.path().join("candidate");
         state::fs::write_sensitive_file(&root, "previous root\n")?;
-        state::fs::write_sensitive_file(&active_dir.join("project.Caddyfile"), previous)?;
+        state::fs::write_sensitive_file(&active_dir.join("moved.Caddyfile"), previous)?;
         state::fs::write_sensitive_file(
-            &candidate_dir.join("project.Caddyfile"),
-            &fragments[0].content,
+            &candidate_dir.join("moved.Caddyfile"),
+            &fragments[1].content,
         )?;
         let promoted = promote_validated_config_tree_async(
             &root,
@@ -4711,7 +4550,7 @@ mod tests {
         promoted.rollback()?;
         assert_eq!(state::fs::read_to_string(&root)?, "previous root\n");
         assert_eq!(
-            state::fs::read_to_string(&active_dir.join("project.Caddyfile"))?,
+            state::fs::read_to_string(&active_dir.join("moved.Caddyfile"))?,
             previous
         );
         Ok(())

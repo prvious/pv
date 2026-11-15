@@ -1,5 +1,8 @@
 ---
 source: crates/daemon/src/gateway.rs
-expression: "fragments[0].content"
+expression: "fragments.iter().map(|fragment| fragment.content.as_str()).collect::<Vec<_>>()"
 ---
-"http://new.test:8000 {\n    bind 127.0.0.1\n    root * /project/new-public\n}\nhttp://old.test:8000 {\n    bind 127.0.0.1\n    root * /project/old-public\n}\n"
+[
+    "http://new.test:8000 {\n    bind 127.0.0.1\n    root * /project/new-public\n}\n",
+    "http://old.test:8000 {\n    bind 127.0.0.1\n    root * /project/old-public\n}\n",
+]
