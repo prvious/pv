@@ -3034,6 +3034,168 @@ root: public
 }
 
 #[tokio::test]
+async fn worker_hostname_takeover_drops_the_previous_owners_old_sites() -> Result<()> {
+    // Until the Gateway stops routing a renamed Project's old hostname, the worker keeps the old
+    // sites, but not those another Project on the worker now serves: Caddy rejects a site address
+    // defined twice.
+    for (takeover, expected) in [
+        (
+            "swap",
+            &[
+                "child/public: http://laravel.test, http://*.laravel.test",
+                "parent/public: http://api.laravel.test, http://*.api.laravel.test",
+            ][..],
+        ),
+        (
+            "unlink",
+            &["child/public: http://laravel.test, http://*.laravel.test"][..],
+        ),
+    ] {
+        let gateway_listeners = crate::host::test_gateway_listeners()?;
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
+        let parent =
+            create_project_with_config(tempdir.path(), "parent", "php: \"8.4\"\nroot: public\n")?;
+        let child =
+            create_project_with_config(tempdir.path(), "child", "php: \"8.4\"\nroot: public\n")?;
+        let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+        write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+        link_project_record(&paths, &parent, "laravel.test", Some("8.4"))?;
+        link_project_record(&paths, &child, "api.laravel.test", Some("8.4"))?;
+        let port = pv_fake::port()?;
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            "8.4",
+            "fake-frankenphp-pv1",
+            &frankenphp_release,
+        )?;
+        seed_runtime_ports(&paths, &mut database, &[("8.4", port)])?;
+        drop(database);
+        reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
+
+        if takeover == "swap" {
+            link_project_record(&paths, &parent, "swap.test", Some("8.4"))?;
+            link_project_record(&paths, &child, "laravel.test", Some("8.4"))?;
+            link_project_record(&paths, &parent, "api.laravel.test", Some("8.4"))?;
+        } else {
+            let mut database = Database::open(&paths)?;
+            let parent_id = database
+                .projects()?
+                .into_iter()
+                .find(|project| project.path == parent)
+                .context("parent Project is linked")?
+                .id;
+            database.unlink_project(&parent_id)?;
+            drop(database);
+            link_project_record(&paths, &child, "laravel.test", Some("8.4"))?;
+        }
+        let reconciled = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+        let sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
+        let cleanup = runtime_guard.cleanup().await;
+
+        reconciled.with_context(|| format!("{takeover} reconciliation"))?;
+        cleanup?;
+        assert_eq!(sites, expected, "{takeover}");
+    }
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn worker_keeps_old_sites_while_the_gateway_rejects_a_rename() -> Result<()> {
+    let gateway_listeners = crate::host::test_gateway_listeners()?;
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
+    let acme = create_project_with_config(tempdir.path(), "acme", "php: \"8.4\"\nroot: public\n")?;
+    let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+    write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+    link_project_record(&paths, &acme, "laravel.test", Some("8.4"))?;
+    let port = pv_fake::port()?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed(
+        "frankenphp",
+        "8.4",
+        "fake-frankenphp-pv1",
+        &frankenphp_release,
+    )?;
+    seed_runtime_ports(&paths, &mut database, &[("8.4", port)])?;
+    drop(database);
+    reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
+
+    // The Gateway rejects the rename twice, so it still routes laravel.test to the worker.
+    fs::write_sensitive_file(&acme.join("web/index.php"), "<?php\n")?;
+    fs::write_sensitive_file(&acme.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
+    link_project_record(&paths, &acme, "renamed.test", Some("8.4"))?;
+    pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"load_statuses": 422}))?;
+    let rejected = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+    let retried = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+    let retried_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
+    // Renaming back must not define laravel.test both for the new root and the kept old one.
+    pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"load_statuses": 200}))?;
+    link_project_record(&paths, &acme, "laravel.test", Some("8.4"))?;
+    let reverted = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+    let reverted_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
+    let cleanup = runtime_guard.cleanup().await;
+
+    for result in [rejected, retried] {
+        assert!(matches!(
+            result,
+            Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
+                status: 422,
+                ..
+            }))
+        ));
+    }
+    assert_eq!(
+        retried_sites,
+        [
+            "acme/public: http://laravel.test, http://*.laravel.test",
+            "acme/web: http://renamed.test, http://*.renamed.test",
+        ]
+    );
+    reverted.context("reverted reconciliation")?;
+    cleanup?;
+    assert_eq!(
+        reverted_sites,
+        ["acme/web: http://laravel.test, http://*.laravel.test"]
+    );
+
+    Ok(())
+}
+
+/// Each site block on a PHP worker, as `<document root>: <site addresses>`, with the root relative
+/// to `workspace` and the worker's port left out.
+fn worker_sites(
+    paths: &PvPaths,
+    php_track: &str,
+    port: u16,
+    workspace: &Utf8Path,
+) -> Result<Vec<String>> {
+    let mut sites = Vec::new();
+    for fragment in fs::read_dir_paths(&paths.worker_projects_config_dir(php_track))? {
+        let content = fs::read_to_string(&fragment)?;
+        let mut addresses = None;
+        for line in content.lines() {
+            if let Some(header) = line.strip_suffix(" {") {
+                addresses = Some(header.replace(&format!(":{port}"), ""));
+            } else if let Some(root) = line.trim().strip_prefix("root * ")
+                && let Some(addresses) = &addresses
+            {
+                let root = root.trim_matches('"');
+                let root = root.strip_prefix(&format!("{workspace}/")).unwrap_or(root);
+                sites.push(format!("{root}: {addresses}"));
+            }
+        }
+    }
+    sites.sort();
+
+    Ok(sites)
+}
+
+#[tokio::test]
 async fn worker_reconciliation_keeps_accepted_config_and_replaces_unready_worker() -> Result<()> {
     let gateway_listeners = crate::host::test_gateway_listeners()?;
     let tempdir = tempdir()?;

@@ -2795,16 +2795,7 @@ fn desired_worker_config(
     let candidate_dir = candidate_config_dir_for(&active_dir);
     let mut fragments = worker_project_config_fragments(paths, worker, preserved_fragments)?;
     if let Some(retained_fragments) = retained_fragments {
-        for (file_name, content) in retained_fragments {
-            if let Some(fragment) = fragments
-                .iter_mut()
-                .find(|fragment| fragment.file_name == *file_name)
-            {
-                fragment.content = merge_worker_fragment_sites(&fragment.content, content)?;
-            } else {
-                fragments.push(preserved_project_config_fragment(file_name, content));
-            }
-        }
+        retain_unclaimed_worker_sites(&mut fragments, retained_fragments);
     }
     enforce_project_bind_policy(&mut fragments, "127.0.0.1");
     let fragment_project_ids = fragments
@@ -2843,39 +2834,61 @@ fn desired_worker_config(
     })
 }
 
-fn merge_worker_fragment_sites(desired: &str, previous: &str) -> Result<String, DaemonError> {
-    let (desired_sites, desired_body) =
-        desired
-            .split_once(" {\n")
-            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
-                reason: "desired PHP worker fragment is missing a site block".to_owned(),
-            })?;
-    let (previous_sites, previous_body) =
-        previous
-            .split_once(" {\n")
-            .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
-                reason: "previous PHP worker fragment is missing a site block".to_owned(),
-            })?;
-    let desired_labels = desired_sites.split(", ").collect::<BTreeSet<_>>();
-    let previous_labels = previous_sites.split(", ").collect::<BTreeSet<_>>();
-    let previous_only = previous_labels
-        .difference(&desired_labels)
-        .copied()
-        .collect::<Vec<_>>()
-        .join(", ");
-    if desired_body == previous_body || previous_only.is_empty() {
-        let sites = desired_labels
-            .union(&previous_labels)
-            .copied()
-            .collect::<Vec<_>>()
-            .join(", ");
+/// Keeps the previous sites the Gateway may still route to this worker until it commits, each
+/// with its previous body. Caddy rejects a site address defined twice in one config, so a previous
+/// address that a desired fragment on this worker now serves, whichever Project owns it, is left
+/// to that fragment: the Gateway's previous routes reach this worker and the new owner either way.
+fn retain_unclaimed_worker_sites(
+    fragments: &mut Vec<ProjectConfigFragment>,
+    retained_fragments: &BTreeMap<String, String>,
+) {
+    let claimed = fragments
+        .iter()
+        .flat_map(|fragment| worker_site_blocks(&fragment.content))
+        .flat_map(|(addresses, _body)| addresses)
+        .map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    for (file_name, previous) in retained_fragments {
+        let retained = worker_site_blocks(previous)
+            .into_iter()
+            .filter_map(|(addresses, body)| {
+                let addresses = addresses
+                    .into_iter()
+                    .filter(|address| !claimed.contains(*address))
+                    .collect::<Vec<_>>();
+                (!addresses.is_empty()).then(|| format!("{} {{\n{body}", addresses.join(", ")))
+            })
+            .collect::<String>();
+        if retained.is_empty() {
+            continue;
+        }
+        if let Some(fragment) = fragments
+            .iter_mut()
+            .find(|fragment| fragment.file_name == *file_name)
+        {
+            fragment.content.push_str(&retained);
+        } else {
+            fragments.push(preserved_project_config_fragment(file_name, &retained));
+        }
+    }
+}
 
-        return Ok(format!("{sites} {{\n{desired_body}"));
+/// The site blocks of a generated worker fragment, as their addresses and the lines after each
+/// opening line. A retained fragment can hold several blocks, one per previous document root.
+fn worker_site_blocks(content: &str) -> Vec<(Vec<&str>, String)> {
+    let mut blocks: Vec<(Vec<&str>, String)> = Vec::new();
+    for line in content.split_inclusive('\n') {
+        let header = line
+            .strip_suffix(" {\n")
+            .filter(|_header| !line.starts_with(char::is_whitespace));
+        if let Some(header) = header {
+            blocks.push((header.split(", ").collect(), String::new()));
+        } else if let Some((_addresses, body)) = blocks.last_mut() {
+            body.push_str(line);
+        }
     }
 
-    Ok(format!(
-        "{desired_sites} {{\n{desired_body}{previous_only} {{\n{previous_body}"
-    ))
+    blocks
 }
 
 fn enforce_project_bind_policy(fragments: &mut [ProjectConfigFragment], bind: &str) {
