@@ -2,11 +2,12 @@
 //! serving that PV uses. Behavior follows recordings of Caddy 2.11.4; FrankenPHP embeds Caddy, so
 //! both personas behave the same.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
 use std::io::{self, Write};
+use std::iter;
 use std::mem::ManuallyDrop;
 use std::net::{Ipv4Addr, SocketAddr};
 use std::os::fd::FromRawFd;
@@ -187,12 +188,20 @@ fn adopt_listener(fd: i32) -> Result<std::net::TcpListener> {
     Ok(listener)
 }
 
-/// Accepts any existing config, as the Python fixtures did, and records it in
-/// `fake-validator-spawns.log`; tests that need a rejected config install a validator scenario
-/// instead.
+/// Accepts an existing config unless two of its sites share an address, as Caddy's adapter does,
+/// and records it in `fake-validator-spawns.log`; tests that need any other rejection install a
+/// validator scenario instead.
 fn validate(config_path: &Utf8Path) -> Result<u8> {
     if state::fs::path_is_file(config_path)? {
         record_validation(config_path)?;
+        let source = state::fs::read_to_string(config_path)?;
+        if let Some(address) = GatewayConfig::parse(&source)?.ambiguous_site(&source)? {
+            let _write_result = writeln!(
+                io::stderr(),
+                "Error: adapting config using caddyfile: ambiguous site definition: {address}"
+            );
+            return Ok(1);
+        }
         return Ok(0);
     }
     // Caddy's message for a missing config file.
@@ -358,32 +367,59 @@ impl GatewayConfig {
     /// The port of the first `http://host:port` site among the imported fragments, like a
     /// FrankenPHP worker whose root config only imports project sites.
     fn first_imported_site_port(&self) -> Result<Option<u16>> {
+        Ok(self
+            .imported_fragments()?
+            .iter()
+            .find_map(|fragment| first_http_site_port(fragment)))
+    }
+
+    /// The first site address that the root config `source` and its imported fragments define
+    /// twice, which Caddy's adapter rejects as an ambiguous site definition.
+    fn ambiguous_site(&self, source: &str) -> Result<Option<String>> {
+        let fragments = self.imported_fragments()?;
+        let mut addresses = HashSet::new();
+        for content in iter::once(source).chain(fragments.iter().map(String::as_str)) {
+            // Site blocks start unindented; the global options block is a bare `{`.
+            let headers = content
+                .lines()
+                .filter(|line| !line.starts_with(char::is_whitespace) && line != &"{")
+                .filter_map(|line| line.strip_suffix(" {"));
+            for address in headers.flat_map(|header| header.split(", ")) {
+                if !addresses.insert(address) {
+                    return Ok(Some(address.to_owned()));
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
+    /// The contents of the fragments the `import` glob matches, in file name order, as Caddy reads
+    /// them on every adapt.
+    fn imported_fragments(&self) -> Result<Vec<String>> {
         let Some(glob) = &self.import_glob else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         let (Some(directory), Some((prefix, suffix))) = (
             glob.parent(),
             glob.file_name().and_then(|name| name.split_once('*')),
         ) else {
-            return Ok(None);
+            return Ok(Vec::new());
         };
         if !state::fs::path_is_directory(directory)? {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let mut fragments = state::fs::read_dir_paths(directory)?;
         fragments.sort();
-        for fragment in fragments {
-            let matches = fragment
-                .file_name()
-                .is_some_and(|name| name.starts_with(prefix) && name.ends_with(suffix));
-            if matches
-                && let Some(port) = first_http_site_port(&state::fs::read_to_string(&fragment)?)
-            {
-                return Ok(Some(port));
-            }
-        }
-
-        Ok(None)
+        fragments
+            .into_iter()
+            .filter(|fragment| {
+                fragment
+                    .file_name()
+                    .is_some_and(|name| name.starts_with(prefix) && name.ends_with(suffix))
+            })
+            .map(|fragment| Ok(state::fs::read_to_string(&fragment)?))
+            .collect()
     }
 }
 
@@ -774,6 +810,12 @@ impl Runtime {
 
 fn adapt(source: &str) -> Result<(GatewayConfig, ListenerPlan), String> {
     let config = GatewayConfig::parse(source).map_err(|error| format!("{error:#}"))?;
+    if let Some(address) = config
+        .ambiguous_site(source)
+        .map_err(|error| format!("{error:#}"))?
+    {
+        return Err(format!("ambiguous site definition: {address}"));
+    }
     let plan = config
         .listener_plan()
         .map_err(|error| format!("{error:#}"))?;

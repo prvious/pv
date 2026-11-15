@@ -864,7 +864,7 @@ async fn failed_worker_readiness_does_not_cancel_siblings_or_reload_gateway() ->
         source_content_after_failure.as_deref(),
         Some(old_source_content.as_str())
     );
-    assert!(peer_content_after_failure.contains("old.acme.test"));
+    assert!(!peer_content_after_failure.contains("old.acme.test"));
     assert!(peer_content_after_failure.contains("new.acme.test"));
     assert!(!committed_peer_content.contains("old.acme.test"));
     assert!(committed_peer_content.contains("new.acme.test"));
@@ -2994,12 +2994,7 @@ root: public
         fs::read_to_string(&worker_fragment_path)?
     );
     assert_eq!(gateway_load_bodies, vec![gateway_root.clone()]);
-    // The rename keeps the old sites on the worker until the Gateway stops routing them,
-    // then a cleanup load removes them.
-    assert_eq!(
-        worker_load_bodies,
-        vec![worker_root.clone(), worker_root.clone()]
-    );
+    assert_eq!(worker_load_bodies, vec![worker_root.clone()]);
     assert!(fake_admin_load_bodies(&paths.worker_root_config("8.3"))?.is_empty());
     assert!(gateway_load_bodies[0].ends_with(b"\n"));
     assert!(worker_load_bodies[0].ends_with(b"\n"));
@@ -3020,7 +3015,7 @@ root: public
             .iter()
             .filter(|request| request["method"] == "POST" && request["path"] == "/load")
             .count(),
-        2
+        1
     );
     assert!(
         worker_requests
@@ -3031,6 +3026,104 @@ root: public
     runtime_guard.cleanup().await?;
 
     Ok(())
+}
+
+#[tokio::test]
+async fn hostname_takeover_between_projects_on_one_worker_reconciles() -> Result<()> {
+    // Caddy rejects a site address defined twice, so a renamed Project's old sites must not
+    // linger next to the Project that takes them over.
+    for (takeover, expected) in [
+        (
+            "swap",
+            &[
+                "child/public: http://laravel.test, http://*.laravel.test",
+                "parent/public: http://api.laravel.test, http://*.api.laravel.test",
+            ][..],
+        ),
+        (
+            "unlink",
+            &["child/public: http://laravel.test, http://*.laravel.test"][..],
+        ),
+    ] {
+        let gateway_listeners = crate::host::test_gateway_listeners()?;
+        let tempdir = tempdir()?;
+        let paths = PvPaths::for_home(tempdir.path().join("home"));
+        let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
+        let parent =
+            create_project_with_config(tempdir.path(), "parent", "php: \"8.4\"\nroot: public\n")?;
+        let child =
+            create_project_with_config(tempdir.path(), "child", "php: \"8.4\"\nroot: public\n")?;
+        let frankenphp_release = tempdir.path().join("fake-frankenphp-release");
+        write_fake_frankenphp(&frankenphp_release.join("bin/frankenphp"))?;
+        link_project_record(&paths, &parent, "laravel.test", Some("8.4"))?;
+        link_project_record(&paths, &child, "api.laravel.test", Some("8.4"))?;
+        let port = pv_fake::port()?;
+        let mut database = Database::open(&paths)?;
+        database.record_managed_resource_track_installed(
+            "frankenphp",
+            "8.4",
+            "fake-frankenphp-pv1",
+            &frankenphp_release,
+        )?;
+        seed_runtime_ports(&paths, &mut database, &[("8.4", port)])?;
+        drop(database);
+        reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
+
+        if takeover == "swap" {
+            link_project_record(&paths, &parent, "swap.test", Some("8.4"))?;
+            link_project_record(&paths, &child, "laravel.test", Some("8.4"))?;
+            link_project_record(&paths, &parent, "api.laravel.test", Some("8.4"))?;
+        } else {
+            let mut database = Database::open(&paths)?;
+            let parent_id = database
+                .projects()?
+                .into_iter()
+                .find(|project| project.path == parent)
+                .context("parent Project is linked")?
+                .id;
+            database.unlink_project(&parent_id)?;
+            drop(database);
+            link_project_record(&paths, &child, "laravel.test", Some("8.4"))?;
+        }
+        let reconciled = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+        let sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
+        let cleanup = runtime_guard.cleanup().await;
+
+        reconciled.with_context(|| format!("{takeover} reconciliation"))?;
+        cleanup?;
+        assert_eq!(sites, expected, "{takeover}");
+    }
+
+    Ok(())
+}
+
+/// Each site block on a PHP worker, as `<document root>: <site addresses>`, with the root relative
+/// to `workspace` and the worker's port left out.
+fn worker_sites(
+    paths: &PvPaths,
+    php_track: &str,
+    port: u16,
+    workspace: &Utf8Path,
+) -> Result<Vec<String>> {
+    let mut sites = Vec::new();
+    for fragment in fs::read_dir_paths(&paths.worker_projects_config_dir(php_track))? {
+        let content = fs::read_to_string(&fragment)?;
+        let mut addresses = None;
+        for line in content.lines() {
+            if let Some(header) = line.strip_suffix(" {") {
+                addresses = Some(header.replace(&format!(":{port}"), ""));
+            } else if let Some(root) = line.trim().strip_prefix("root * ")
+                && let Some(addresses) = &addresses
+            {
+                let root = root.trim_matches('"');
+                let root = root.strip_prefix(&format!("{workspace}/")).unwrap_or(root);
+                sites.push(format!("{root}: {addresses}"));
+            }
+        }
+    }
+    sites.sort();
+
+    Ok(sites)
 }
 
 #[tokio::test]
