@@ -44,11 +44,10 @@ use crate::{FakeSettings, GatewayListeners, Pause};
 mod control;
 
 pub use control::write_gateway_control;
-use control::{AdminControl, LoadControl, Records, record_validation};
+use control::{LoadControl, Records, record_validation};
 
 const GATE_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const ACCEPT_RETRY_DELAY: Duration = Duration::from_millis(10);
-const EXIT_AFTER_LOAD_DELAY: Duration = Duration::from_millis(50);
 /// Caddy's adapter warning for every config PV renders, which indents with spaces.
 const UNFORMATTED_WARNING: &str = r#"[{"file":"Caddyfile","line":2,"message":"Caddyfile input is not formatted; run 'caddy fmt --overwrite' to fix inconsistencies"}]"#;
 
@@ -696,12 +695,8 @@ impl Runtime {
     }
 
     async fn admin_config(&self) -> Result<Response<Full<Bytes>>> {
-        let control = self.records.take_control(AdminControl::take)?;
         self.records.request(&Method::GET, "/config/", 200, 0)?;
         self.hold_readiness().await;
-        if let Some(gate) = &control.gate {
-            wait_for_path(gate).await?;
-        }
 
         Ok(response(StatusCode::OK, "application/json", "{}\n"))
     }
@@ -750,40 +745,23 @@ impl Runtime {
         adapted: Result<(GatewayConfig, ListenerPlan), String>,
         source: &str,
     ) -> Result<Response<Full<Bytes>>> {
-        if let Some(gate) = &control.gate {
-            wait_for_path(gate).await?;
-        }
         let (applied, adapt_error) = match adapted {
             Ok((config, plan)) if control.apply => (self.apply(config, &plan, source).await, None),
             Ok(_adapted) => (Ok(()), None),
             Err(error) => (Ok(()), Some(error)),
         };
-        let body = match (&control.response_body, adapt_error, applied) {
-            (Some(body), _, _) => body.clone(),
-            (None, Some(error), _) => {
+        let body = match (adapt_error, applied) {
+            (Some(error), _) => {
                 error_body(&format!("adapting config using caddyfile adapter: {error}"))
             }
-            (None, None, _) if !control.accepted() => error_body(&format!(
+            (None, _) if !control.accepted() => error_body(&format!(
                 "pv-fake: fake-admin-control.json rejected this load with status {}",
                 control.status
             )),
-            (None, None, Ok(())) => UNFORMATTED_WARNING.to_owned(),
+            (None, Ok(())) => UNFORMATTED_WARNING.to_owned(),
             // Caddy has already sent its adapter warnings with a 200 when applying fails.
-            (None, None, Err(error)) => format!("{UNFORMATTED_WARNING}{}", error_body(&error)),
+            (None, Err(error)) => format!("{UNFORMATTED_WARNING}{}", error_body(&error)),
         };
-        if control.accepted() {
-            if let Some(marker) = &control.accepted_marker {
-                state::fs::write_sensitive_file(marker, "accepted\n")?;
-            }
-            if control.exit_after {
-                let events = self.events.clone();
-                tokio::spawn(async move {
-                    clock::poll(EXIT_AFTER_LOAD_DELAY).await;
-                    let _record_result = events.record(EventKind::Exit { code: 0 });
-                    std::process::exit(0);
-                });
-            }
-        }
 
         Ok(response(
             StatusCode::from_u16(control.status)?,
