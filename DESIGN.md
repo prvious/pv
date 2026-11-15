@@ -436,7 +436,7 @@ After a successful load, PV runs the existing runtime readiness checks. Complete
 
 When PHP runtime worker config changes, PV uses this admin API contract for the matching worker; it does not fall back to a signal or restart. A worker for a new PHP runtime identity is started as a new process, and an obsolete worker is replaced through normal lifecycle reconciliation.
 
-When a Project's hostname, document root, or worker changes, its previous worker keeps the previous sites, each with its previous document root, until the Gateway commits the new routes; a second worker load then removes them. A previous site address that any Project on the same worker now serves is not kept: Caddy rejects an address defined twice in one config, and the Gateway's previous route for it reaches the same worker either way.
+When a Project's hostname, document root, or worker changes, each worker keeps every previous site that the committed Gateway still routes to it, with its previous document root, until the Gateway commits the new routes; a second worker load then removes them. Retention follows the site address, not the Project that served it, so it survives a Gateway that rejects several changes in a row. A previous site address that any Project on the same worker now serves is not kept: Caddy rejects an address defined twice in one config, and the Gateway's previous route for it reaches the same worker either way.
 
 Project-serving worker logs are captured per PHP runtime identity, with Project hostname included in access logs where feasible. PV v1 does not create per-Project log files. FrankenPHP worker Caddyfile logging directives should be used where practical.
 

@@ -3125,22 +3125,28 @@ async fn worker_keeps_old_sites_while_the_gateway_rejects_a_rename() -> Result<(
     drop(database);
     reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
 
-    // The Gateway rejects the rename twice, so it still routes laravel.test to the worker.
+    // The Gateway rejects every change below, so it keeps routing laravel.test to the worker.
     fs::write_sensitive_file(&acme.join("web/index.php"), "<?php\n")?;
     fs::write_sensitive_file(&acme.join("pv.yml"), "php: \"8.4\"\nroot: web\n")?;
     link_project_record(&paths, &acme, "renamed.test", Some("8.4"))?;
     pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"load_statuses": 422}))?;
-    let rejected = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
-    let retried = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+    let mut rejections = vec![reconcile_gateway_runtimes(&paths, &gateway_listeners).await];
+    rejections.push(reconcile_gateway_runtimes(&paths, &gateway_listeners).await);
     let retried_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
-    // Renaming back must not define laravel.test both for the new root and the kept old one.
+    // Another Project takes laravel.test, then renames away from it.
+    let other =
+        create_project_with_config(tempdir.path(), "other", "php: \"8.4\"\nroot: public\n")?;
+    link_project_record(&paths, &other, "laravel.test", Some("8.4"))?;
+    rejections.push(reconcile_gateway_runtimes(&paths, &gateway_listeners).await);
+    link_project_record(&paths, &other, "third.test", Some("8.4"))?;
+    rejections.push(reconcile_gateway_runtimes(&paths, &gateway_listeners).await);
+    let transferred_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
     pv_fake::write_gateway_control(&paths.gateway_root_config(), json!({"load_statuses": 200}))?;
-    link_project_record(&paths, &acme, "laravel.test", Some("8.4"))?;
-    let reverted = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
-    let reverted_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
+    let committed = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+    let committed_sites = worker_sites(&paths, "8.4", port, tempdir.path())?;
     let cleanup = runtime_guard.cleanup().await;
 
-    for result in [rejected, retried] {
+    for result in rejections {
         assert!(matches!(
             result,
             Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
@@ -3156,11 +3162,22 @@ async fn worker_keeps_old_sites_while_the_gateway_rejects_a_rename() -> Result<(
             "acme/web: http://renamed.test, http://*.renamed.test",
         ]
     );
-    reverted.context("reverted reconciliation")?;
+    assert_eq!(
+        transferred_sites,
+        [
+            "acme/web: http://renamed.test, http://*.renamed.test",
+            "other/public: http://laravel.test, http://*.laravel.test",
+            "other/public: http://third.test, http://*.third.test",
+        ]
+    );
+    committed.context("committed reconciliation")?;
     cleanup?;
     assert_eq!(
-        reverted_sites,
-        ["acme/web: http://laravel.test, http://*.laravel.test"]
+        committed_sites,
+        [
+            "acme/web: http://renamed.test, http://*.renamed.test",
+            "other/public: http://third.test, http://*.third.test",
+        ]
     );
 
     Ok(())

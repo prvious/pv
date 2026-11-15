@@ -646,17 +646,27 @@ async fn reconcile_all_gateway_runtimes(
                             continue;
                         }
                     };
+                    // Keep what the committed Gateway still routes here, whichever Project the
+                    // worker serves it for now; without a committed Gateway, keep everything.
+                    let routed = previous_gateway.as_ref().map(|gateway| {
+                        gateway_routed_worker_addresses(&gateway.fragments, worker.port)
+                    });
                     let fragments = snapshot
                         .fragments
                         .into_iter()
                         .filter(|(file_name, content)| {
                             desired_fragments.get(file_name) != Some(content)
-                                && previous_gateway.as_ref().is_none_or(|gateway| {
-                                    gateway.fragments.get(file_name).is_some_and(|fragment| {
-                                        gateway_fragment_targets_worker(fragment, worker.port)
-                                    })
-                                })
                         })
+                        .map(|(file_name, content)| match &routed {
+                            Some(routed) => {
+                                let content = filter_site_addresses(&content, |address| {
+                                    routed.contains(address)
+                                });
+                                (file_name, content)
+                            }
+                            None => (file_name, content),
+                        })
+                        .filter(|(_file_name, content)| !content.is_empty())
                         .collect::<BTreeMap<_, _>>();
                     if !fragments.is_empty() {
                         retained_worker_fragments.insert(worker.runtime_key.clone(), fragments);
@@ -2844,21 +2854,12 @@ fn retain_unclaimed_worker_sites(
 ) {
     let claimed = fragments
         .iter()
-        .flat_map(|fragment| worker_site_blocks(&fragment.content))
+        .flat_map(|fragment| site_blocks(&fragment.content))
         .flat_map(|(addresses, _body)| addresses)
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
     for (file_name, previous) in retained_fragments {
-        let retained = worker_site_blocks(previous)
-            .into_iter()
-            .filter_map(|(addresses, body)| {
-                let addresses = addresses
-                    .into_iter()
-                    .filter(|address| !claimed.contains(*address))
-                    .collect::<Vec<_>>();
-                (!addresses.is_empty()).then(|| format!("{} {{\n{body}", addresses.join(", ")))
-            })
-            .collect::<String>();
+        let retained = filter_site_addresses(previous, |address| !claimed.contains(address));
         if retained.is_empty() {
             continue;
         }
@@ -2873,9 +2874,39 @@ fn retain_unclaimed_worker_sites(
     }
 }
 
-/// The site blocks of a generated worker fragment, as their addresses and the lines after each
-/// opening line. A retained fragment can hold several blocks, one per previous document root.
-fn worker_site_blocks(content: &str) -> Vec<(Vec<&str>, String)> {
+/// The worker site addresses for the hostnames the Gateway `fragments` route to the worker on
+/// `port`.
+fn gateway_routed_worker_addresses(
+    fragments: &BTreeMap<String, String>,
+    port: u16,
+) -> BTreeSet<String> {
+    fragments
+        .values()
+        .filter(|fragment| gateway_fragment_targets_worker(fragment, port))
+        .flat_map(|fragment| site_blocks(fragment))
+        .flat_map(|(hostnames, _body)| hostnames)
+        .map(|hostname| format!("http://{hostname}:{port}"))
+        .collect()
+}
+
+/// The site blocks of a generated fragment, keeping only the addresses `keep` accepts and
+/// dropping blocks left without any.
+fn filter_site_addresses(content: &str, keep: impl Fn(&str) -> bool) -> String {
+    site_blocks(content)
+        .into_iter()
+        .filter_map(|(addresses, body)| {
+            let addresses = addresses
+                .into_iter()
+                .filter(|address| keep(address))
+                .collect::<Vec<_>>();
+            (!addresses.is_empty()).then(|| format!("{} {{\n{body}", addresses.join(", ")))
+        })
+        .collect()
+}
+
+/// The site blocks of a generated fragment, as their addresses and the lines after each opening
+/// line. A retained worker fragment can hold several blocks, one per previous document root.
+fn site_blocks(content: &str) -> Vec<(Vec<&str>, String)> {
     let mut blocks: Vec<(Vec<&str>, String)> = Vec::new();
     for line in content.split_inclusive('\n') {
         let header = line
