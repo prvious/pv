@@ -421,11 +421,9 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
             if index == 0 {
                 ensure!(metadata["replacement_required"] != true);
                 ensure!(metadata["applied_config_fingerprint"].is_string());
-                ensure!(metadata["staged_config_fingerprint"].is_null());
             } else {
                 ensure!(metadata["replacement_required"] == true);
                 ensure!(metadata["applied_config_fingerprint"].is_null());
-                ensure!(metadata["staged_config_fingerprint"].is_string());
             }
         }
 
@@ -469,7 +467,6 @@ async fn gateway_reconciliation_recovers_after_bounded_worker_wave_is_cancelled(
         )?)?;
         assert_ne!(metadata["replacement_required"], true);
         assert!(metadata["applied_config_fingerprint"].is_string());
-        assert!(metadata["staged_config_fingerprint"].is_null());
     }
 
     stop_runtime(&paths.gateway_runtime_metadata()).await?;
@@ -3216,10 +3213,6 @@ root: public
     assert_eq!(load_count, 1);
     assert_eq!(pending_metadata["replacement_required"], true);
     assert!(pending_metadata["applied_config_fingerprint"].is_null());
-    assert_eq!(
-        pending_metadata["staged_config_fingerprint"],
-        pending_metadata["desired_config_fingerprint"]
-    );
     // The next pass replaces the worker instead of loading it again.
     assert_eq!(retry?, GATEWAY_RECONCILIATION_SUMMARY);
     first_worker_exit?;

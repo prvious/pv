@@ -3247,9 +3247,9 @@ async fn load_runtime_config(
 fn mark_runtime_config_pending(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
-    staged_config_fingerprint: &str,
+    desired_fingerprint: &str,
 ) -> Result<(), RuntimeTransactionError> {
-    match supervisor.mark_replacement_required(spec, staged_config_fingerprint) {
+    match supervisor.mark_replacement_required(spec, desired_fingerprint) {
         Ok(true) => {}
         Ok(false) => {
             return Err(RuntimeTransactionError::new(
@@ -3323,9 +3323,9 @@ async fn begin_runtime_transaction(
         }
         None => supervisor.start(spec.clone()).await?,
     };
-    let staging_error = match supervisor.mark_replacement_required(spec, desired_fingerprint) {
+    let marking_error = match supervisor.mark_replacement_required(spec, desired_fingerprint) {
         Ok(true) => None,
-        // A runtime that exits right after it starts is no longer PV's to stage.
+        // A runtime that exits right after it starts is no longer PV's to mark.
         Ok(false) => Some(match process.has_exited() {
             Ok(true) => runtime_exited_before_readiness_error(&spec.name),
             Ok(false) => CaddyAdminError::runtime_ownership_changed(spec.name.clone()).into(),
@@ -3333,7 +3333,7 @@ async fn begin_runtime_transaction(
         }),
         Err(error) => Some(error),
     };
-    if let Some(error) = staging_error {
+    if let Some(error) = marking_error {
         return Err(
             cleanup_fresh_runtime(supervisor, spec, process, desired_fingerprint, error).await,
         );
@@ -3458,11 +3458,11 @@ async fn cleanup_fresh_runtime(
     supervisor: &ProcessSupervisor,
     spec: &ProcessSpec,
     process: ManagedProcess,
-    staged_config_fingerprint: &str,
+    desired_fingerprint: &str,
     readiness_error: DaemonError,
 ) -> RuntimeTransactionError {
     if let Err(cleanup_error) = process.stop(Duration::from_secs(1)).await {
-        match supervisor.mark_replacement_required(spec, staged_config_fingerprint) {
+        match supervisor.mark_replacement_required(spec, desired_fingerprint) {
             Ok(true) => {
                 // Keep the promoted config and marked runtime metadata when the process may still
                 // be alive. The next reconciliation replaces it without a disk/runtime split.
