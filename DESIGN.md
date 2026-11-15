@@ -282,7 +282,7 @@ Linux inspects processes through `procfs`, with birth tokens scoped to the kerne
 
 macOS and Linux share the Unix monitor, process-group stop policy, and daemon socket. macOS confirms a runtime's exec through kqueue; Linux confirms it when the runtime's command name replaces the gate's, so a runtime with the gate's name fails to start. Windows keeps explicit unsupported results.
 
-PV writes a small JSON runtime record under `~/.pv/run/` for each runtime with its binary path, arguments, config path, resource name, track, start time, monitor instance, and config proofs. The record supports ownership checks, config proofs, and diagnostics, while `pv.db` remains the source of truth. A runtime is PV's only while its monitor and runtime both still run with their recorded identities and the record names that monitor's instance. Config proofs outlive the runtime, so a staged proof survives a runtime that died.
+PV writes a small JSON runtime record under `~/.pv/run/` for each runtime with its binary path, arguments, config path, resource name, track, start time, monitor instance, and config proofs. The record supports ownership checks, config proofs, and diagnostics, while `pv.db` remains the source of truth. A runtime is PV's only while its monitor and runtime both still run with their recorded identities and the record names that monitor's instance. Config proofs outlive the runtime, so after a runtime dies PV can still tell whether it had applied its config or was marked for replacement.
 
 PV writes runtime records atomically by writing temporary files and renaming them into place after the monitor confirms the runtime started. If PV cannot write the record, it stops the runtime.
 
