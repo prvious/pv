@@ -105,12 +105,13 @@ for test in sorted({record["test"] for record in watcher}):
         spans = [record["request_span_ms"] for record in changed if record["request_span_ms"] is not None]
         cb_spans = [record["callback_span_ms"] for record in changed if record["callback_span_ms"] is not None]
         print(f"  after the change: flushes {sorted({record['flushes'] for record in changed})}, >1 flush: {sum(record['flushes'] > 1 for record in changed)}")
-        print(f"  first..last request span: p50={pct(spans, .5):.1f} p99={pct(spans, .99):.1f} max={max(spans):.1f} ms")
-        print(f"  deliveries per change: {sorted({record['callbacks'] for record in changed})}; delivery span p99={pct(cb_spans, .99):.1f} max={max(cb_spans):.1f} ms")
+        # A run can time out before any request or delivery; pct reports an empty sample as nan.
+        print(f"  first..last request span ({len(spans)} samples): p50={pct(spans, .5):.1f} p99={pct(spans, .99):.1f} max={pct(spans, 1):.1f} ms")
+        print(f"  deliveries per change: {sorted({record['callbacks'] for record in changed})}; delivery span ({len(cb_spans)} samples) p99={pct(cb_spans, .99):.1f} max={pct(cb_spans, 1):.1f} ms")
 
 admits = [job["admit_ms"] for job in jobs if job["admit_ms"] is not None]
 if admits:
-    print(f"\njob test: {len(jobs)} runs, {sum(job['failed'] for job in jobs)} failed; admission p50={pct(admits, .5):.1f} p99={pct(admits, .99):.1f} max={max(admits):.1f} ms")
+    print(f"\njob test: {len(jobs)} runs, {sum(job['failed'] for job in jobs)} failed; admission p50={pct(admits, .5):.1f} p99={pct(admits, .99):.1f} max={pct(admits, 1):.1f} ms")
 
 for result, events, errors in failures:
     print(f"\nFAILED {result['log']}: {errors[:6]}")

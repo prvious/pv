@@ -86,10 +86,16 @@ if late_all:
     print(f"  all marked as this process's own event: {own}/{len(late_all)}")
     print(f"  widest save->watch gap that still got one: {max(r['setup_end_to_stream_start_ms'] for r in late_all):.1f} ms")
 
-lags = [r["action_first_lag_ms"] for r in records]
-print("\nDelivery delay for the edit (save finished -> first event arrives):")
-print(f"  p50={pct(lags, .5):.1f} p90={pct(lags, .9):.1f} p99={pct(lags, .99):.1f} max={max(lags):.1f} ms")
-split = [r for r in records if r["action_config_callbacks"] > 1]
-spreads = [r["action_config_spread_ms"] for r in records]
+crossing = [r for r in records if r["setup_events_after_edit_start"]]
+print(f"  setup events that arrived only after the edit began: {len(crossing)} rounds")
+
+# The edit's numbers only count rounds whose edit marker arrived and that report no dropped events.
+clean = [r for r in records if not r["ambiguous"]]
+print(f"\nAmbiguous rounds (edit marker missing or FSEvents dropped events), left out below: {len(records) - len(clean)}")
+lags = [r["action_first_lag_ms"] for r in clean if r["action_config_callbacks"] > 0]
+print("Delivery delay for the edit (save finished -> first event arrives):")
+print(f"  p50={pct(lags, .5):.1f} p90={pct(lags, .9):.1f} p99={pct(lags, .99):.1f} max={pct(lags, 1):.1f} ms")
+split = [r for r in clean if r["action_config_callbacks"] > 1]
+spreads = [r["action_config_spread_ms"] for r in clean]
 print("\nOne edit's pv.yml events split over several deliveries:")
-print(f"  {len(split)}/{len(records)} rounds; spread p99={pct(spreads, .99):.1f} max={max(spreads):.1f} ms; >50 ms: {sum(s > 50 for s in spreads)}")
+print(f"  {len(split)}/{len(clean)} rounds; spread p99={pct(spreads, .99):.1f} max={pct(spreads, 1):.1f} ms; >50 ms: {sum(s > 50 for s in spreads)}")

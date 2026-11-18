@@ -158,11 +158,17 @@ for round in 0..<rounds {
     let callbacks = recorder.callbacks
     recorder.lock.unlock()
 
-    // The edit's events start with its temporary file, `pv.yml.<pid>.<n>.tmp` with n = 2*round+2.
+    // Only arriving before the edit began proves an event came from setup. The edit's events start
+    // with its temporary file; without that marker, or after FSEvents reports dropped events,
+    // nothing else in the round can be attributed, so the round is ambiguous and the summary
+    // leaves it out of the edit's numbers.
     let actionTemporary = "\(config).\(getpid()).\(temporaryCounter).tmp"
-    let firstActionIndex = events.firstIndex { $0.path == actionTemporary } ?? events.count
-    let late = events[..<firstActionIndex]
-    let action = events[firstActionIndex...]
+    let markerIndex = events.firstIndex { $0.path == actionTemporary }
+    let droppedFlags = UInt32(kFSEventStreamEventFlagMustScanSubDirs | kFSEventStreamEventFlagUserDropped | kFSEventStreamEventFlagKernelDropped)
+    let dropped = events.contains { $0.flags & droppedFlags != 0 }
+    let late = events.filter { $0.arrivedMs < actionStart }
+    let lateAfterEditStart = markerIndex.map { events[..<$0].filter { $0.arrivedMs >= actionStart } } ?? []
+    let action = markerIndex.map { Array(events[$0...]) } ?? []
     let actionConfig = action.filter { $0.path == config || $0.path == project }
     let configCallbacks = Set(action.filter { $0.path == config }.map(\.callback))
     let configArrivals = action.filter { $0.path == config }.map(\.arrivedMs)
@@ -188,8 +194,10 @@ for round in 0..<rounds {
         "action_events": action.count,
         "action_config_callbacks": configCallbacks.count,
         "action_config_spread_ms": (configArrivals.max() ?? 0) - (configArrivals.min() ?? 0),
-        "action_first_lag_ms": (actionConfig.map(\.arrivedMs).min() ?? (actionEnd - 1)) - actionEnd,
-        "action_last_lag_ms": (actionConfig.map(\.arrivedMs).max() ?? (actionEnd - 1)) - actionEnd,
+        "action_first_lag_ms": (actionConfig.map(\.arrivedMs).min() ?? actionEnd) - actionEnd,
+        "action_last_lag_ms": (actionConfig.map(\.arrivedMs).max() ?? actionEnd) - actionEnd,
+        "ambiguous": markerIndex == nil || dropped, "dropped": dropped,
+        "setup_events_after_edit_start": lateAfterEditStart.map(describe),
         "action_ms": actionEnd - actionStart,
         "action_events_detail": configCallbacks.count > 1 ? action.map(describe) : [],
     ]
