@@ -1,0 +1,135 @@
+name: Issue 511 diagnostics
+
+# Records why three daemon tests flake on macOS 26 (#511). Runs only for pull requests from
+# diagnostics/issue-511 branches, which are never merged.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Same job id and cache key as CI's macOS 26 lane, so it restores that lane's build cache.
+  rust:
+    name: Issue 511 diagnostics (macOS 26 arm64)
+    if: startsWith(github.head_ref, 'diagnostics/issue-511')
+    runs-on: macos-26
+    timeout-minutes: 75
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          # The investigated commit plus these diagnostics, not a merge with a newer main.
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Record host
+        run: |
+          sw_vers
+          uname -m
+          sysctl -n hw.ncpu hw.memsize
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+        with:
+          key: macos-26
+          save-if: false
+
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest@0.9.146
+
+      - name: Build the unmodified tests and the FSEvents probe
+        run: |
+          mkdir -p "$RUNNER_TEMP/pv511"
+          cargo nextest list --workspace --all-features --locked --message-format json > "$RUNNER_TEMP/pv511/plain-tests.json"
+          swiftc -O -swift-version 5 .github/diagnostics/issue-511/fsevents-probe.swift -o "$RUNNER_TEMP/pv511/fsevents-probe"
+
+      - name: "Probe: FSEvents with nothing else running"
+        run: |
+          D="$RUNNER_TEMP/pv511"
+          python3 .github/diagnostics/issue-511/run-probe.py "$D/fsevents-probe" "$D/probe-idle.jsonl" 3 120 none | tee "$D/probe-idle.txt"
+
+      - name: "Unmodified tests, repeated while the full suite runs twice"
+        run: |
+          D="$RUNNER_TEMP/pv511"
+          python3 .github/diagnostics/issue-511/load.py suite "$D/load-plain" "$GITHUB_WORKSPACE" &
+          load=$!
+          sleep 20
+          python3 .github/diagnostics/issue-511/stress-tests.py "$D/plain-tests.json" "$D/plain" 480 \
+            watcher::tests::watcher_enqueues_a_config_that_appears_conflicts_or_is_edited_in_place=2 \
+            watcher::tests::watcher_enqueues_an_edit_to_the_file_a_config_links_to=2 \
+            jobs::tests::queued_foreground_reconciliation_streams_only_after_its_turn=1
+          python3 .github/diagnostics/issue-511/run-probe.py "$D/fsevents-probe" "$D/probe-loaded.jsonl" 3 120 none | tee "$D/probe-loaded.txt"
+          kill "$load"
+          wait "$load" || true
+          python3 .github/diagnostics/issue-511/analyze.py "$D/plain" | tee "$D/plain-analysis.txt"
+
+      - name: Add tracing and rebuild
+        run: |
+          D="$RUNNER_TEMP/pv511"
+          notify_source=$(find "${CARGO_HOME:-$HOME/.cargo}/registry/src" -maxdepth 2 -type d -name notify-8.2.0 | head -1)
+          cp -R "$notify_source" "$D/notify-8.2.0"
+          chmod -R u+w "$D/notify-8.2.0"
+          python3 .github/diagnostics/issue-511/instrument.py . "$D/notify-8.2.0"
+          printf '\n[patch.crates-io]\nnotify = { path = "%s" }\n' "$D/notify-8.2.0" >> Cargo.toml
+          cargo update -p notify --precise 8.2.0
+          git diff > "$D/tracing.diff"
+          diff -ru "$notify_source" "$D/notify-8.2.0" > "$D/notify-tracing.diff" || true
+          cargo nextest list --workspace --all-features --message-format json > "$D/traced-tests.json"
+
+      - name: "Traced tests, repeated while the full suite runs twice"
+        run: |
+          D="$RUNNER_TEMP/pv511"
+          python3 .github/diagnostics/issue-511/load.py suite "$D/load-traced" "$GITHUB_WORKSPACE" &
+          load=$!
+          sleep 20
+          python3 .github/diagnostics/issue-511/stress-tests.py "$D/traced-tests.json" "$D/traced" 480 \
+            watcher::tests::watcher_enqueues_a_config_that_appears_conflicts_or_is_edited_in_place=2 \
+            watcher::tests::watcher_enqueues_an_edit_to_the_file_a_config_links_to=2 \
+            jobs::tests::queued_foreground_reconciliation_streams_only_after_its_turn=1
+          kill "$load"
+          wait "$load" || true
+          python3 .github/diagnostics/issue-511/analyze.py "$D/traced" --timelines > "$D/traced-analysis.txt"
+          head -60 "$D/traced-analysis.txt"
+
+      - name: Summarize
+        if: ${{ !cancelled() }}
+        run: |
+          D="$RUNNER_TEMP/pv511"
+          section() { printf '### %s\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"; }
+          for file in probe-idle.txt probe-loaded.txt plain-analysis.txt; do
+            if [ -f "$D/$file" ]; then section "$file" "$(cat "$D/$file")"; fi
+          done
+          if [ -f "$D/traced-analysis.txt" ]; then section "traced-analysis.txt (start)" "$(head -60 "$D/traced-analysis.txt")"; fi
+          section "Full-suite runs used as load" "$(grep -h -E '^ +(Summary|FAIL|TIMEOUT|SIGSEGV|SIGABRT) ' "$D"/load-*/suite-*.log | sort | uniq -c || true)"
+
+      - name: Keep failed runs' logs and a sample of passing ones
+        if: ${{ !cancelled() }}
+        run: |
+          D="$RUNNER_TEMP/pv511"
+          rm -rf "$D/notify-8.2.0" "$D"/load-*/storm-*
+          python3 - "$D/plain" "$D/traced" <<'PY'
+          import json, sys
+          from pathlib import Path
+          for directory in map(Path, sys.argv[1:]):
+              if not (directory / "results.json").exists():
+                  continue
+              kept = {}
+              for result in json.loads((directory / "results.json").read_text()):
+                  kept[result["test"]] = kept.get(result["test"], 0) + 1
+                  if result["exit"] == 0 and kept[result["test"]] > 15:
+                      (directory / result["log"]).unlink(missing_ok=True)
+          PY
+
+      - name: Upload everything
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: issue-511-macos-26
+          path: ${{ runner.temp }}/pv511
