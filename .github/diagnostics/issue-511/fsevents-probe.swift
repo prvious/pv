@@ -198,6 +198,8 @@ for round in 0..<rounds {
         "action_last_lag_ms": (actionConfig.map(\.arrivedMs).max() ?? actionEnd) - actionEnd,
         "ambiguous": markerIndex == nil || dropped, "dropped": dropped,
         "setup_events_after_edit_start": lateAfterEditStart.map(describe),
+        // An ambiguous round keeps every raw event, since none of its later ones can be attributed.
+        "raw_events": markerIndex == nil || dropped ? events.map(describe) : [],
         "action_ms": actionEnd - actionStart,
         "action_events_detail": configCallbacks.count > 1 ? action.map(describe) : [],
     ]
