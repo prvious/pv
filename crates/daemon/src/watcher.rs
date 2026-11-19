@@ -117,9 +117,16 @@ impl ProjectConfigWatcher {
         debouncer: ReconciliationDebouncer,
     ) -> Result<(), DaemonError> {
         while let Some(message) = messages.recv().await {
+            // One save is a dozen events. Checking them in one trip keeps their requests inside
+            // one debounce window on a busy machine, where each trip to a blocking thread costs
+            // milliseconds.
+            let mut batch = vec![message];
+            while let Ok(message) = messages.try_recv() {
+                batch.push(message);
+            }
             let watcher = self.clone();
             // Checking a config reads its modified time, which can block on a slow disk.
-            let scopes = tokio::task::spawn_blocking(move || watcher.scopes(message)).await?;
+            let scopes = tokio::task::spawn_blocking(move || watcher.scopes(batch)).await?;
             for scope in scopes {
                 debouncer.request(scope).await;
             }
@@ -217,17 +224,31 @@ impl ProjectConfigWatcher {
         let _result = state.messages.send(WatchMessage::Restarted);
     }
 
-    fn scopes(&self, message: WatchMessage) -> BTreeSet<ReconciliationScope> {
+    fn scopes(
+        &self,
+        messages: impl IntoIterator<Item = WatchMessage>,
+    ) -> BTreeSet<ReconciliationScope> {
         let mut state = lock_watch_state(&self.state);
-        match message {
-            WatchMessage::Event(Ok(event)) if !event.need_rescan() => state.event_scopes(&event),
-            WatchMessage::Event(Err(error)) => {
-                structured_log::file_watch_failed(&self.paths, "file events", &error.to_string());
-                state.changes()
-            }
-            // Events may have been missed, so everything watched is checked.
-            WatchMessage::Event(Ok(_)) | WatchMessage::Restarted => state.changes(),
+        let mut scopes = BTreeSet::new();
+        for message in messages {
+            scopes.extend(match message {
+                WatchMessage::Event(Ok(event)) if !event.need_rescan() => {
+                    state.event_scopes(&event)
+                }
+                WatchMessage::Event(Err(error)) => {
+                    structured_log::file_watch_failed(
+                        &self.paths,
+                        "file events",
+                        &error.to_string(),
+                    );
+                    state.changes()
+                }
+                // Events may have been missed, so everything watched is checked.
+                WatchMessage::Event(Ok(_)) | WatchMessage::Restarted => state.changes(),
+            });
         }
+
+        scopes
     }
 }
 
@@ -639,7 +660,7 @@ mod tests {
         write(&moved_path.join("pv.yml"), "php: '8.4'\n")?;
         watcher.reload();
         let scopes = watcher
-            .scopes(WatchMessage::Restarted)
+            .scopes([WatchMessage::Restarted])
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -724,12 +745,12 @@ mod tests {
             "/elsewhere/feature/.git\n",
         )?;
         let changed = watcher
-            .scopes(rescan())
+            .scopes([rescan()])
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let unchanged = watcher
-            .scopes(WatchMessage::Restarted)
+            .scopes([WatchMessage::Restarted])
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -750,7 +771,7 @@ mod tests {
         let open = Event::new(EventKind::Access(AccessKind::Any))
             .add_path(project_path.join("pv.yml").into_std_path_buf());
 
-        assert!(watcher.scopes(WatchMessage::Event(Ok(open))).is_empty());
+        assert!(watcher.scopes([WatchMessage::Event(Ok(open))]).is_empty());
 
         Ok(())
     }
