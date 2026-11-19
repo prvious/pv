@@ -523,8 +523,14 @@ mod tests {
 
             real::timeout(EVENT_TIMEOUT, async {
                 while let Some(event) = events.recv().await {
-                    if event?.paths.iter().any(|path| path == marker.as_std_path()) {
+                    let event = event?;
+                    if event.paths.iter().any(|path| path == marker.as_std_path()) {
                         return Ok(());
+                    }
+                    // Under load FSEvents can fold events into one rescan of the directory, which
+                    // may replace the marker's own event.
+                    if event.need_rescan() {
+                        write(&marker, "")?;
                     }
                 }
 
