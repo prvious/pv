@@ -423,8 +423,8 @@ mod tests {
     use anyhow::{Result, anyhow};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::{Utf8TempDir, tempdir};
-    use notify::Event;
     use notify::event::{AccessKind, EventKind, Flag};
+    use notify::{Event, RecursiveMode, Watcher};
     use platform::clock::real;
     use state::{Database, LinkProjectInput, PvPaths};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -485,6 +485,7 @@ mod tests {
         /// the check after startup has run without requesting anything, so a test's change can
         /// only reach the watcher as an event.
         async fn run(&self) -> Result<RunningWatcher> {
+            self.wait_for_file_events_before_now().await?;
             let (watcher, messages) = self.watch()?;
             let (sender, scopes) = unbounded_channel();
             let debouncer = ReconciliationDebouncer::new(Duration::from_millis(50), move |scope| {
@@ -503,6 +504,34 @@ mod tests {
 
             Ok(running)
         }
+
+        /// Returns once FSEvents has numbered every change made so far, so a watcher started
+        /// afterwards never receives the setup's own writes as events.
+        ///
+        /// A new stream receives the events numbered after it starts, and on a busy machine
+        /// FSEvents numbers a write some milliseconds after it happens. It numbers writes in
+        /// order, so once a marker written now reaches a separate stream, every earlier write has
+        /// a lower number.
+        async fn wait_for_file_events_before_now(&self) -> Result<()> {
+            let (sender, mut events) = unbounded_channel();
+            let mut marker_watcher = notify::recommended_watcher(move |event| {
+                let _result = sender.send(event);
+            })?;
+            marker_watcher.watch(self.root.as_std_path(), RecursiveMode::NonRecursive)?;
+            let marker = self.root.join("file-events-marker");
+            write(&marker, "")?;
+
+            real::timeout(EVENT_TIMEOUT, async {
+                while let Some(event) = events.recv().await {
+                    if event?.paths.iter().any(|path| path == marker.as_std_path()) {
+                        return Ok(());
+                    }
+                }
+
+                Err(anyhow!("marker watcher stopped"))
+            })
+            .await?
+        }
     }
 
     struct RunningWatcher {
@@ -518,11 +547,19 @@ mod tests {
                 .ok_or_else(|| anyhow!("watcher scope recorder closed"))
         }
 
-        /// The scopes requested, waiting up to [`EVENT_TIMEOUT`] for the first one and then until
-        /// nothing arrives for [`QUIET_PERIOD`].
+        /// The distinct scopes requested, in the order they first arrive, waiting up to
+        /// [`EVENT_TIMEOUT`] for the first one and then until nothing arrives for
+        /// [`QUIET_PERIOD`].
+        ///
+        /// FSEvents can deliver the last events of one save after the debounce window closes, so
+        /// a save may request its scope twice.
         async fn requested(&mut self) -> Result<Vec<String>> {
             let mut scopes = vec![self.next_scope().await?];
-            scopes.extend(self.settle().await);
+            for scope in self.settle().await {
+                if !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
 
             Ok(scopes)
         }
@@ -671,7 +708,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atomic_save_enqueues_one_reconciliation_and_ignores_other_files() -> Result<()> {
+    async fn atomic_save_enqueues_its_project_and_ignores_other_files() -> Result<()> {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
         write(&project_path.join("pv.yml"), "php: '8.3'\n")?;
