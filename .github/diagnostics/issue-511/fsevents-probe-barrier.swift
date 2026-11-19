@@ -162,11 +162,9 @@ for round in 0..<rounds {
         usleep(1000)
     }
     let markerWaitMs = nowMs() - markerWriteStart
-    markerStream.stop()
     guard let markerId else { fatalError("marker never arrived") }
-    // Setup events the marker stream received late: their numbers must be below the marker's.
-    let setupAfterMarker = markerEvents.filter { $0.path.hasPrefix(project) && $0.id > markerId }.count
-    let setupSeenByMarkerStream = markerEvents.filter { $0.path.hasPrefix(project) }.count
+    // The marker's stream keeps running until the round ends, so a setup write numbered after the
+    // marker is still seen even if it arrives after the real stream starts.
 
     let recorder = Recorder()
     let idBeforeStart = FSEventsGetCurrentEventId()
@@ -176,11 +174,21 @@ for round in 0..<rounds {
     let idAfterStart = FSEventsGetCurrentEventId()
 
     usleep(150_000)
+    // The edit's own events are numbered after this, which keeps them out of the setup counts.
+    let idAtActionStart = FSEventsGetCurrentEventId()
     let actionStart = nowMs()
     saveLikePV(config, "php: '8.4'\n")
     let actionEnd = nowMs()
     usleep(250_000)
     stream.stop()
+    markerStream.stop()
+    markerRecorder.lock.lock()
+    markerEvents = markerRecorder.events
+    markerRecorder.lock.unlock()
+    // Setup events the marker stream received late: their numbers must be below the marker's.
+    let setupSeen = markerEvents.filter { $0.path.hasPrefix(project) && $0.id <= idAtActionStart }
+    let setupAfterMarker = setupSeen.filter { $0.id > markerId }.count
+    let setupSeenByMarkerStream = setupSeen.count
 
     recorder.lock.lock()
     let events = recorder.events
@@ -232,6 +240,11 @@ for round in 0..<rounds {
         "marker_wait_ms": markerWaitMs,
         "setup_seen_by_marker_stream": setupSeenByMarkerStream,
         "setup_numbered_after_marker": setupAfterMarker,
+        "marker_id": markerId,
+        "id_at_action_start": idAtActionStart,
+        "marker_stream_events": markerEvents.map {
+            ["id": $0.id, "flags": hex($0.flags), "path": String($0.path.dropFirst(roundDirectory.count))]
+        },
         "real_events_at_or_below_marker": events.filter { $0.id <= markerId }.count,
         "action_ms": actionEnd - actionStart,
         "action_events_detail": configCallbacks.count > 1 ? action.map(describe) : [],
