@@ -146,6 +146,7 @@ cleanup() {
 need diff
 need file
 need find
+need grep
 need mktemp
 need python3
 [ -n "$platform" ] || die "missing PV_POSTGRES_PLATFORM for packaged artifact validation"
@@ -188,6 +189,10 @@ case "$platform" in
     pv_recipe_validate_elf_tree "$artifact_root" "$platform"
     ;;
 esac
+
+"$pg_restore" --file="$tmpdir/restored.sql" "$ROOT/it/fixtures/postgres-import/17.11/custom.dump"
+grep -Fq 'admin and analytics are data, not routing' "$tmpdir/restored.sql" \
+  || die "pg_restore did not render the compressed table data"
 
 printf '%s\n' "$admin_password" >"$password_file"
 "$initdb" \

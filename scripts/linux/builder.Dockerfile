@@ -9,7 +9,7 @@ RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         autoconf automake autopoint bison build-essential bzip2 ca-certificates cmake curl \
         file flex git jq gperf libaio-dev libncurses-dev libtool patchelf pkg-config \
-        python3 re2c unzip xz-utils \
+        python3 re2c unzip xz-utils zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup.sh \

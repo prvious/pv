@@ -237,7 +237,15 @@ case "$PLATFORM" in
     export CFLAGS="${CFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
     export LDFLAGS="${LDFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
     ;;
-  linux-amd64 | linux-arm64) set -- --disable-rpath ;;
+  linux-amd64 | linux-arm64)
+    # Use the builder's static zlib so the artifact has no host zlib dependency.
+    zlib_archive=$(${CC:-cc} -print-file-name=libz.a)
+    [ -f "$zlib_archive" ] || die "missing static zlib; install zlib1g-dev"
+    mkdir "$work_dir/zlib"
+    cp "$zlib_archive" "$work_dir/zlib/libz.a"
+    set -- --disable-rpath
+    export LDFLAGS="-L$work_dir/zlib ${LDFLAGS:-}"
+    ;;
 esac
 (
   cd "$source_dir"
@@ -250,7 +258,6 @@ esac
     --without-llvm \
     --without-lz4 \
     --without-readline \
-    --without-zlib \
     --without-zstd "$@"
   make -j "$BUILD_JOBS" world-bin pkglibdir="$install_dir/lib/postgresql"
   make install-world-bin pkglibdir="$install_dir/lib/postgresql"
