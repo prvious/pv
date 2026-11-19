@@ -51,15 +51,9 @@ edit(
 edit(
     pv / "crates/daemon/src/watcher.rs",
     (
-        "        while let Some(message) = messages.recv().await {\n            let watcher = self.clone();\n",
-        "        while let Some(message) = messages.recv().await {\n"
-        "            let description = match &message {\n"
-        '                WatchMessage::Event(Ok(event)) => format!("{:?} {:?}", event.kind, event.paths),\n'
-        '                WatchMessage::Event(Err(error)) => format!("error {error}"),\n'
-        '                WatchMessage::Restarted => "Restarted".to_string(),\n'
-        "            };\n"
-        f'            eprintln!("PV511 {{:?}} WATCH_MESSAGE {{description}}", {T});\n'
-        "            let watcher = self.clone();\n",
+        "            let watcher = self.clone();\n            // Checking a config reads its modified time",
+        f'            eprintln!("PV511 {{:?}} WATCH_BATCH {{}}", {T}, batch.len());\n'
+        "            let watcher = self.clone();\n            // Checking a config reads its modified time",
     ),
     (
         "            for scope in scopes {\n                debouncer.request(scope).await;\n",
@@ -90,9 +84,11 @@ edit(
     ),
     # Tests.
     (
-        "        async fn run(&self) -> Result<RunningWatcher> {\n            let (watcher, messages) = self.watch()?;\n",
+        "        async fn run(&self) -> Result<RunningWatcher> {\n            self.wait_for_file_events_before_now().await?;\n            let (watcher, messages) = self.watch()?;\n",
         "        async fn run(&self) -> Result<RunningWatcher> {\n"
         f'            eprintln!("PV511 {{:?}} TEST_RUN_BEGIN", {T});\n'
+        "            self.wait_for_file_events_before_now().await?;\n"
+        f'            eprintln!("PV511 {{:?}} TEST_BARRIER_DONE", {T});\n'
         "            let (watcher, messages) = self.watch()?;\n"
         f'            eprintln!("PV511 {{:?}} TEST_WATCH_STARTED", {T});\n',
     ),
@@ -163,48 +159,6 @@ edit(
         "    drop(database);\n"
         f'    eprintln!("PV511 {{:?}} ADMIT_CLOSED", {T});\n\n'
         "    Ok(job.id)\n}\n",
-    ),
-    (
-        "        let mut reader = protocol::transport(client);\n"
-        "        let accepted = real::timeout(Duration::from_millis(100), reader.next())\n"
-        "            .await?\n",
-        "        let mut reader = protocol::transport(client);\n"
-        f'        eprintln!("PV511 {{:?}} JOB_ACCEPTED_WAIT", {T});\n'
-        "        let accepted = real::timeout(Duration::from_millis(100), reader.next())\n"
-        '            .await\n            .map_err(|error| anyhow::anyhow!("accepted wait: {error}"))?\n',
-    ),
-    (
-        "        assert_eq!(accepted[\"status\"], \"accepted\");\n"
-        "        assert!(\n"
-        "            real::timeout(Duration::from_millis(20), reader.next())\n"
-        "                .await\n"
-        "                .is_err()\n"
-        "        );\n\n"
-        "        running.finish();\n",
-        "        assert_eq!(accepted[\"status\"], \"accepted\");\n"
-        f'        eprintln!("PV511 {{:?}} JOB_ACCEPTED", {T});\n'
-        "        assert!(\n"
-        "            real::timeout(Duration::from_millis(20), reader.next())\n"
-        "                .await\n"
-        "                .is_err(),\n"
-        '            "quiet check: an event arrived before the first job finished"\n'
-        "        );\n\n"
-        f'        eprintln!("PV511 {{:?}} JOB_RELEASE", {T});\n'
-        "        running.finish();\n",
-    ),
-    (
-        "            let line = real::timeout(Duration::from_millis(500), reader.next())\n"
-        "                .await?\n"
-        "                .ok_or_else(|| anyhow::anyhow!(\"job stream ended before completion\"))??;\n"
-        "            let event = serde_json::from_str::<serde_json::Value>(&line)?;\n"
-        "            let completed = event[\"type\"] == \"job_completed\";\n",
-        "            let line = real::timeout(Duration::from_millis(500), reader.next())\n"
-        "                .await\n"
-        '                .map_err(|error| anyhow::anyhow!("event wait after {} events: {error}", events.len()))?\n'
-        "                .ok_or_else(|| anyhow::anyhow!(\"job stream ended before completion\"))??;\n"
-        "            let event = serde_json::from_str::<serde_json::Value>(&line)?;\n"
-        f'            eprintln!("PV511 {{:?}} JOB_EVENT {{}}", {T}, event["type"]);\n'
-        "            let completed = event[\"type\"] == \"job_completed\";\n",
     ),
 )
 print("instrumented")

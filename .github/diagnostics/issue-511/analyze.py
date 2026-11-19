@@ -61,7 +61,9 @@ for result in results:
         continue
     for name, segment in segments(events):
         setup = first(segment, "TEST_SETUP_DONE")
-        started = first(segment, "FSE_STREAM_STARTED", setup or 0)
+        # With the marker check, the real stream is the first one started after it.
+        barrier = first(segment, "TEST_BARRIER_DONE")
+        started = first(segment, "FSE_STREAM_STARTED", barrier or setup or 0)
         change = first(segment, "TEST_CHANGE_BEGIN")
         if setup is None or started is None:
             continue

@@ -1,7 +1,8 @@
 name: Issue 511 diagnostics
 
-# Records why three daemon tests flake on macOS 26 (#511). Runs only for pull requests from
-# diagnostics/issue-511 branches, which are never merged.
+# Confirms on macOS 26 that the fixes for #511 (#514) stop three daemon tests from flaking. Runs
+# only for pull requests from diagnostics/issue-511 branches, which are never merged. The first
+# run, against unmodified main, is https://github.com/prvious/pv/actions/runs/44354961363.
 on:
   pull_request:
 
@@ -15,6 +16,10 @@ jobs:
     if: startsWith(github.head_ref, 'diagnostics/issue-511')
     runs-on: macos-26
     timeout-minutes: 75
+    permissions:
+      contents: read
+      # Posts the results as a comment when the run ends.
+      pull-requests: write
 
     steps:
       - name: Checkout
@@ -44,28 +49,32 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146
 
-      - name: Build the unmodified tests and the FSEvents probe
+      - name: Build the fixed tests and the FSEvents probe
         run: |
           mkdir -p "$RUNNER_TEMP/pv511"
           cargo nextest list --workspace --all-features --locked --message-format json > "$RUNNER_TEMP/pv511/plain-tests.json"
-          swiftc -O -swift-version 5 .github/diagnostics/issue-511/fsevents-probe.swift -o "$RUNNER_TEMP/pv511/fsevents-probe"
+          swiftc -O -swift-version 5 .github/diagnostics/issue-511/fsevents-probe-barrier.swift -o "$RUNNER_TEMP/pv511/fsevents-probe-barrier"
 
-      - name: "Probe: FSEvents with nothing else running"
+      - name: "Probe: the marker check with nothing else running"
         run: |
           D="$RUNNER_TEMP/pv511"
-          python3 .github/diagnostics/issue-511/run-probe.py "$D/fsevents-probe" "$D/probe-idle.jsonl" 3 120 none | tee "$D/probe-idle.txt"
+          python3 .github/diagnostics/issue-511/run-probe.py "$D/fsevents-probe-barrier" "$D/barrier-idle.jsonl" 3 120 none > /dev/null
+          python3 .github/diagnostics/issue-511/summarize-barrier.py "$D/barrier-idle.jsonl" | tee "$D/barrier-idle.txt"
 
-      - name: "Unmodified tests, repeated while the full suite runs twice"
+      - name: "Fixed tests, repeated while the full suite runs twice"
         run: |
           D="$RUNNER_TEMP/pv511"
           python3 .github/diagnostics/issue-511/load.py suite "$D/load-plain" "$GITHUB_WORKSPACE" &
           load=$!
           sleep 20
-          python3 .github/diagnostics/issue-511/stress-tests.py "$D/plain-tests.json" "$D/plain" 480 \
-            watcher::tests::watcher_enqueues_a_config_that_appears_conflicts_or_is_edited_in_place=2 \
+          # Longer and with more lanes for the startup test than the first run, which saw one
+          # startup failure in 378 runs.
+          python3 .github/diagnostics/issue-511/stress-tests.py "$D/plain-tests.json" "$D/plain" 900 \
+            watcher::tests::watcher_enqueues_a_config_that_appears_conflicts_or_is_edited_in_place=3 \
             watcher::tests::watcher_enqueues_an_edit_to_the_file_a_config_links_to=2 \
             jobs::tests::queued_foreground_reconciliation_streams_only_after_its_turn=1
-          python3 .github/diagnostics/issue-511/run-probe.py "$D/fsevents-probe" "$D/probe-loaded.jsonl" 3 120 none | tee "$D/probe-loaded.txt"
+          python3 .github/diagnostics/issue-511/run-probe.py "$D/fsevents-probe-barrier" "$D/barrier-loaded.jsonl" 3 120 none > /dev/null
+          python3 .github/diagnostics/issue-511/summarize-barrier.py "$D/barrier-loaded.jsonl" | tee "$D/barrier-loaded.txt"
           kill "$load"
           wait "$load" || true
           python3 .github/diagnostics/issue-511/analyze.py "$D/plain" | tee "$D/plain-analysis.txt"
@@ -102,12 +111,15 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           D="$RUNNER_TEMP/pv511"
-          section() { printf '### %s\n~~~\n%s\n~~~\n' "$1" "$2" >> "$GITHUB_STEP_SUMMARY"; }
-          for file in probe-idle.txt probe-loaded.txt plain-analysis.txt; do
-            if [ -f "$D/$file" ]; then section "$file" "$(cat "$D/$file")"; fi
+          section() { printf '### %s\n~~~\n%s\n~~~\n' "$1" "$2" >> "$D/summary.md"; }
+          printf 'Results of [this run](%s/%s/actions/runs/%s) on macOS 26 with the fixes from #514.\n\n' \
+            "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" > "$D/summary.md"
+          for file in barrier-idle.txt barrier-loaded.txt plain-analysis.txt; do
+            if [ -f "$D/$file" ]; then section "$file" "$(head -40 "$D/$file")"; fi
           done
-          if [ -f "$D/traced-analysis.txt" ]; then section "traced-analysis.txt (start)" "$(head -60 "$D/traced-analysis.txt")"; fi
-          section "Full-suite runs used as load" "$(grep -h -E '^ +(Summary|FAIL|TIMEOUT|SIGSEGV|SIGABRT) ' "$D"/load-*/suite-*.log | sort | uniq -c || true)"
+          if [ -f "$D/traced-analysis.txt" ]; then section "traced-analysis.txt (start)" "$(head -30 "$D/traced-analysis.txt")"; fi
+          section "Full-suite runs used as load" "$(perl -pe 's/\e\[[0-9;]*m//g' "$D"/load-*/suite-*.log | grep -E '^ +(Summary|FAIL|TIMEOUT|SIGSEGV|SIGABRT) ' | sort | uniq -c || true)"
+          cat "$D/summary.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep failed runs' logs and a sample of passing ones
         if: ${{ !cancelled() }}
@@ -131,5 +143,12 @@ jobs:
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v7
         with:
-          name: issue-511-macos-26
+          name: issue-511-macos-26-fixed
           path: ${{ runner.temp }}/pv511
+
+      - name: Post the results on the pull request
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/pv511/summary.md"
