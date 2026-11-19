@@ -1160,6 +1160,13 @@ impl Database {
         match &existing {
             Some(project) => {
                 update_project_in_transaction(&transaction, &project.id, &input, mode)?;
+                if mode == ProjectMode::ResourceOnly {
+                    // The Gateway keeps its own claim until it stops routing to the port.
+                    transaction.execute(
+                        "UPDATE projects SET proxy_port = NULL WHERE id = ?1",
+                        [&project.id],
+                    )?;
+                }
             }
             None => insert_project_in_transaction(
                 &transaction,
@@ -1544,6 +1551,28 @@ impl Database {
         port: u16,
     ) -> Result<(), StateError> {
         validate_project_proxy_port_owner(&self.connection, project_id, port)
+    }
+
+    /// Records the proxy port that the applied Gateway config routes each Project to. Such a port
+    /// stays claimed after the Project's own proxy port changes, until the Gateway stops routing
+    /// to it.
+    pub fn record_gateway_proxy_ports(
+        &mut self,
+        ports: &BTreeMap<String, u16>,
+    ) -> Result<(), StateError> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute("UPDATE projects SET gateway_proxy_port = NULL", [])?;
+        for (project_id, port) in ports {
+            transaction.execute(
+                "UPDATE projects SET gateway_proxy_port = ?1 WHERE id = ?2",
+                params![port, project_id],
+            )?;
+        }
+        transaction.commit()?;
+
+        Ok(())
     }
 
     pub fn replace_project_desired_php_track(
@@ -4451,7 +4480,8 @@ fn validate_project_proxy_port_owner(
     }
     let owner = connection
         .query_row(
-            "SELECT primary_hostname FROM projects WHERE proxy_port = ?1 AND id != ?2",
+            "SELECT primary_hostname FROM projects
+            WHERE ?1 IN (proxy_port, gateway_proxy_port) AND id != ?2",
             params![port, project_id],
             |row| row.get(0),
         )
@@ -4811,7 +4841,9 @@ fn assigned_port_numbers_in_transaction(
         UNION
         SELECT port FROM resource_ports
         UNION
-        SELECT proxy_port FROM projects WHERE proxy_port IS NOT NULL",
+        SELECT proxy_port FROM projects WHERE proxy_port IS NOT NULL
+        UNION
+        SELECT gateway_proxy_port FROM projects WHERE gateway_proxy_port IS NOT NULL",
     )?;
     let rows = statement.query_map([], |row| row.get::<_, u16>(0))?;
     let mut assigned_ports = BTreeSet::new();

@@ -1792,6 +1792,97 @@ async fn targeted_project_reconciliation_preserves_old_route_until_new_worker_is
 }
 
 #[tokio::test]
+async fn proxy_port_stays_claimed_until_the_gateway_stops_routing_to_it() -> Result<()> {
+    let gateway_listeners = crate::host::test_gateway_listeners()?;
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut runtime_guard = GatewayRuntimeGuard::standard(paths.clone())?;
+    let ports = available_loopback_ports(2)?;
+    let project_root =
+        create_project_with_config(tempdir.path(), "api", &format!("proxy: {}\n", ports[0]))?;
+    let caddy_release = tempdir.path().join("fake-caddy-release");
+    write_fake_caddy(&caddy_release.join("bin/caddy"))?;
+
+    let mut database = Database::open(&paths)?;
+    let link = LinkProjectInput {
+        path: project_root.clone(),
+        original_path: project_root.clone(),
+        primary_hostname: "api.test".to_owned(),
+        config_path: project_root.join("pv.yml"),
+        desired_php_track: None,
+    };
+    let project = database.link_project(link.clone())?.project;
+    database.record_managed_resource_track_installed(
+        "caddy",
+        "2",
+        "fake-caddy-pv1",
+        &caddy_release,
+    )?;
+    seed_runtime_ports(&paths, &mut database, &[])?;
+    let apply = |database: &mut Database, port| {
+        database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            proxy_port: Some(port),
+            setup_hook_log: None,
+            project_id: project.id.clone(),
+            link: link.clone(),
+            mode: ProjectMode::Served,
+            php_runtime: None,
+            env_status: ProjectEnvObservedStatus::Rendered,
+            env_message: None,
+            env_warnings: Vec::new(),
+        })
+    };
+    apply(&mut database, ports[0])?;
+    drop(database);
+    reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
+
+    fs::write_sensitive_file(
+        &project_root.join("pv.yml"),
+        &format!("proxy: {}\n", ports[1]),
+    )?;
+    apply(&mut Database::open(&paths)?, ports[1])?;
+    pv_fake::write_gateway_control(
+        &paths.gateway_root_config(),
+        json!({"load_statuses": [422]}),
+    )?;
+    let failed = reconcile_gateway_runtimes(&paths, &gateway_listeners).await;
+
+    assert!(matches!(
+        failed,
+        Err(DaemonError::CaddyAdmin(CaddyAdminError::LoadRejected {
+            status: 422,
+            ..
+        }))
+    ));
+    let fragment = fs::read_to_string(
+        &paths
+            .gateway_projects_config_dir()
+            .join(format!("{}.Caddyfile", project.id)),
+    )?;
+    assert!(fragment.contains(&format!("reverse_proxy 127.0.0.1:{}\n", ports[0])));
+    assert!(matches!(
+        Database::open(&paths)?.validate_project_proxy_port("sibling", ports[0]),
+        Err(StateError::ProjectProxyPortCollision { port, .. }) if port == ports[0]
+    ));
+    assert!(matches!(
+        Database::open(&paths)?.assign_port(
+            PortRequest::php_worker("8.4", ports[0], ports[0], ports[0]),
+            |_port| true
+        ),
+        Err(StateError::NoAvailablePort { .. })
+    ));
+
+    reconcile_gateway_runtimes(&paths, &gateway_listeners).await?;
+
+    Database::open(&paths)?.validate_project_proxy_port("sibling", ports[0])?;
+
+    stop_runtime(&paths.gateway_runtime_metadata()).await?;
+    runtime_guard.cleanup().await?;
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn gateway_reconciliation_takes_full_path_when_applied_fingerprint_is_missing() -> Result<()>
 {
     let gateway_listeners = crate::host::test_gateway_listeners()?;
