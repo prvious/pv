@@ -1,5 +1,6 @@
 use std::io::{BufReader, Read};
 
+use pg_query::protobuf::Token;
 use pg_query::protobuf::node::Node;
 use thiserror::Error;
 
@@ -171,24 +172,26 @@ pub fn inspect_plain_dump(input: impl Read) -> Result<DumpSummary, ImportError> 
                 in_meta = false;
             }
         } else if at_line_start && byte == b'\\' && matches!(lex, Lex::Normal) {
-            if !statement.is_empty() {
-                let sql = std::str::from_utf8(&statement).map_err(|_| ImportError::NonUtf8Sql {
-                    line: statement_line,
-                })?;
-                let parsed = pg_query::parse(sql).map_err(|error| ImportError::Sql {
-                    line: statement_line,
-                    message: error.to_string(),
-                })?;
-                if !parsed.protobuf.stmts.is_empty() {
-                    return Err(ImportError::MetaInsideStatement { line });
-                }
-                statement.clear();
+            if !parse_statement(&statement, statement_line)?
+                .protobuf
+                .stmts
+                .is_empty()
+            {
+                return Err(ImportError::MetaInsideStatement { line });
             }
+            statement.clear();
             meta_line = line;
             meta.push(byte);
             in_meta = true;
         } else {
             if statement.is_empty() {
+                if byte.is_ascii_whitespace() {
+                    if byte == b'\n' {
+                        line += 1;
+                        at_line_start = true;
+                    }
+                    continue;
+                }
                 statement_line = line;
             }
             statement.push(byte);
@@ -201,10 +204,17 @@ pub fn inspect_plain_dump(input: impl Read) -> Result<DumpSummary, ImportError> 
                 let sql = std::str::from_utf8(&statement).map_err(|_| ImportError::NonUtf8Sql {
                     line: statement_line,
                 })?;
-                let parsed = pg_query::parse(sql).map_err(|error| ImportError::Sql {
-                    line: statement_line,
-                    message: error.to_string(),
-                })?;
+                let parsed = match pg_query::parse(sql, 0) {
+                    Ok(parsed) => parsed,
+                    // A semicolon can separate commands inside a SQL-standard function body.
+                    Err(pg_query::Error::Parse(message))
+                        if message == "syntax error at end of input" =>
+                    {
+                        at_line_start = false;
+                        continue;
+                    }
+                    Err(error) => return Err(sql_error(error, statement_line)),
+                };
                 for raw in &parsed.protobuf.stmts {
                     summary.statements += 1;
                     if let Some(node) = &raw.stmt
@@ -222,6 +232,21 @@ pub fn inspect_plain_dump(input: impl Read) -> Result<DumpSummary, ImportError> 
                             || copy.where_clause.is_some()
                         {
                             return Err(ImportError::UnsupportedCopy {
+                                line: statement_line,
+                            });
+                        }
+                        let tokens = pg_query::scan(sql)
+                            .map_err(|error| sql_error(error, statement_line))?;
+                        let mut tokens = tokens.tokens.iter().rev().filter_map(|token| {
+                            Token::try_from(token.token).ok().filter(|kind| {
+                                !matches!(
+                                    kind,
+                                    Token::Ascii59 | Token::SqlComment | Token::CComment
+                                )
+                            })
+                        });
+                        if tokens.next() != Some(Token::Stdin) {
+                            return Err(ImportError::UnsafeCopy {
                                 line: statement_line,
                             });
                         }
@@ -252,29 +277,44 @@ pub fn inspect_plain_dump(input: impl Read) -> Result<DumpSummary, ImportError> 
     if restriction.is_some() {
         return Err(ImportError::UnterminatedRestriction { line });
     }
-    if !statement.is_empty() {
-        let sql = std::str::from_utf8(&statement).map_err(|_| ImportError::NonUtf8Sql {
+    if !parse_statement(&statement, statement_line)?
+        .protobuf
+        .stmts
+        .is_empty()
+    {
+        return Err(ImportError::IncompleteSql {
             line: statement_line,
-        })?;
-        let parsed = pg_query::parse(sql).map_err(|error| ImportError::Sql {
-            line: statement_line,
-            message: error.to_string(),
-        })?;
-        if !parsed.protobuf.stmts.is_empty() {
-            return Err(ImportError::IncompleteSql {
-                line: statement_line,
-            });
-        }
+        });
     }
 
     Ok(summary)
+}
+
+fn parse_statement(statement: &[u8], line: usize) -> Result<pg_query::ParseResult, ImportError> {
+    let sql = std::str::from_utf8(statement).map_err(|_| ImportError::NonUtf8Sql { line })?;
+    pg_query::parse(sql, 0).map_err(|error| sql_error(error, line))
+}
+
+fn sql_error(error: pg_query::Error, line: usize) -> ImportError {
+    ImportError::Sql {
+        line,
+        message: error.to_string(),
+    }
+}
+
+fn identifier_start(byte: u8) -> bool {
+    byte.is_ascii_alphabetic() || byte == b'_' || !byte.is_ascii()
+}
+
+fn identifier_continue(byte: u8) -> bool {
+    identifier_start(byte) || byte.is_ascii_digit() || byte == b'$'
 }
 
 fn scan_sql_byte(byte: u8, statement: &[u8], lex: &mut Lex) -> bool {
     loop {
         match lex {
             Lex::Normal => {
-                let previous = statement.get(statement.len().saturating_sub(2)).copied();
+                let previous = statement.iter().rev().nth(1).copied();
                 match (previous, byte) {
                     (Some(b'-'), b'-') => *lex = Lex::LineComment,
                     (Some(b'/'), b'*') => {
@@ -284,16 +324,22 @@ fn scan_sql_byte(byte: u8, statement: &[u8], lex: &mut Lex) -> bool {
                         };
                     }
                     (_, b'\'') => {
-                        let escape = statement
-                            .get(statement.len().saturating_sub(2))
-                            .is_some_and(|previous| matches!(previous, b'E' | b'e'));
+                        let escape = matches!(previous, Some(b'E' | b'e'))
+                            && !statement
+                                .iter()
+                                .rev()
+                                .nth(2)
+                                .copied()
+                                .is_some_and(identifier_continue);
                         *lex = Lex::Single {
                             escape,
                             escaped_next: false,
                         };
                     }
                     (_, b'"') => *lex = Lex::Double,
-                    (_, b'$') => *lex = Lex::DollarOpening(vec![b'$']),
+                    (_, b'$') if !previous.is_some_and(identifier_continue) => {
+                        *lex = Lex::DollarOpening(vec![b'$']);
+                    }
                     (_, b';') => return true,
                     _ => {}
                 }
@@ -358,7 +404,7 @@ fn scan_sql_byte(byte: u8, statement: &[u8], lex: &mut Lex) -> bool {
                 if byte == b'$' {
                     delimiter.push(byte);
                     *lex = Lex::Dollar(std::mem::take(delimiter));
-                } else if byte.is_ascii_alphanumeric() || byte == b'_' {
+                } else if identifier_start(byte) || (delimiter.len() > 1 && byte.is_ascii_digit()) {
                     delimiter.push(byte);
                 } else {
                     *lex = Lex::Normal;
@@ -437,27 +483,13 @@ fn inspect_meta(
                 });
             }
             let rest = command.strip_prefix(name).unwrap_or_default().trim();
-            let (database, quoted) = if let Some(value) =
-                rest.strip_prefix("-reuse-previous=on \"dbname='")
-                && let Some(database) = value.strip_suffix("'\"")
-            {
-                (database, true)
-            } else {
-                (rest, false)
-            };
-            if database.is_empty()
-                || database.contains(['\\', '\'', '"', '\n', '\r', '='])
-                || (!quoted
-                    && !database
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_'))
-            {
+            let Some(database) = connect_database(rest) else {
                 return Err(ImportError::MetaCommand {
                     line,
                     command: command.to_string(),
                 });
-            }
-            summary.connections.push(database.to_string());
+            };
+            summary.connections.push(database);
         }
         _ => {
             return Err(ImportError::MetaCommand {
@@ -468,4 +500,49 @@ fn inspect_meta(
     }
     summary.meta_commands += 1;
     Ok(())
+}
+
+// pg_dump quotes complex names twice: as a single libpq dbname value and
+// then as a psql identifier. Accept only that generated connection shape.
+fn connect_database(target: &str) -> Option<String> {
+    let database = if let Some(argument) = target.strip_prefix("-reuse-previous=on ") {
+        let conninfo = unquote_psql_identifier(argument)?;
+        let name = conninfo.strip_prefix("dbname='")?.strip_suffix('\'')?;
+        let mut chars = name.chars();
+        let mut database = String::new();
+        while let Some(character) = chars.next() {
+            database.push(match character {
+                '\\' => chars.next().filter(|next| matches!(next, '\\' | '\''))?,
+                '\'' => return None,
+                other => other,
+            });
+        }
+        database
+    } else {
+        let name = if target.starts_with('"') {
+            unquote_psql_identifier(target)?
+        } else {
+            target.to_owned()
+        };
+        if !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.'))
+        {
+            return None;
+        }
+        name
+    };
+    (!database.is_empty() && !database.contains(['\n', '\r'])).then_some(database)
+}
+
+fn unquote_psql_identifier(argument: &str) -> Option<String> {
+    let mut chars = argument.strip_prefix('"')?.strip_suffix('"')?.chars();
+    let mut value = String::new();
+    while let Some(character) = chars.next() {
+        if character == '"' && chars.next() != Some('"') {
+            return None;
+        }
+        value.push(character);
+    }
+    Some(value)
 }

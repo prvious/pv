@@ -2,7 +2,7 @@ use std::io::{Cursor, Read};
 
 use insta::assert_debug_snapshot;
 use pg_query::protobuf::node::Node;
-use postgres_import::{detect_regular_dump_format, inspect_plain_dump};
+use postgres_import::{ImportError, detect_regular_dump_format, inspect_plain_dump};
 
 const PLAIN_17: &[u8] = include_bytes!("../../../it/fixtures/postgres-import/17.11/plain.sql");
 const CREATE_17: &[u8] = include_bytes!("../../../it/fixtures/postgres-import/17.11/create.sql");
@@ -140,7 +140,7 @@ fn restriction_key_must_match_and_close() {
 #[test]
 fn postgres_scanner_exposes_database_identifier_byte_spans() -> anyhow::Result<()> {
     let sql = "CREATE DATABASE \"Mixed-Name\" WITH TEMPLATE = template0;";
-    let parsed = pg_query::parse(sql)?;
+    let parsed = pg_query::parse(sql, 0)?;
     let tokens = pg_query::scan(sql)?
         .tokens
         .into_iter()
@@ -168,7 +168,7 @@ fn postgres_scanner_exposes_database_identifier_byte_spans() -> anyhow::Result<(
 #[test]
 fn postgres_parser_marks_security_definer_functions() -> anyhow::Result<()> {
     let sql = "CREATE FUNCTION public.proof() RETURNS integer LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$;";
-    let parsed = pg_query::parse(sql)?;
+    let parsed = pg_query::parse(sql, 0)?;
     let options = parsed
         .protobuf
         .stmts
@@ -199,4 +199,38 @@ fn postgres_parser_marks_security_definer_functions() -> anyhow::Result<()> {
 
     assert_debug_snapshot!(options);
     Ok(())
+}
+
+#[test]
+fn postgres_18_virtual_columns_and_atomic_functions_are_framed() -> anyhow::Result<()> {
+    let sql =
+        "CREATE TABLE proof$rows$ (id integer, generated integer GENERATED ALWAYS AS (id + 1));
+        CREATE FUNCTION proof() RETURNS integer LANGUAGE sql BEGIN ATOMIC SELECT 1; END;
+        SELECT proof();";
+    let summary = inspect_plain_dump(Cursor::new(sql))?;
+    assert_eq!(summary.statements, 3);
+    Ok(())
+}
+
+#[test]
+fn quoted_dump_connections_are_decoded() -> anyhow::Result<()> {
+    let dump = r#"\connect "proof.rows"
+\connect -reuse-previous=on "dbname='proof=rows'"
+\connect -reuse-previous=on "dbname='proof\'rows'"
+"#;
+    let summary = inspect_plain_dump(Cursor::new(dump))?;
+    assert_eq!(
+        summary.connections,
+        ["proof.rows", "proof=rows", "proof'rows"]
+    );
+    Ok(())
+}
+
+#[test]
+fn copy_requires_the_stdin_keyword() {
+    let input = b"\nCOPY proof FROM '';";
+    assert!(matches!(
+        inspect_plain_dump(Cursor::new(input)),
+        Err(ImportError::UnsafeCopy { line: 2 })
+    ));
 }

@@ -20,6 +20,10 @@ Avoid `panic!`, `unreachable!`, `.unwrap()`, and `.expect()` in production code.
 
 For running tests, we recommend [nextest](https://nexte.st/).
 
+The PostgreSQL dump reader builds against libclang. On Debian and Ubuntu,
+install `clang` and `libclang-dev`. The PostgreSQL artifact build also needs `zlib1g-dev`
+on Linux so it can statically link zlib.
+
 Some tests require `python3` on `PATH`: a hook cleanup test in `platform`, and `pv-release`'s installer and smoke tests. They use only Python's standard library; no Python packages or virtual environment is required.
 
 The `pv-release` workflow readback test also requires `jq` on `PATH`; it executes

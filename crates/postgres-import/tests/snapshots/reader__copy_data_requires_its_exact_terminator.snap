@@ -3,5 +3,5 @@ source: crates/postgres-import/tests/reader.rs
 expression: result.err().map(|error| error.to_string())
 ---
 Some(
-    "COPY FROM STDIN beginning on line 1 has no \\. terminator",
+    "COPY FROM STDIN beginning on line 2 has no \\. terminator",
 )

@@ -31,18 +31,18 @@ for version in 17.11 18.6; do
 
   docker exec -u postgres -e PGPASSFILE=/tmp/pv-import-fixture.pass "$container" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U pv_import_fixture -d mapped_target -c 'SELECT current_database();'
   docker exec -u postgres -e PGPASSFILE=/tmp/pv-import-fixture.pass "$container" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U pv_import_fixture -d second_target -c 'SELECT current_database();'
-  if docker exec -u postgres -e PGPASSFILE=/tmp/pv-import-fixture.pass "$container" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U pv_import_fixture -d unrelated_project -c 'SELECT current_database();'; then
-    echo "import role reached unrelated_project on Postgres $version" >&2
-    exit 1
-  fi
-  if docker exec -u postgres "$container" psql -X -v ON_ERROR_STOP=1 -U pv_import_fixture -d unrelated_project -c 'SELECT current_database();'; then
-    echo "import role reached unrelated_project through a local socket on Postgres $version" >&2
-    exit 1
-  fi
-  if docker exec -u postgres -e PGPASSFILE=/tmp/pv-import-fixture.pass "$container" psql -X -v ON_ERROR_STOP=1 -h ::1 -U pv_import_fixture -d unrelated_project -c 'SELECT current_database();'; then
-    echo "import role reached unrelated_project through IPv6 on Postgres $version" >&2
-    exit 1
-  fi
+  for host in 127.0.0.1 /var/run/postgresql ::1; do
+    if result=$(docker exec -u postgres -e LC_ALL=C -e PGPASSWORD=fixture-only "$container" \
+      psql -X -w -v ON_ERROR_STOP=1 -h "$host" -U pv_import_fixture -d unrelated_project \
+      -c 'SELECT current_database();' 2>&1); then
+      echo "import role reached unrelated_project through $host on Postgres $version" >&2
+      exit 1
+    fi
+    case "$result" in
+      *"pg_hba.conf rejects connection"*) ;;
+      *) printf 'Expected an HBA rejection through %s on Postgres %s. Got %s\n' "$host" "$version" "$result" >&2; exit 1 ;;
+    esac
+  done
   if printf '\\connect -reuse-previous=on unrelated_project\nSELECT current_database();\n' |
     docker exec -i -u postgres -e PGPASSFILE=/tmp/pv-import-fixture.pass "$container" psql -X -v ON_ERROR_STOP=1 -h 127.0.0.1 -U pv_import_fixture -d mapped_target; then
     echo "psql reused the import password to reach unrelated_project on Postgres $version" >&2
