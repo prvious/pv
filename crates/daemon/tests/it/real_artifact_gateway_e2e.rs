@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
+use platform::clock::real;
 use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
     php_adapter,
@@ -129,12 +131,15 @@ async fn real_artifact_gateway_e2e_proxies_local_project() -> Result<()> {
             &paths, https_port, hostname,
             &["--no-fail", "--write-out", "\n%{http_code}"],
         )?;
-        assert_eq!(unavailable, format!(
-            "PV could not reach http://127.0.0.1:{upstream_port}. Start your app and check that it listens on this address.\n502"
-        ));
+        ensure!(
+            unavailable == format!(
+                "PV could not reach http://127.0.0.1:{upstream_port}. Start your app and check that it listens on this address.\n502"
+            ),
+            "an offline upstream returned {unavailable:?}"
+        );
 
         state::fs::write_sensitive_file(&project.config_path, "proxy: 0\n")?;
-        assert!(reconcile(&paths, &scope).await.is_err());
+        ensure!(reconcile(&paths, &scope).await.is_err(), "an invalid proxy port was applied");
 
         let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await?;
         let request_paths = paths.clone();
@@ -148,25 +153,37 @@ async fn real_artifact_gateway_e2e_proxies_local_project() -> Result<()> {
                 ],
             )
         });
-        let ((), response) = tokio::try_join!(echo_proxy_request(upstream), async { request.await? })?;
+        let echo = async {
+            real::timeout(Duration::from_secs(30), echo_proxy_request(upstream))
+                .await
+                .context("the Gateway did not forward the request to the upstream")?
+        };
+        let ((), response) = tokio::try_join!(echo, async { request.await? })?;
         let authority = format!("{hostname}:{https_port}");
-        assert_eq!(response, format!("{authority}|{authority}|https|127.0.0.1"));
-        assert!(request_gateway_https_with_curl(&paths, https_port, "x.api.laravel.test", &["--no-fail"]).is_err());
+        ensure!(
+            response == format!("{authority}|{authority}|https|127.0.0.1"),
+            "the upstream received {response:?}"
+        );
+        ensure!(
+            request_gateway_https_with_curl(&paths, https_port, "x.api.laravel.test", &["--no-fail"]).is_err(),
+            "x.api.laravel.test reached the proxy Project"
+        );
+        let database = Database::open(&paths)?;
+        ensure!(database.managed_resource_tracks()?.iter().all(|track| track.resource_name == "caddy"));
+        ensure!(database.assigned_ports()?.iter().all(|port| !matches!(port.owner, PortOwner::PhpWorker { .. })));
+        drop(database);
 
         state::fs::write_sensitive_file(&project.config_path, &format!("serve: false\nproxy: {upstream_port}\n"))?;
         let stopped = reconcile(&paths, &scope).await?;
-        assert!(request_gateway_https_with_curl(&paths, https_port, hostname, &[]).is_err());
-        assert!(!paths.gateway_projects_config_dir().join(format!("{}.Caddyfile", project.id)).exists());
+        let removed = request_gateway_https_with_curl(&paths, https_port, hostname, &["--no-fail"]);
+        ensure!(removed.is_err(), "{hostname} still answered after serving was disabled: {removed:?}");
+        ensure!(!paths.gateway_projects_config_dir().join(format!("{}.Caddyfile", project.id)).exists());
         let targeted_gateway = state::fs::read_to_string(&paths.daemon_log())?
             .lines()
             .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
             .any(|record| record["job_id"] == stopped.id && record["phase"] == "gateway"
                 && record["subject"] == "target_project");
-        assert!(targeted_gateway, "proxy removal should reconcile only the target Project");
-
-        let database = Database::open(&paths)?;
-        ensure!(database.managed_resource_tracks()?.iter().all(|track| track.resource_name == "caddy"));
-        ensure!(database.assigned_ports()?.iter().all(|port| !matches!(port.owner, PortOwner::PhpWorker { .. })));
+        ensure!(targeted_gateway, "proxy removal should reconcile only the target Project");
         Ok(())
     }.await;
     let shutdown = daemon.shutdown().await;
