@@ -1441,6 +1441,11 @@ fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<(
             "pending_cleanups",
             include_str!("../src/sql/016_pending_cleanups.sql"),
         ),
+        Migration::new(
+            19,
+            "project_proxy_port",
+            include_str!("../src/sql/019_project_proxy_port.sql"),
+        ),
     ];
     let mut old_database = state::testing::open_with_migrations(&paths, &migrations[..1])?;
     let project_id = "project_1".to_string();

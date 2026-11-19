@@ -82,7 +82,7 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test(flavor = "multi_thread")]
+#[tokio::test]
 #[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
 #[expect(
     clippy::disallowed_methods,
@@ -137,21 +137,18 @@ async fn real_artifact_gateway_e2e_proxies_local_project() -> Result<()> {
         assert!(reconcile(&paths, &scope).await.is_err());
 
         let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await?;
-        let upstream_task = tokio::spawn(echo_proxy_request(upstream));
-        let response = request_gateway_https_with_curl(
-            &paths, https_port, hostname,
-            &[
-                "--header", "X-Forwarded-Host: bogus.test",
-                "--header", "X-Forwarded-Proto: http",
-                "--header", "X-Forwarded-For: 192.0.2.10",
-            ],
-        );
-        // On request failure, the upstream may never accept a connection.
-        if response.is_err() {
-            upstream_task.abort();
-        }
-        let response = response?;
-        upstream_task.await??;
+        let request_paths = paths.clone();
+        let request = tokio::task::spawn_blocking(move || {
+            request_gateway_https_with_curl(
+                &request_paths, https_port, hostname,
+                &[
+                    "--header", "X-Forwarded-Host: bogus.test",
+                    "--header", "X-Forwarded-Proto: http",
+                    "--header", "X-Forwarded-For: 192.0.2.10",
+                ],
+            )
+        });
+        let ((), response) = tokio::try_join!(echo_proxy_request(upstream), async { request.await? })?;
         let authority = format!("{hostname}:{https_port}");
         assert_eq!(response, format!("{authority}|{authority}|https|127.0.0.1"));
         assert!(request_gateway_https_with_curl(&paths, https_port, "x.api.laravel.test", &["--no-fail"]).is_err());
