@@ -17,7 +17,7 @@ use rcgen::{
 use serde_json::{Value, json};
 use state::fs::write_sensitive_file;
 use state::{
-    Database, EnvContextValues, JobRecord, LinkProjectInput, ProjectEnvObservedStatus,
+    Database, EnvContextValues, JobRecord, LinkProjectInput, PortRequest, ProjectEnvObservedStatus,
     ProjectManagedResourceInput, ProjectMode, ProjectRecord, PvPaths, ResourceAllocationInput,
     StateError,
 };
@@ -26,6 +26,88 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 
 const REQUEST_LINES_TIMEOUT: StdDuration = StdDuration::from_secs(30);
+
+#[tokio::test]
+async fn proxy_project_persists_last_valid_port_and_releases_it_when_disabled() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let port = pv_fake::port()?;
+    let valid_config = format!("proxy: {port}\nenv:\n  APP_URL: \"${{url}}\"\n");
+    let project = link_project(
+        &paths,
+        &tempdir.path().join("app"),
+        "api.laravel.test",
+        &valid_config,
+    )?;
+    run_project_reconciliation(&paths, &project).await?;
+    let applied = || -> Result<ProjectRecord> {
+        Database::open(&paths)?
+            .project_by_id(&project.id)?
+            .context("missing linked Project")
+    };
+    assert_eq!(applied()?.proxy_port, Some(port));
+    assert_eq!(applied()?.php_runtime.track, None);
+    assert_eq!(
+        read_optional_dotenv(&project)?.as_deref(),
+        Some("# >>> PV MANAGED\nAPP_URL=https://api.laravel.test\n# <<< PV MANAGED\n")
+    );
+
+    write_project_config(&project, "proxy: 0\n")?;
+    run_project_reconciliation(&paths, &project).await?;
+    assert_eq!(applied()?.proxy_port, Some(port));
+    assert_eq!(
+        Database::open(&paths)?
+            .project_env_observed_state(&project.id)?
+            .context("missing env status")?
+            .status,
+        ProjectEnvObservedStatus::Failed
+    );
+
+    let sibling = link_project(
+        &paths,
+        &tempdir.path().join("sibling"),
+        "sibling.test",
+        &valid_config,
+    )?;
+    run_project_reconciliation(&paths, &sibling).await?;
+    assert!(matches!(
+        Database::open(&paths)?.validate_project_proxy_port(&sibling.id, port),
+        Err(StateError::ProjectProxyPortCollision { port: used, .. }) if used == port
+    ));
+    assert_eq!(
+        Database::open(&paths)?
+            .project_by_id(&sibling.id)?
+            .context("missing sibling Project")?
+            .proxy_port,
+        None
+    );
+
+    write_project_config(&project, &format!("serve: false\n{valid_config}"))?;
+    run_project_reconciliation(&paths, &project).await?;
+    assert_eq!(applied()?.mode, ProjectMode::ResourceOnly);
+    assert_eq!(applied()?.proxy_port, None);
+    run_project_reconciliation(&paths, &sibling).await?;
+    assert_eq!(
+        Database::open(&paths)?
+            .project_by_id(&sibling.id)?
+            .context("missing sibling Project")?
+            .proxy_port,
+        Some(port)
+    );
+
+    let mut database = Database::open(&paths)?;
+    let request = PortRequest::php_worker("8.4", port, port, port);
+    assert!(matches!(
+        database.assign_port(request, |_| true),
+        Err(StateError::NoAvailablePort { .. })
+    ));
+    assert!(matches!(
+        database.validate_project_proxy_port(&sibling.id, 80),
+        Err(StateError::ProjectProxyPortReserved { port: 80, .. })
+    ));
+
+    Ok(())
+}
 
 #[tokio::test]
 async fn resource_only_project_uses_custom_env_file_and_no_php_worker() -> Result<()> {

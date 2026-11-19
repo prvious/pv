@@ -38,6 +38,7 @@ expression: "(before, after)"
                 id: "project_1",
                 slug: "project_1",
                 mode: Served,
+                proxy_port: None,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
                 primary_hostname: Some(
@@ -84,6 +85,7 @@ expression: "(before, after)"
                 id: "project_1",
                 slug: "project_1",
                 mode: Served,
+                proxy_port: None,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
                 primary_hostname: Some(
@@ -110,6 +112,7 @@ expression: "(before, after)"
                 id: "project_1",
                 slug: "project_1",
                 mode: Served,
+                proxy_port: None,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
                 primary_hostname: Some(

@@ -10,6 +10,8 @@ const DEFAULT_ENV_FILE: &str = ".env";
 pub struct ProjectConfig {
     #[serde(skip_serializing_if = "is_true")]
     pub serve: bool,
+    #[serde(rename = "proxy", skip_serializing_if = "Option::is_none")]
+    pub proxy_port: Option<u16>,
     #[serde(
         skip_serializing_if = "is_default_env_file",
         serialize_with = "serialize_path"
@@ -34,6 +36,7 @@ impl Default for ProjectConfig {
     fn default() -> Self {
         Self {
             serve: true,
+            proxy_port: None,
             env_file: default_env_file(),
             php: None,
             root: None,
@@ -129,6 +132,14 @@ pub struct AllocationConfig {
 }
 
 impl ProjectConfig {
+    pub fn active_proxy_port(&self) -> Option<u16> {
+        self.proxy_port.filter(|_| self.serve)
+    }
+
+    pub fn serves_php(&self) -> bool {
+        self.serve && self.proxy_port.is_none()
+    }
+
     pub fn has_env_mappings(&self) -> bool {
         !self.env.is_empty()
             || self.resources.values().any(|resource| {

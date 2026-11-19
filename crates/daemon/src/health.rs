@@ -369,6 +369,7 @@ fn collect_runtime_health_probes(
     let held_project_ids = database.held_project_ids()?;
     for project in database.projects()? {
         if project.mode == ProjectMode::Served
+            && project.proxy_port.is_none()
             && !held_project_ids.contains(&project.id)
             && let Some(track) = &project.php_runtime.track
         {

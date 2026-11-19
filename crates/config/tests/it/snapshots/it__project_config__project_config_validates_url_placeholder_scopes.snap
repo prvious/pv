@@ -8,6 +8,7 @@ expression: cases
         Ok(
             ProjectConfig {
                 serve: true,
+                proxy_port: None,
                 env_file: ".env",
                 php: None,
                 root: None,
@@ -27,6 +28,7 @@ expression: cases
         Ok(
             ProjectConfig {
                 serve: true,
+                proxy_port: None,
                 env_file: ".env",
                 php: None,
                 root: None,
@@ -57,6 +59,7 @@ expression: cases
         Ok(
             ProjectConfig {
                 serve: true,
+                proxy_port: None,
                 env_file: ".env",
                 php: None,
                 root: None,
@@ -84,6 +87,7 @@ expression: cases
         Ok(
             ProjectConfig {
                 serve: true,
+                proxy_port: None,
                 env_file: ".env",
                 php: None,
                 root: None,
@@ -118,6 +122,7 @@ expression: cases
         Ok(
             ProjectConfig {
                 serve: true,
+                proxy_port: None,
                 env_file: ".env",
                 php: None,
                 root: None,
@@ -149,6 +154,7 @@ expression: cases
         Ok(
             ProjectConfig {
                 serve: true,
+                proxy_port: None,
                 env_file: ".env",
                 php: None,
                 root: None,

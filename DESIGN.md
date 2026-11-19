@@ -446,11 +446,11 @@ Gateway access logs are enabled by default, stored locally under `~/.pv/logs/`, 
 
 When routing or Gateway config changes, PV loads the Gateway config through the Caddy admin API contract above. A matching owned Gateway is kept running on load rejection or API unavailability; only an absent or obsolete process may be replaced.
 
-PV owns one local CA and passes that CA to the standalone Caddy Gateway configuration. Caddy generates and manages Project certificates from that CA as needed for hostnames in PV's desired routing table: each served Project's primary hostname and its one-label wildcard, such as `acme.test` and `*.acme.test`. The Gateway selects certificates by SNI.
+PV owns one local CA and passes that CA to the standalone Caddy Gateway configuration. Caddy generates and manages Project certificates from that CA as needed for hostnames in PV's desired routing table: each served Project's primary hostname, plus a one-label wildcard for PHP-served Projects, such as `acme.test` and `*.acme.test`. The Gateway selects certificates by SNI.
 
 While a Project is resource-only, PV retains any existing stable Project TLS files but does not refresh them or include the Project in Gateway TLS demand. Re-enabling serving resumes normal TLS reconciliation after hostname and document-root validation succeeds.
 
-The Gateway routes each served Project's primary hostname and every one-label subdomain of it to that Project: `acme.test` also answers `tenant.acme.test`, but not `v1.tenant.acme.test`. PHP-serving workers accept the same Host values after the Gateway proxies them. A Project linked with its own exact hostname, such as `api.acme.test`, wins over the parent's wildcard regardless of generated config order, and it gets its own one-label wildcard in turn. Deeper names reach a Project only through such an explicitly linked intermediate Project. PV relies on Caddy for both rules: site blocks with a wildcard sort after exact site blocks, and `*` matches exactly one label.
+The Gateway routes each PHP-served Project's primary hostname and every one-label subdomain of it to that Project. For example, `acme.test` also answers `tenant.acme.test`. PHP workers accept the same Host values after the Gateway proxies them. An exact hostname such as `api.acme.test` wins over the parent's wildcard regardless of generated config order. Proxy Projects receive only their exact primary hostname. Caddy orders exact site blocks before wildcard site blocks, and `*` matches exactly one label.
 
 A resource-only Project has no Gateway route, so while a sub-Project such as `api.acme.test` is resource-only, the parent's wildcard answers its hostname.
 
@@ -1161,9 +1161,13 @@ Projects may opt in to Project-specific Managed Resource requirements and enviro
 
 An empty Project config is valid and means no Project-specific overrides. PV uses defaults and does not touch `.env`.
 
-Project config accepts the top-level keys `serve`, `env_file`, `php`, `root`, `env`, `hooks`, and registered backing Managed Resource names. `hooks` declares prepare and setup command lists; see Project Hooks.
+Project config accepts the top-level keys `serve`, `proxy`, `env_file`, `php`, `root`, `env`, `hooks`, and registered backing Managed Resource names. See Project Hooks for the prepare and setup command lists.
 
 Project config accepts a root-level `serve` boolean. It defaults to `true`. With `serve: false`, the Project remains linked and PV still reconciles its declared Managed Resources, Resource allocations, and environment mappings, but PV does not create a Gateway route, TLS demand, or PHP worker for the Project. PV does not start framework or application development servers on the Project's behalf.
+
+`proxy: 3000` selects a Gateway route to a user-owned HTTP server on `127.0.0.1:3000`. The field accepts an integer from 1 through 65535. A served proxy Project cannot also declare `php` or `root`. With `serve: false`, the proxy port is validated but dormant, and other settings follow the resource-only rules. A served proxy Project requests no PHP or FrankenPHP tracks or worker ports. It keeps the same Project identity, resource allocations, and environment rendering as other served Projects, including the primary HTTPS `${url}` and TLS placeholders.
+
+The Gateway terminates TLS with PV's local CA, preserves the incoming Host, and sets `X-Forwarded-Host`, `X-Forwarded-Proto`, and `X-Forwarded-For`. PV creates the route even if the app has yet to start. When Caddy cannot reach the upstream and generates a 502, the response names the expected address. The developer starts and stops the server with their usual tools. PV tracks the last successfully reconciled proxy port so an invalid config keeps using that port. An active proxy port must be distinct from other Projects' proxy ports, the Gateway listeners on 80 and 443, and PV-managed port assignments. PV's port allocator skips active proxy ports. Disabling serving releases the claim after reconciliation. A missing Project directory keeps its hostname reservation and loses its proxy route on reconciliation until the directory returns.
 
 Serving-only config remains valid but dormant while `serve: false`. This includes `root`, the primary Project hostname, root env entries that use `${url}`, and env entries at any scope that use `${tls.cert}`, `${tls.key}`, or `${tls.ca}`. PV preserves those values in user-owned config, ignores them for runtime planning, and omits env entries that depend on serving-only placeholders. If serving is enabled again, PV validates and applies those values normally and restores the omitted env entries. Resource and allocation `${url}` values remain active while serving is disabled.
 
@@ -1419,7 +1423,7 @@ PV allows linking any directory. It is Laravel-first in defaults and UX, but `pv
 
 PV allows nested linked Projects. Current-directory resolution uses the nearest linked Project ancestor, and hostname uniqueness prevents routing ambiguity.
 
-By default, PV serves the Project's `public/` directory when it exists, otherwise it serves the Project root.
+For a PHP-served Project, PV serves the Project's `public/` directory when it exists, otherwise it serves the Project root.
 
 When the selected document root contains `index.php`, PV uses front-controller-friendly PHP routing so clean URLs route through `index.php`. This is framework-friendly rather than Laravel-specific. PV v1 does not support Laravel Octane.
 

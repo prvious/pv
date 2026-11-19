@@ -2,9 +2,9 @@ use anyhow::Result;
 use camino::Utf8PathBuf;
 use daemon::DaemonError;
 use daemon::gateway_config::{
-    GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
-    render_gateway_config, render_gateway_project_config, render_php_worker_config,
-    render_php_worker_project_config,
+    GatewayConfigInput, GatewayProjectRoute, GatewayUpstream, PhpWorkerConfigInput,
+    PhpWorkerProject, render_gateway_config, render_gateway_project_config,
+    render_php_worker_config, render_php_worker_project_config,
 };
 use insta::assert_snapshot;
 
@@ -121,7 +121,7 @@ fn gateway_project_config_renderer_outputs_project_caddyfile() -> Result<()> {
         id: "project_acme".to_owned(),
         render_config: true,
         primary_hostname: "acme.test".to_owned(),
-        worker_port: 45001,
+        upstream: GatewayUpstream::Php(45001),
         access_log_path: Utf8PathBuf::from("/Users/alice/.pv/logs/gateway/access.log"),
     };
 

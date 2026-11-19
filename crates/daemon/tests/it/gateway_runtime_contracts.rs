@@ -16,9 +16,9 @@ use daemon::gateway::{
     gateway_readiness_check, worker_process_spec,
 };
 use daemon::gateway_config::{
-    GatewayConfigInput, GatewayProjectRoute, PhpWorkerConfigInput, PhpWorkerProject,
-    render_gateway_config, render_gateway_project_config, render_php_worker_config,
-    render_php_worker_project_config,
+    GatewayConfigInput, GatewayProjectRoute, GatewayUpstream, PhpWorkerConfigInput,
+    PhpWorkerProject, render_gateway_config, render_gateway_project_config,
+    render_php_worker_config, render_php_worker_project_config,
 };
 use daemon::{
     CaddyAdminClient, CaddyAdminEndpoint, ProcessSupervisor, ReadinessCheck, wait_for_readiness,
@@ -154,7 +154,7 @@ async fn gateway_contract(paths: &PvPaths, executable: &Utf8Path) -> Result<()> 
                 id: "contract".to_owned(),
                 render_config: true,
                 primary_hostname: "contract.test".to_owned(),
-                worker_port,
+                upstream: GatewayUpstream::Php(worker_port),
                 access_log_path: paths.gateway_access_log(),
             })?,
         )?;

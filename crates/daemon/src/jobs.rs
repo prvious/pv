@@ -6546,6 +6546,7 @@ mod tests {
             desired_php_track: None,
         })?;
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            proxy_port: None,
             setup_hook_log: None,
             project_id: linked.project.id.clone(),
             link: LinkProjectInput {
@@ -6629,6 +6630,7 @@ mod tests {
             Some("fixture mailpit readiness diagnostic"),
         )?;
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            proxy_port: None,
             setup_hook_log: None,
             project_id: linked.project.id.clone(),
             link: LinkProjectInput {

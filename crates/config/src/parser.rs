@@ -56,6 +56,15 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
             "serve" => {
                 config.serve = bool_scalar("serve", &value)?;
             }
+            "proxy" => {
+                config.proxy_port = Some(
+                    value
+                        .as_u64()
+                        .and_then(|port| u16::try_from(port).ok())
+                        .filter(|port| *port != 0)
+                        .ok_or(ConfigError::InvalidProxyPort)?,
+                );
+            }
             "env_file" => {
                 let env_file = non_empty_string("env_file", &value)?;
                 config.env_file = validate_env_file(Utf8PathBuf::from(env_file))?;
@@ -90,6 +99,15 @@ fn parse_project_mapping(mapping: Mapping) -> Result<ProjectConfig, ConfigError>
                     });
                 }
             }
+        }
+    }
+
+    if config.active_proxy_port().is_some() {
+        if config.php.is_some() {
+            return Err(ConfigError::ConflictingProxySetting { field: "php" });
+        }
+        if config.root.is_some() {
+            return Err(ConfigError::ConflictingProxySetting { field: "root" });
         }
     }
 

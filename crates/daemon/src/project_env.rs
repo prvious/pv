@@ -126,7 +126,7 @@ pub(crate) struct ProjectPhpTrackDemand {
     php_configured: bool,
     version_selector: Option<String>,
     global_version_selector: Option<String>,
-    serves_http: bool,
+    serves_php: bool,
     track: String,
 }
 
@@ -134,7 +134,7 @@ impl ProjectPhpTrackDemand {
     fn matches(
         &self,
         php: Option<&config::PhpConfig>,
-        serves_http: bool,
+        serves_php: bool,
         global_version_selector: Option<&str>,
     ) -> bool {
         let discovered_selector = self
@@ -148,7 +148,7 @@ impl ProjectPhpTrackDemand {
             .unwrap_or("latest");
         self.php_configured == php.is_some()
             && discovered_selector == current_selector
-            && (self.php_configured || self.serves_http == serves_http)
+            && (self.php_configured || self.serves_php == serves_php)
     }
 }
 
@@ -366,14 +366,14 @@ pub(crate) fn discover_project_demand(
             global_version_selector.as_deref(),
             &candidate_project,
             config_file.config.php.as_ref(),
-            candidate_project.mode == ProjectMode::Served,
+            config_file.config.serves_php(),
             None,
         )?;
 
         Ok::<_, DaemonError>(project_demand_from_plan(
             &plan,
             &config_file.config,
-            candidate_project.mode == ProjectMode::Served,
+            config_file.config.serves_php(),
             php_track,
             global_version_selector,
         ))
@@ -396,7 +396,7 @@ pub(crate) fn discover_project_demand(
 fn project_demand_from_plan(
     plan: &ProjectResourcePlan,
     config: &ProjectConfig,
-    serves_http: bool,
+    serves_php: bool,
     php_track: Option<String>,
     global_version_selector: Option<String>,
 ) -> ProjectDemand {
@@ -438,7 +438,7 @@ fn project_demand_from_plan(
                 .and_then(config::PhpConfig::version_selector)
                 .map(str::to_owned),
             global_version_selector,
-            serves_http,
+            serves_php,
             track,
         }),
         // Only successful system Demand Discovery promises the pair, and it sets this itself.
@@ -505,7 +505,7 @@ async fn reconcile_loaded_project(
             global_version_selector.as_deref(),
             &candidate_project,
             config_file.config.php.as_ref(),
-            serves_http,
+            config_file.config.serves_php(),
             discovered_demand.and_then(|demand| demand.php_track.as_ref()),
         )?;
 
@@ -781,15 +781,15 @@ fn maybe_resolve_project_php_track(
     global_version_selector: Option<&str>,
     project: &ProjectRecord,
     php: Option<&config::PhpConfig>,
-    serves_http: bool,
+    serves_php: bool,
     discovered_php_track: Option<&ProjectPhpTrackDemand>,
 ) -> Result<Option<String>, DaemonError> {
-    if !serves_http && php.is_none() {
+    if !serves_php && php.is_none() {
         return Ok(None);
     }
 
     if let Some(discovered_php_track) = discovered_php_track
-        && discovered_php_track.matches(php, serves_http, global_version_selector)
+        && discovered_php_track.matches(php, serves_php, global_version_selector)
     {
         // Keep `latest` stable when the resource pass refreshes the manifest between phases.
         return Ok(Some(discovered_php_track.track.clone()));
@@ -830,6 +830,9 @@ pub(crate) fn project_resource_demands_match_recorded(
     let Ok(config_file) = ProjectConfigFile::read_from_root(&project.path) else {
         return false;
     };
+    if config_file.config.active_proxy_port() != project.proxy_port {
+        return false;
+    }
     if recorded.len() != config_file.config.resources.len() {
         return false;
     }
@@ -871,7 +874,7 @@ pub(crate) fn project_php_identity_matches_applied(
         global_version_selector.as_deref(),
         project,
         config_file.config.php.as_ref(),
-        project.mode == ProjectMode::Served,
+        config_file.config.serves_php(),
         None,
     ) else {
         return false;
@@ -1058,6 +1061,9 @@ fn validate_project_config_and_plan(
     if project.mode == ProjectMode::Served && config_file.config.serve {
         database
             .validate_project_primary_hostname(&project.id, served_project_hostname(project)?)?;
+        if let Some(port) = config_file.config.active_proxy_port() {
+            database.validate_project_proxy_port(&project.id, port)?;
+        }
     }
     config::validate_project_env_shape(&config_file.config)?;
 
@@ -1114,6 +1120,7 @@ fn finalize_project_reconciliation_state(
                 desired_php_track: None,
             },
             mode,
+            proxy_port: config_file.config.active_proxy_port(),
             php_runtime,
             env_status: rendered.status(),
             env_message: Some(rendered.message.to_string()),
@@ -1437,7 +1444,11 @@ fn validate_persisted_project_env_dependencies(
                     })
                     .collect::<Vec<_>>();
     }
-    if candidate_project.mode != project.mode || !resources_match || !allocations_match {
+    if candidate_project.mode != project.mode
+        || config_file.config.active_proxy_port() != project.proxy_port
+        || !resources_match
+        || !allocations_match
+    {
         return Err(DaemonError::ProjectEnvDependenciesNotApplied {
             project_id: project.id.clone(),
             reason: "serving mode, resource tracks, or allocation identities differ from their last applied state".to_owned(),
@@ -1449,7 +1460,7 @@ fn validate_persisted_project_env_dependencies(
         global_version_selector.as_deref(),
         project,
         config_file.config.php.as_ref(),
-        project.mode == ProjectMode::Served,
+        config_file.config.serves_php(),
         None,
     )?;
     let php_matches = match php_track {

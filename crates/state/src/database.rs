@@ -372,6 +372,7 @@ pub struct ProjectRecord {
     pub id: String,
     pub slug: String,
     pub mode: ProjectMode,
+    pub proxy_port: Option<u16>,
     pub path: Utf8PathBuf,
     pub original_path: Utf8PathBuf,
     pub primary_hostname: Option<String>,
@@ -405,6 +406,7 @@ pub struct ProjectReconciliationStateInput {
     pub project_id: String,
     pub link: LinkProjectInput,
     pub mode: ProjectMode,
+    pub proxy_port: Option<u16>,
     pub php_runtime: Option<ProjectPhpRuntimeInput>,
     pub env_status: ProjectEnvObservedStatus,
     pub env_message: Option<String>,
@@ -669,6 +671,7 @@ struct ProjectRow {
     id: String,
     project_slug: Option<String>,
     serves_http: i64,
+    proxy_port: Option<u16>,
     path: String,
     original_path: Option<String>,
     primary_hostname: String,
@@ -1535,6 +1538,14 @@ impl Database {
         validate_project_hostname_owner(&self.connection, project_id, primary_hostname)
     }
 
+    pub fn validate_project_proxy_port(
+        &self,
+        project_id: &str,
+        port: u16,
+    ) -> Result<(), StateError> {
+        validate_project_proxy_port_owner(&self.connection, project_id, port)
+    }
+
     pub fn replace_project_desired_php_track(
         &mut self,
         project_id: &str,
@@ -1570,6 +1581,14 @@ impl Database {
         &mut self,
         mut input: ProjectReconciliationStateInput,
     ) -> Result<(ProjectRecord, Option<String>), StateError> {
+        let proxy_port = input
+            .proxy_port
+            .filter(|_| input.mode == ProjectMode::Served);
+        if proxy_port.is_some() && input.php_runtime.is_some() {
+            return Err(StateError::ProjectProxyRuntimeConflict {
+                project_id: input.project_id,
+            });
+        }
         input.link.desired_php_track = input
             .php_runtime
             .as_ref()
@@ -1608,6 +1627,13 @@ impl Database {
             )?;
         }
         replace_project_php_runtime_in_connection(&transaction, &project.id, &runtime)?;
+        if let Some(port) = proxy_port {
+            validate_project_proxy_port_owner(&transaction, &project.id, port)?;
+        }
+        transaction.execute(
+            "UPDATE projects SET proxy_port = ?1 WHERE id = ?2",
+            params![proxy_port, project.id],
+        )?;
         record_project_env_observed_snapshot_in_transaction(
             &transaction,
             &project.id,
@@ -1669,7 +1695,7 @@ impl Database {
 
     pub fn project_by_id(&self, project_id: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http, proxy_port
             FROM projects
             WHERE id = ?1",
         )?;
@@ -1683,7 +1709,7 @@ impl Database {
 
     pub fn project_by_path(&self, path: &Utf8Path) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http, proxy_port
             FROM projects
             WHERE path = ?1",
         )?;
@@ -1697,7 +1723,7 @@ impl Database {
 
     pub fn project_by_hostname(&self, hostname: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at, projects.project_slug, projects.serves_http
+            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at, projects.project_slug, projects.serves_http, projects.proxy_port
             FROM projects
             INNER JOIN project_hostnames ON project_hostnames.project_id = projects.id
             WHERE project_hostnames.hostname = ?1",
@@ -1712,7 +1738,7 @@ impl Database {
 
     pub fn project_by_slug(&self, slug: &str) -> Result<Option<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http, proxy_port
             FROM projects
             WHERE project_slug = ?1",
         )?;
@@ -1737,7 +1763,7 @@ impl Database {
 
     pub fn projects(&self) -> Result<Vec<ProjectRecord>, StateError> {
         let mut statement = self.connection.prepare(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http, proxy_port
             FROM projects
             ORDER BY project_slug",
         )?;
@@ -1859,7 +1885,7 @@ impl Database {
         validate_managed_resource_identity("name", resource_name)?;
         validate_concrete_track(track)?;
         let mut statement = self.connection.prepare(
-            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at, projects.project_slug, projects.serves_http
+            "SELECT projects.id, projects.path, projects.original_path, projects.primary_hostname, projects.config_path, projects.desired_php_track, projects.created_at, projects.updated_at, projects.project_slug, projects.serves_http, projects.proxy_port
             FROM projects
             INNER JOIN project_managed_resources
                 ON project_managed_resources.project_id = projects.id
@@ -1883,6 +1909,7 @@ impl Database {
             "SELECT id, desired_php_track, desired_php_loaded_extensions_json
             FROM projects
             WHERE serves_http = 1
+            AND proxy_port IS NULL
             AND desired_php_track IS NOT NULL
             AND NOT (source_project_id IS NOT NULL AND first_reconciled_at IS NULL)",
         )?;
@@ -3596,6 +3623,7 @@ impl ProjectRow {
             id: self.id,
             slug,
             mode,
+            proxy_port: self.proxy_port.filter(|_| mode == ProjectMode::Served),
             path,
             original_path,
             primary_hostname,
@@ -3629,7 +3657,7 @@ fn project_by_path_in_transaction(
 ) -> Result<Option<ProjectRecord>, StateError> {
     let row = transaction
         .query_row(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http, proxy_port
             FROM projects
             WHERE path = ?1",
             params![path.as_str()],
@@ -3649,7 +3677,7 @@ fn project_by_id_in_transaction(
 ) -> Result<Option<ProjectRecord>, StateError> {
     let row = transaction
         .query_row(
-            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http
+            "SELECT id, path, original_path, primary_hostname, config_path, desired_php_track, created_at, updated_at, project_slug, serves_http, proxy_port
             FROM projects
             WHERE id = ?1",
             params![project_id],
@@ -4398,6 +4426,42 @@ fn insert_project_primary_hostname_in_transaction(
     Ok(())
 }
 
+fn validate_project_proxy_port_owner(
+    connection: &Connection,
+    project_id: &str,
+    port: u16,
+) -> Result<(), StateError> {
+    if matches!(port, 80 | 443) {
+        return Err(StateError::ProjectProxyPortReserved {
+            port,
+            owner: "the Gateway".to_owned(),
+        });
+    }
+    let managed_owner = connection
+        .query_row(
+            "SELECT owner_id FROM ports WHERE port = ?1
+            UNION ALL
+            SELECT resource_name FROM resource_ports WHERE port = ?1",
+            [port],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(owner) = managed_owner {
+        return Err(StateError::ProjectProxyPortReserved { port, owner });
+    }
+    let owner = connection
+        .query_row(
+            "SELECT primary_hostname FROM projects WHERE proxy_port = ?1 AND id != ?2",
+            params![port, project_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if let Some(hostname) = owner {
+        return Err(StateError::ProjectProxyPortCollision { port, hostname });
+    }
+    Ok(())
+}
+
 fn validate_project_hostname_owner(
     connection: &Connection,
     project_id: &str,
@@ -4745,7 +4809,9 @@ fn assigned_port_numbers_in_transaction(
     let mut statement = transaction.prepare(
         "SELECT port FROM ports
         UNION
-        SELECT port FROM resource_ports",
+        SELECT port FROM resource_ports
+        UNION
+        SELECT proxy_port FROM projects WHERE proxy_port IS NOT NULL",
     )?;
     let rows = statement.query_map([], |row| row.get::<_, u16>(0))?;
     let mut assigned_ports = BTreeSet::new();
@@ -4914,6 +4980,7 @@ fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ProjectRow> {
         updated_at: row.get(7)?,
         project_slug: row.get(8)?,
         serves_http: row.get(9)?,
+        proxy_port: row.get(10)?,
     })
 }
 

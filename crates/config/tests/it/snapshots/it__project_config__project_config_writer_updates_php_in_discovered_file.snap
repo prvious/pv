@@ -9,6 +9,7 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
     true,
     ProjectConfig {
         serve: false,
+        proxy_port: None,
         env_file: ".env.local",
         php: Some(
             PhpConfig {
@@ -60,6 +61,7 @@ expression: "(updated.path.file_name(), updated.exists, updated.config, reloaded
     },
     ProjectConfig {
         serve: false,
+        proxy_port: None,
         env_file: ".env.local",
         php: Some(
             PhpConfig {

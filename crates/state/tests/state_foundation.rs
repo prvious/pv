@@ -39,6 +39,7 @@ fn first_discovered_apply_and_setup_admission_commit_atomically() -> Result<()> 
         ProjectMode::ResourceOnly,
     ))?;
     let input = ProjectReconciliationStateInput {
+        proxy_port: None,
         setup_hook_log: Some(paths.project_hook_log(&project.id)),
         project_id: project.id.clone(),
         link: state::LinkProjectInput {
@@ -104,6 +105,7 @@ fn first_discovered_apply_and_setup_admission_commit_atomically() -> Result<()> 
     // The same flag on an ordinary Project never admits daemon setup.
     let (_source, ordinary) =
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            proxy_port: None,
             setup_hook_log: Some(paths.project_hook_log(&source.id)),
             project_id: source.id.clone(),
             link: state::LinkProjectInput {
@@ -2431,6 +2433,7 @@ fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Res
     for _ in 0..2 {
         let (_project, setup_job) =
             database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+                proxy_port: None,
                 setup_hook_log: None,
                 project_id: worktree.id.clone(),
                 link: link.clone(),
@@ -2962,6 +2965,7 @@ fn project_reconciliation_finalization_rolls_back_gateway_state_on_failure() -> 
     })?;
 
     let result = database.finalize_project_reconciliation(state::ProjectReconciliationStateInput {
+        proxy_port: None,
         setup_hook_log: None,
         project_id: project.id.clone(),
         link: state::LinkProjectInput {

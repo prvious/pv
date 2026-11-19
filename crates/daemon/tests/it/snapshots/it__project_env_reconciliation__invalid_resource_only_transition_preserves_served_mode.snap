@@ -52,6 +52,7 @@ expression: snapshot
         id: "<project_id>",
         slug: "project",
         mode: Served,
+        proxy_port: None,
         path: "<tempdir>/project",
         original_path: "<tempdir>/project",
         primary_hostname: Some(
