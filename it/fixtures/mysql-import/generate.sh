@@ -30,9 +30,6 @@ for version in 8.0.46 8.4.9 9.7.0; do
     --default-character-set=utf8mb4 --batch < "$fixture_dir/source.sql"
   dump admin > "$output_dir/plain.sql"
   dump --databases admin analytics 'Mixed-Name' > "$output_dir/databases.sql"
-  dump --add-drop-database --databases admin analytics 'Mixed-Name' > "$output_dir/drop-databases.sql"
-  dump --no-create-db --databases admin analytics 'Mixed-Name' > "$output_dir/no-create.sql"
-  dump --all-databases --no-data > "$output_dir/all.sql"
 
   docker rm -f "$container" >/dev/null
   trap - EXIT INT TERM
