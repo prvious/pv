@@ -3,6 +3,7 @@ use std::io::{self, Read, Seek, SeekFrom};
 use std::ops::Range;
 
 use squonk::dialect::{BuiltinDialect, tokenize_with_builtin};
+use squonk::tokenizer::Token;
 use thiserror::Error;
 
 use crate::insert::large_insert_references;
@@ -59,6 +60,10 @@ pub enum PreflightError {
     TargetCollision { database: String },
     #[error("user SQL references system database {database}")]
     SystemDatabaseReference { database: String },
+    #[error(
+        "statement at byte {offset} references user database {database} inside a skipped system section"
+    )]
+    MixedSystemSection { offset: u64, database: String },
     #[error("source identifier at byte {offset} has no verified span")]
     InvalidSpan { offset: u64 },
     #[error("unsupported SQL at byte {offset}: {message}")]
@@ -114,24 +119,28 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
         };
         let length = range.end - range.start;
         if length > MAX_STATEMENT_BYTES {
-            if active_database.as_deref().is_some_and(is_system_database) {
-                plan.edits.push(Edit::Skip(range));
-                return Ok(());
-            }
-            let active = active_database
-                .as_deref()
-                .ok_or(PreflightError::MissingDatabase {
-                    offset: range.start,
-                })?;
-            target_for(active, targets)?;
-            plan.used_source_databases.insert(active.to_owned());
             let (prefix, references) =
                 large_insert_references(inspect_source, range.clone(), &delimiter)
                     .map_err(|error| unsupported(range.start, error))?;
+            if active_database.as_deref().is_some_and(is_system_database) {
+                if let Some(reference) = references
+                    .databases
+                    .iter()
+                    .find(|reference| !is_system_database(&reference.name))
+                {
+                    return Err(PreflightError::MixedSystemSection {
+                        offset: range.start,
+                        database: reference.name.clone(),
+                    });
+                }
+                plan.edits.push(Edit::Skip(range));
+                return Ok(());
+            }
             let patches = reference_patches(
                 &prefix,
                 range.start,
                 references,
+                active_database.as_deref(),
                 targets,
                 &mut plan.used_source_databases,
                 Some,
@@ -157,14 +166,12 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
                 message: error.to_string(),
             }
         })?;
-        let words: Vec<_> = tokens
-            .iter()
-            .take(3)
-            .filter_map(|token| source.get(token.span.start() as usize..token.span.end() as usize))
-            .collect();
+        let text =
+            |token: &Token| source.get(token.span.start() as usize..token.span.end() as usize);
         let word = |index: usize, expected: &str| {
-            words
+            tokens
                 .get(index)
+                .and_then(text)
                 .is_some_and(|word| word.eq_ignore_ascii_case(expected))
         };
         let is_routing = word(0, "USE")
@@ -186,22 +193,41 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
             } else {
                 let target = target_for(&routing.name, targets)?;
                 plan.used_source_databases.insert(routing.name.clone());
-                plan.edits.push(Edit::Patch(name_patch(
-                    source,
-                    range.start,
-                    routing.span,
-                    target,
-                )?));
+                if routing.action == RoutingAction::Create {
+                    // PV creates the mapped databases with provider defaults before replay.
+                    plan.edits.push(Edit::Skip(range));
+                } else {
+                    plan.edits.push(Edit::Patch(name_patch(
+                        source,
+                        range.start,
+                        routing.span,
+                        target,
+                    )?));
+                }
             }
             return Ok(());
         }
         if active_database.as_deref().is_some_and(is_system_database) {
+            for pair in tokens.windows(2) {
+                let identifier_span = pair[0].span.start() as usize..pair[0].span.end() as usize;
+                if text(&pair[1]) == Some(".")
+                    && let Some(database) = targets.keys().find(|database| {
+                        verified_identifier(source, identifier_span.clone(), database)
+                    })
+                {
+                    return Err(PreflightError::MixedSystemSection {
+                        offset: range.start,
+                        database: database.clone(),
+                    });
+                }
+            }
             plan.edits.push(Edit::Skip(range));
             return Ok(());
         }
-        if let Some(routine) = routine_reference(source, &delimiter)
-            .map_err(|error| unsupported(range.start, error))?
-            && skips.observe(&routine, active_database.as_deref())?
+        let routine = routine_reference(source, &delimiter)
+            .map_err(|error| unsupported(range.start, error))?;
+        if let Some(routine) = &routine
+            && skips.observe(routine, active_database.as_deref())?
         {
             plan.edits.push(Edit::Skip(range));
             return Ok(());
@@ -218,20 +244,20 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
             plan.edits.push(Edit::Skip(range));
             return Ok(());
         }
-        let active = active_database
-            .as_deref()
-            .ok_or(PreflightError::MissingDatabase {
-                offset: range.start,
-            })?;
-        target_for(active, targets)?;
-        plan.used_source_databases.insert(active.to_owned());
-        let mut patches = if let Some(routine) = routine_reference(source, &delimiter)
-            .map_err(|error| unsupported(range.start, error))?
+        let active = active_database.as_deref();
+        let mut patches = if let Some(routine) = routine
             && routine.action == RoutineAction::Create
         {
             let analysis = analyze_stored_routine(source, &delimiter)
                 .map_err(|error| unsupported(range.start, error))?;
-            let routine_database = routine.database.as_deref().unwrap_or(active);
+            let routine_database =
+                routine
+                    .database
+                    .as_deref()
+                    .or(active)
+                    .ok_or(PreflightError::MissingDatabase {
+                        offset: range.start,
+                    })?;
             let truncates = validate_stored_routine_effects_for_targets(
                 &analysis.sql,
                 Some(routine_database),
@@ -240,7 +266,7 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
             .map_err(|error| unsupported(range.start, error))?;
             if truncates {
                 plan.truncating_routines.push(RoutineName {
-                    database: routine.database.unwrap_or_else(|| active.to_owned()),
+                    database: routine_database.to_owned(),
                     name: routine.name,
                 });
             }
@@ -250,6 +276,7 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
                 source,
                 range.start,
                 references,
+                active,
                 targets,
                 &mut plan.used_source_databases,
                 |span| analysis.source_span(span),
@@ -266,6 +293,7 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
                     databases,
                     definers: Vec::new(),
                 },
+                active,
                 targets,
                 &mut plan.used_source_databases,
                 Some,
@@ -285,6 +313,7 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
                 source,
                 range.start,
                 references,
+                active,
                 targets,
                 &mut plan.used_source_databases,
                 Some,
@@ -310,6 +339,7 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
                 source,
                 range.start,
                 references,
+                active,
                 targets,
                 &mut plan.used_source_databases,
                 Some,
@@ -326,14 +356,38 @@ pub fn preflight_dump<R: Read, S: Read + Seek>(
     Ok(plan)
 }
 
+fn require_source(
+    active: Option<&str>,
+    has_qualifier: bool,
+    offset: u64,
+    targets: &BTreeMap<String, String>,
+    used_databases: &mut BTreeSet<String>,
+) -> Result<(), PreflightError> {
+    if let Some(active) = active {
+        target_for(active, targets)?;
+        used_databases.insert(active.to_owned());
+    } else if !has_qualifier {
+        return Err(PreflightError::MissingDatabase { offset });
+    }
+    Ok(())
+}
+
 fn reference_patches(
     source: &str,
     offset: u64,
     references: StatementReferences,
+    active: Option<&str>,
     targets: &BTreeMap<String, String>,
     used_databases: &mut BTreeSet<String>,
     source_span: impl Fn(Range<usize>) -> Option<Range<usize>>,
 ) -> Result<Vec<Edit>, PreflightError> {
+    require_source(
+        active,
+        !references.databases.is_empty(),
+        offset,
+        targets,
+        used_databases,
+    )?;
     let mut edits = Vec::new();
     for reference in references.databases {
         if is_system_database(&reference.name) {
@@ -376,7 +430,7 @@ fn name_patch(
         .get(span.clone())
         .ok_or(PreflightError::InvalidSpan { offset })?;
     let replacement = if expected.starts_with('`') {
-        format!("`{}`", target.replace('`', "``"))
+        format!("`{target}`")
     } else {
         target.to_owned()
     };
@@ -399,7 +453,7 @@ fn target_for<'a>(
         })
 }
 
-fn is_system_database(name: &str) -> bool {
+pub fn is_system_database(name: &str) -> bool {
     ["mysql", "sys", "performance_schema", "information_schema"]
         .iter()
         .any(|system| name.eq_ignore_ascii_case(system))

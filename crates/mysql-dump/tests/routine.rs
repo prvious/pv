@@ -211,7 +211,7 @@ fn requested_dynamic_routine_omits_drop_and_create_frames() -> Result<(), Box<dy
 
 #[test]
 fn routine_skips_match_decoded_source_names_exactly() -> Result<(), Box<dyn std::error::Error>> {
-    let statement = "DROP FUNCTION IF EXISTS `f`;";
+    let statement = "CREATE FUNCTION `f`() RETURNS INT RETURN 1;";
     let reference = routine_reference(statement, b";")?.ok_or("missing function")?;
     for (database, name, expected) in [
         ("admin", "f", true),
@@ -243,7 +243,9 @@ fn absent_and_duplicate_skip_requests_fail() -> Result<(), Box<dyn std::error::E
         database: "admin".to_owned(),
         name: "missing".to_owned(),
     };
-    let skips = RoutineSkips::new([name.clone()])?;
+    let mut skips = RoutineSkips::new([name.clone()])?;
+    let drop_only = routine_reference("DROP FUNCTION missing;", b";")?.ok_or("missing DROP")?;
+    assert!(skips.observe(&drop_only, Some("admin"))?);
     assert!(matches!(
         skips.finish(),
         Err(RoutineSkipError::Absent { .. })
@@ -295,6 +297,9 @@ fn unqualified_skips_follow_use_and_plain_dump_header() -> Result<(), Box<dyn st
         source.get(skipped[0].start as usize..skipped[0].end as usize),
         Some("-- Host: localhost    Database: admin\nDROP PROCEDURE IF EXISTS `p`;")
     );
-    assert_eq!(skips.finish()?.len(), 1);
+    assert!(matches!(
+        skips.finish(),
+        Err(RoutineSkipError::Absent { .. })
+    ));
     Ok(())
 }

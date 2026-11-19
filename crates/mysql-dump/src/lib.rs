@@ -25,7 +25,7 @@ pub use policy::{
     validate_stored_object_effects, validate_stored_routine_effects,
     validate_stored_routine_effects_for_targets,
 };
-pub use preflight::{ImportPlan, PreflightError, preflight_dump};
+pub use preflight::{ImportPlan, PreflightError, is_system_database, preflight_dump};
 pub use reader::{Frame, ReaderError, scan, scan_with};
 pub use reference::{
     DatabaseReference, ReferenceError, StatementReferences, database_references,

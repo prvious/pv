@@ -8,7 +8,7 @@ use squonk::ast::{
     SetVariableAssignment, Statement, SystemVariableScope, SystemVariableScopeKind,
     TableOptionValue,
 };
-use squonk::dialect::MySql;
+use squonk::dialect::{BuiltinDialect, MySql, tokenize_with_builtin};
 use thiserror::Error;
 
 use crate::table::{safe_table_engine, safe_table_option_name};
@@ -23,6 +23,8 @@ pub enum StoredRoutinePolicyError {
     UnsafeStatement { kind: &'static str },
     #[error("stored routine calls a server-side file function")]
     ServerFileFunction,
+    #[error("stored object writes query output to a server-side file")]
+    ServerFileOutput,
     #[error("stored routine TRUNCATE table is not in a mapped target database")]
     UnmappedTruncate,
 }
@@ -133,6 +135,20 @@ fn validate_effects(
         Statement::CreateProcedure { .. } if !stored_object => {}
         Statement::CreateStoredTrigger { .. } | Statement::CreateEvent { .. } if stored_object => {}
         _ => return Err(StoredRoutinePolicyError::UnsupportedSyntax),
+    }
+    let tokens = tokenize_with_builtin(analysis, BuiltinDialect::MySql)
+        .map_err(|_| StoredRoutinePolicyError::UnsupportedSyntax)?;
+    if tokens.windows(2).any(|pair| {
+        let text = |index: usize| {
+            let span = pair[index].span;
+            analysis.get(span.start() as usize..span.end() as usize)
+        };
+        text(0).is_some_and(|word| word.eq_ignore_ascii_case("INTO"))
+            && text(1).is_some_and(|word| {
+                word.eq_ignore_ascii_case("OUTFILE") || word.eq_ignore_ascii_case("DUMPFILE")
+            })
+    }) {
+        return Err(StoredRoutinePolicyError::ServerFileOutput);
     }
     let mut visitor = PolicyVisitor {
         resolver: parsed.resolver(),
@@ -278,13 +294,7 @@ impl<'ast> Visit<'ast> for PolicyVisitor<'_> {
     }
 
     fn visit_expr(&mut self, expression: &'ast Expr) {
-        if let Expr::Function { call, .. } = expression
-            && let Some(name) = call.name.0.last()
-            && self
-                .resolver
-                .try_resolve(name.sym)
-                .is_some_and(|name| name.eq_ignore_ascii_case("LOAD_FILE"))
-        {
+        if calls_load_file(expression, self.resolver) {
             self.error = Some(StoredRoutinePolicyError::ServerFileFunction);
             return;
         }

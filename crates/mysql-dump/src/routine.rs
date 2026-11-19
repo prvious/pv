@@ -93,7 +93,9 @@ impl RoutineSkips {
             name: reference.name.clone(),
         };
         if self.requested.contains(&name) {
-            self.seen.insert(name);
+            if reference.action == RoutineAction::Create {
+                self.seen.insert(name);
+            }
             Ok(true)
         } else {
             Ok(false)

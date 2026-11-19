@@ -204,9 +204,13 @@ impl<R: Read> ValueReader<R> {
         ]
         .iter()
         .any(|candidate| word.eq_ignore_ascii_case(candidate))
-            && let Some(quote @ (b'\'' | b'"')) = self.next()?
         {
-            return self.quoted(quote);
+            if word.starts_with(b"_") {
+                self.whitespace()?;
+            }
+            if let Some(quote @ (b'\'' | b'"')) = self.next()? {
+                return self.quoted(quote);
+            }
         }
         Err(InsertError::Unsupported)
     }

@@ -35,13 +35,18 @@ fn routing_names_have_verified_source_spans() -> Result<(), Box<dyn std::error::
 
 #[test]
 fn generated_create_database_options_are_routing_only() -> Result<(), Box<dyn std::error::Error>> {
-    let source = "CREATE DATABASE /*!32312 IF NOT EXISTS*/ `admin` /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;";
-    let Some(reference) = routing_reference(source)? else {
-        return Err("expected database marker".into());
-    };
-    assert_eq!(reference.action, RoutingAction::Create);
-    assert_eq!(reference.name, "admin");
-    assert_eq!(&source[reference.span], "`admin`");
+    for name in ["admin", "report/*!40100 name*/"] {
+        let quoted = format!("`{name}`");
+        let source = format!(
+            "CREATE DATABASE /*!32312 IF NOT EXISTS*/ {quoted} /*!40100 DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci */ /*!80016 DEFAULT ENCRYPTION='N' */;"
+        );
+        let Some(reference) = routing_reference(&source)? else {
+            return Err("expected database marker".into());
+        };
+        assert_eq!(reference.action, RoutingAction::Create);
+        assert_eq!(reference.name, name);
+        assert_eq!(&source[reference.span], quoted);
+    }
 
     let source = "CREATE DATABASE `admin` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci DEFAULT ENCRYPTION='N';";
     assert!(matches!(

@@ -2,7 +2,8 @@ use std::ops::Range;
 
 use squonk::ast::Resolver;
 use squonk::ast::{Ident, ObjectName, Statement};
-use squonk::dialect::MySql;
+use squonk::dialect::{BuiltinDialect, MySql, tokenize_with_builtin};
+use squonk::tokenizer::TokenKind;
 use thiserror::Error;
 
 use crate::reference::verified_identifier;
@@ -90,11 +91,23 @@ pub fn routing_reference(source: &str) -> Result<Option<RoutingReference>, Routi
 fn generated_create_database_reference(
     source: &str,
 ) -> Result<Option<RoutingReference>, RoutingError> {
+    let tokens = tokenize_with_builtin(source, BuiltinDialect::MySql).map_err(|error| {
+        RoutingError::UnsupportedSyntax {
+            message: error.to_string(),
+        }
+    })?;
     let mut normalized = source.as_bytes().to_vec();
     let mut cursor = 0;
     let mut found = false;
     while let Some(relative_start) = source[cursor..].find("/*!") {
         let start = cursor + relative_start;
+        if let Some(token) = tokens.iter().find(|token| {
+            matches!(token.kind, TokenKind::QuotedIdent | TokenKind::String)
+                && (token.span.start() as usize..token.span.end() as usize).contains(&start)
+        }) {
+            cursor = token.span.end() as usize;
+            continue;
+        }
         let Some(relative_end) = source[start + 3..].find("*/") else {
             return Err(RoutingError::UnsupportedSyntax {
                 message: "unterminated versioned comment in CREATE DATABASE".to_owned(),

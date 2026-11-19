@@ -153,8 +153,7 @@ fn each_server_scoped_statement_fails_before_rewrite() {
 }
 
 #[test]
-fn drop_database_is_removed_without_dropping_its_target() -> Result<(), Box<dyn std::error::Error>>
-{
+fn database_creation_and_drop_are_owned_by_pv() -> Result<(), Box<dyn std::error::Error>> {
     let source =
         b"CREATE DATABASE admin;\nUSE admin;\nCREATE TABLE users (id INT);\nDROP DATABASE admin;\n";
     let targets = BTreeMap::from([("admin".to_owned(), "project_admin".to_owned())]);
@@ -169,6 +168,7 @@ fn drop_database_is_removed_without_dropping_its_target() -> Result<(), Box<dyn 
     write_transformed(Cursor::new(source), &mut output, plan.edits)?;
     let output = String::from_utf8(output)?;
     assert!(output.contains("CREATE TABLE users"));
+    assert!(!output.contains("CREATE DATABASE"));
     assert!(!output.contains("DROP DATABASE"));
     Ok(())
 }
@@ -195,7 +195,7 @@ fn large_literal_insert_streams_and_rejects_expressions() -> Result<(), Box<dyn 
 {
     let targets = BTreeMap::from([("admin".to_owned(), "project_admin".to_owned())]);
     let source = format!(
-        "INSERT INTO `admin`.`events` VALUES (1, '{}'),(2, NULL);",
+        "INSERT INTO `admin`.`events` VALUES (1, _binary '{}'),(2, NULL);",
         "a".repeat(9 * 1024 * 1024)
     );
     let plan = preflight_dump(
@@ -223,4 +223,34 @@ fn large_literal_insert_streams_and_rejects_expressions() -> Result<(), Box<dyn 
         Err(PreflightError::Unsupported { .. })
     ));
     Ok(())
+}
+
+#[test]
+fn qualified_headerless_dump_uses_multiple_mappings() -> Result<(), Box<dyn std::error::Error>> {
+    let source = b"CREATE TABLE admin.users (id INT); INSERT INTO analytics.events VALUES (5);";
+    let targets = BTreeMap::from([
+        ("admin".to_owned(), "project_admin".to_owned()),
+        ("analytics".to_owned(), "project_analytics".to_owned()),
+    ]);
+    let plan = preflight_dump(
+        Cursor::new(source),
+        &mut Cursor::new(source),
+        &targets,
+        None,
+        [],
+    )?;
+    let mut output = Vec::new();
+    write_transformed(Cursor::new(source), &mut output, plan.edits)?;
+    assert_eq!(output, b"CREATE TABLE project_admin.users (id INT); INSERT INTO project_analytics.events VALUES (5);");
+    Ok(())
+}
+
+#[test]
+fn system_section_with_mapped_user_statement_fails_preflight() {
+    let source = b"USE mysql; CREATE TABLE `admin`.`users` (id INT);";
+    let targets = BTreeMap::from([("admin".to_owned(), "project_admin".to_owned())]);
+    assert!(matches!(
+        preflight_dump(Cursor::new(source), &mut Cursor::new(source), &targets, None, []),
+        Err(PreflightError::MixedSystemSection { database, .. }) if database == "admin"
+    ));
 }

@@ -1205,7 +1205,7 @@ For SQL Resource allocations, PV only ensures the database exists and is reachab
 
 An explicit, confirmed `pv mysql:import` command may import user-supplied SQL dumps into a linked Project's declared MySQL track. It preflights and transforms the complete dump before starting the `mysql` client. Ordinary reconciliation still neither inspects nor changes application schemas or data.
 
-MySQL import accepts multi-database dumps. A source database matching a declared allocation uses that allocation's persisted `generated_name`. An undeclared user database is created with the normal Project-namespaced allocation naming rule, while `pv.yml` and `pv.db` remain unchanged; the plan warns that it is unmanaged and shows the allocation snippet for later adoption. Known system-schema sections are skipped explicitly, and server-scoped statements outside those sections fail preflight.
+MySQL import accepts multi-database dumps. A source database matching a declared allocation uses that allocation's persisted `generated_name`. An undeclared user database is created with the normal Project-namespaced allocation naming rule, while `pv.yml` and `pv.db` remain unchanged; the plan warns that it is unmanaged and shows the allocation snippet for later adoption. Known system-schema sections are skipped explicitly. Imports fail preflight if a skipped section references a mapped user database or if a user section contains server-scoped statements. PV creates target databases with provider defaults and skips source database creation and deletion statements.
 
 MySQL import matches source database names exactly as written. A source name that is not a valid PV allocation name requires an explicit `--map`. For a plain dump without database-routing SQL, PV may use the `mysqldump` database header; a headerless dump requires an explicit target mapping. Import accepts connection-scoped setup used by `mysqldump` and phpMyAdmin, such as `SET NAMES` and `FOREIGN_KEY_CHECKS`, but preflight rejects global settings, server-side file access, replication, account changes, dynamic SQL, and unknown syntax.
 
@@ -2047,6 +2047,7 @@ Run pv as a background LaunchAgent that starts on login. This daemon is responsi
 | pv mysql:uninstall <version> [--prune] [--force] | Uninstalls a MySQL track. `--force` bypasses active-use guards and prune confirmation. |
 | pv mysql:update              | Update all installed MySQL tracks                                               |
 | pv mysql:list [--json]       | List installed MySQL tracks                                                     |
+| pv mysql:import <path> [--project <name>] [--map <source=allocation>] [--skip-routine <database.routine>] [--yes] [--force] | Preview and import an uncompressed MySQL dump into a linked Project. |
 
 ## Mailpit (Alias: mail)
 

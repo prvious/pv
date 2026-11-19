@@ -169,6 +169,7 @@ where
     }
     match scanner.state {
         State::Dash | State::Slash => {
+            scanner.has_code = true;
             scanner.push_tail(
                 if scanner.state == State::Dash {
                     b'-'
@@ -180,6 +181,7 @@ where
             scanner.state = State::Normal;
         }
         State::DoubleDash => {
+            scanner.has_code = true;
             scanner.push_tail(b'-', offset - 2)?;
             scanner.push_tail(b'-', offset - 1)?;
             scanner.state = State::Normal;

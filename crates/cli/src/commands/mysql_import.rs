@@ -1,15 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::process::{ExitCode, Stdio};
+use std::time::Duration;
 
 use camino::{Utf8Path, Utf8PathBuf};
 use config::ProjectConfigFile;
 use mysql_dump::{
-    RoutineName, discover_source_databases, preflight_dump, routine_reference,
+    RoutineName, discover_source_databases, is_system_database, preflight_dump, routine_reference,
     source_database_header, write_transformed,
 };
-use sqlx::AssertSqlSafe;
-use sqlx::mysql::{MySqlConnectOptions, MySqlPool};
+use platform::clock::{self, Limit};
+use resources::TrackSelector;
+use sqlx::mysql::{MySqlConnectOptions, MySqlConnection};
+use sqlx::{AssertSqlSafe, Connection};
 use state::{Database, JobsLock, PortOwner};
 use tokio::sync::watch;
 
@@ -20,6 +23,8 @@ use crate::output::Streams;
 use crate::prompt;
 
 use super::{project, pv_paths};
+
+const MYSQL_CONNECT_LIMIT: Limit = Limit::new("MySQL import connection", Duration::from_secs(30));
 
 struct Target {
     physical: String,
@@ -47,6 +52,14 @@ pub(crate) fn run(
         .into_iter()
         .find(|resource| resource.resource_name == "mysql")
         .ok_or_else(|| fail("Project MySQL track has not reconciled yet"))?;
+    if let Some(selector) = &mysql_config.track
+        && let TrackSelector::Track(configured_track) = TrackSelector::parse(selector)?
+        && configured_track.as_str() != requirement.track
+    {
+        return Err(fail(
+            "Project MySQL track has changed; reconcile the Project before importing",
+        ));
+    }
     let track = database.managed_resource_track("mysql", &requirement.track)?;
     let artifact = track
         .current_artifact_path
@@ -84,7 +97,15 @@ pub(crate) fn run(
             _ => None,
         })
         .ok_or_else(|| fail("MySQL track has no assigned port"))?;
+    if !streams.interactive && !args.yes {
+        return Err(fail(
+            "confirmation requires a terminal; pass --yes to accept the plan",
+        ));
+    }
     let input = absolute_input_path(&args.path, environment)?;
+    if !state::fs::path_is_file(&input)? {
+        return Err(fail("dump must be a regular file"));
+    }
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
@@ -121,14 +142,21 @@ pub(crate) fn run(
     state::fs::ensure_user_dir(paths.run())?;
     let temporary = camino_tempfile::tempdir_in(paths.run())?;
     let snapshot = temporary.path().join("source.sql");
-    state::fs::copy_file_atomically(&input, &snapshot)?;
-    state::fs::secure_sensitive_file(&snapshot)?;
+    {
+        let mut snapshot_file = state::fs::create_new_file(&snapshot)?;
+        state::fs::secure_sensitive_file(&snapshot)?;
+        let mut source = BufReader::new(open_for_preflight(&input, &cancel)?);
+        if source.fill_buf()?.starts_with(b"\xef\xbb\xbf") {
+            source.consume(3);
+        }
+        io::copy(&mut source, &mut snapshot_file)?;
+    }
     check_cancelled(&cancel)?;
 
-    let header = source_database_header(open_required(&snapshot)?).map_err(fail)?;
+    let header = source_database_header(open_for_preflight(&snapshot, &cancel)?).map_err(fail)?;
     let mut sources = discover_source_databases(
-        open_required(&snapshot)?,
-        &mut open_required(&snapshot)?,
+        open_for_preflight(&snapshot, &cancel)?,
+        &mut open_for_preflight(&snapshot, &cancel)?,
     )
     .map_err(fail)?;
     if let Some(header) = &header {
@@ -143,13 +171,10 @@ pub(crate) fn run(
     } else {
         None
     };
-    if sources.is_empty() {
-        let Some(source) = initial.as_ref() else {
-            return Err(fail(
-                "dump has no database routing or header; pass --map source=allocation",
-            ));
-        };
-        sources.insert(source.clone());
+    if sources.is_empty() && mappings.is_empty() {
+        return Err(fail(
+            "dump has no database routing or header; pass --map source=allocation",
+        ));
     }
     sources.extend(mappings.keys().cloned());
     let declared = database.resource_allocations(&project.id, "mysql")?;
@@ -176,6 +201,16 @@ pub(crate) fn run(
                 .generated_name()
                 .to_owned()
         };
+        if !managed
+            && declared.iter().any(|record| {
+                record.track == requirement.track
+                    && record.generated_name.eq_ignore_ascii_case(&physical)
+            })
+        {
+            return Err(fail(format!(
+                "target {physical} is a Project allocation; use --map to select a declared allocation"
+            )));
+        }
         targets.insert(
             source.clone(),
             Target {
@@ -192,8 +227,8 @@ pub(crate) fn run(
         .collect();
     let skip_routines = parse_routine_skips(&args.skip_routines)?;
     let plan = preflight_dump(
-        open_required(&snapshot)?,
-        &mut open_required(&snapshot)?,
+        open_for_preflight(&snapshot, &cancel)?,
+        &mut open_for_preflight(&snapshot, &cancel)?,
         &physical,
         initial.as_deref(),
         skip_routines,
@@ -217,7 +252,7 @@ pub(crate) fn run(
     let mut transformed_file = state::fs::create_new_file(&transformed)?;
     state::fs::secure_sensitive_file(&transformed)?;
     write_transformed(
-        open_required(&snapshot)?,
+        open_for_preflight(&snapshot, &cancel)?,
         &mut transformed_file,
         plan.edits,
     )
@@ -237,14 +272,18 @@ pub(crate) fn run(
         "MySQL import plan for {} (MySQL {})",
         project.slug, requirement.track
     ))?;
-    streams.out.line("Source database  Target database  PV state after import")?;
+    streams
+        .out
+        .line("Source database  Target database  PV state after import")?;
     for (source, target) in &used_targets {
         let state = if target.managed {
             "managed allocation"
         } else {
             "unmanaged database"
         };
-        streams.out.line(&format!("{source}  {}  {state}", target.physical))?;
+        streams
+            .out
+            .line(&format!("{source}  {}  {state}", target.physical))?;
     }
     if !plan.skipped_system_databases.is_empty() {
         streams.out.line(&format!(
@@ -310,8 +349,7 @@ pub(crate) fn run(
     let default_database = initial
         .as_ref()
         .filter(|name| plan.used_source_databases.contains(*name))
-        .and_then(|name| targets.get(name))
-        .or_else(|| (used_targets.len() == 1).then(|| used_targets[0].1));
+        .and_then(|name| targets.get(name));
     let mut option_contents = format!(
         "[client]\nuser={username}\npassword={password}\nhost=127.0.0.1\nport={port}\nprotocol=tcp\n"
     );
@@ -335,11 +373,6 @@ pub(crate) fn run(
     match result {
         Ok(()) => {
             streams.out.line("MySQL import completed.")?;
-            for (source, target) in &used_targets {
-                if !target.managed {
-                    streams.out.line(&format!("Unmanaged database: {source} → {}. Add mysql.allocations.{} to pv.yml to adopt it.", target.physical, target.allocation))?;
-                }
-            }
             Ok(ExitCode::SUCCESS)
         }
         Err(error) => {
@@ -440,10 +473,36 @@ fn reject_other_project_targets(
     Ok(())
 }
 
-fn is_system_database(name: &str) -> bool {
-    ["mysql", "sys", "performance_schema", "information_schema"]
-        .iter()
-        .any(|system| name.eq_ignore_ascii_case(system))
+// The private snapshot makes each pass stable. Check cancellation as it streams,
+// including inside a statement too large for the in-memory parser.
+fn open_for_preflight<'a>(
+    path: &Utf8Path,
+    cancel: &'a watch::Receiver<bool>,
+) -> Result<impl Read + Seek + use<'a>, ExecuteError> {
+    Ok(CancellableReader {
+        reader: open_required(path)?,
+        cancel,
+    })
+}
+
+struct CancellableReader<'a, R> {
+    reader: R,
+    cancel: &'a watch::Receiver<bool>,
+}
+
+impl<R: Read> Read for CancellableReader<'_, R> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if *self.cancel.borrow() {
+            return Err(io::Error::other("import cancelled; no SQL was run"));
+        }
+        self.reader.read(buffer)
+    }
+}
+
+impl<R: Seek> Seek for CancellableReader<'_, R> {
+    fn seek(&mut self, position: SeekFrom) -> io::Result<u64> {
+        self.reader.seek(position)
+    }
 }
 
 #[expect(
@@ -456,13 +515,18 @@ fn open_required(path: &Utf8Path) -> Result<std::fs::File, ExecuteError> {
     })
 }
 
+async fn connect(options: &MySqlConnectOptions) -> Result<MySqlConnection, ExecuteError> {
+    clock::timeout(&MYSQL_CONNECT_LIMIT, MySqlConnection::connect_with(options))
+        .await
+        .map_err(|error| fail(format!("connecting to the MySQL track: {error}")))?
+        .map_err(|error| fail(format!("connecting to the MySQL track: {error}")))
+}
+
 async fn check_nonempty_targets(
     options: &MySqlConnectOptions,
     targets: &[(String, &Target)],
 ) -> Result<Vec<String>, ExecuteError> {
-    let pool = MySqlPool::connect_with(options.clone())
-        .await
-        .map_err(|error| fail(format!("connecting to the MySQL track: {error}")))?;
+    let mut connection = connect(options).await?;
     let mut nonempty = Vec::new();
     for (_, target) in targets {
         let count: i64 = sqlx::query_scalar(
@@ -471,7 +535,7 @@ async fn check_nonempty_targets(
         .bind(&target.physical)
         .bind(&target.physical)
         .bind(&target.physical)
-        .fetch_one(&pool)
+        .fetch_one(&mut connection)
         .await
         .map_err(|error| {
             fail(format!(
@@ -483,7 +547,6 @@ async fn check_nonempty_targets(
             nonempty.push(target.physical.clone());
         }
     }
-    pool.close().await;
     Ok(nonempty)
 }
 
@@ -503,9 +566,7 @@ async fn execute_import(
     if *cancel.borrow() {
         return Err(fail("import cancelled"));
     }
-    let pool = MySqlPool::connect_with(options.clone())
-        .await
-        .map_err(|error| fail(format!("connecting to the MySQL track: {error}")))?;
+    let mut connection = connect(options).await?;
     for target in targets {
         if *cancel.borrow() {
             return Err(fail("import cancelled"));
@@ -523,20 +584,23 @@ async fn execute_import(
         sqlx::query(AssertSqlSafe(format!(
             "CREATE DATABASE IF NOT EXISTS `{target}`"
         )))
-        .execute(&pool)
+        .execute(&mut connection)
         .await
         .map_err(|error| fail(format!("creating target database {target}: {error}")))?;
     }
-    pool.close().await;
     if *cancel.borrow() {
         return Err(fail("import cancelled"));
     }
+    drop(connection);
     let stderr_path = temporary.join("client.stderr");
     let stderr = state::fs::create_new_file(&stderr_path)?;
     state::fs::secure_sensitive_file(&stderr_path)?;
     let mut child = tokio::process::Command::new(client.as_std_path())
         .arg(format!("--defaults-file={option_file}"))
+        .arg("--no-login-paths")
         .arg("--binary-mode")
+        .arg("--skip-reconnect")
+        .arg("--local-infile=0")
         .stdin(Stdio::from(open_required(transformed)?))
         .stdout(Stdio::null())
         .stderr(Stdio::from(stderr))
@@ -547,17 +611,8 @@ async fn execute_import(
         status = child.wait() => status?,
         changed = cancel.changed() => {
             changed.map_err(|error| fail(format!("cancellation handler failed: {error}")))?;
-            if let Some(status) = child.try_wait()? {
-                status
-            } else {
-            child.start_kill()?;
-                let status = child.wait().await?;
-                if status.success() {
-                    status
-                } else {
-                    return Err(fail("import cancelled"));
-                }
-            }
+            child.kill().await?;
+            return Err(fail("import cancelled"));
         }
     };
     if !status.success() {
@@ -581,22 +636,26 @@ fn mysql_error_summary(stderr: &[u8]) -> String {
         return String::new();
     };
     let words = prefix.split_whitespace().collect::<Vec<_>>();
-    if words.len() == 6
-        && words[0] == "ERROR"
-        && words[1].bytes().all(|byte| byte.is_ascii_digit())
-        && words[2].starts_with('(')
-        && words[2].ends_with(')')
-        && words[2][1..words[2].len() - 1]
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric())
-        && words[3] == "at"
-        && words[4] == "line"
-        && words[5].bytes().all(|byte| byte.is_ascii_digit())
+    let (code, state) = match words.as_slice() {
+        ["ERROR", code, state] => (*code, *state),
+        ["ERROR", code, state, "at", "line", line] if ascii_number(line) => (*code, *state),
+        _ => return String::new(),
+    };
+    if ascii_number(code)
+        && state
+            .strip_prefix('(')
+            .and_then(|value| value.strip_suffix(')'))
+            .is_some_and(|value| {
+                value.len() == 5 && value.bytes().all(|byte| byte.is_ascii_alphanumeric())
+            })
     {
-        format!(": {prefix}")
-    } else {
-        String::new()
+        return format!(": {prefix}");
     }
+    String::new()
+}
+
+fn ascii_number(value: &str) -> bool {
+    !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn fail(error: impl std::fmt::Display) -> ExecuteError {
@@ -616,6 +675,10 @@ mod tests {
         assert_eq!(
             mysql_error_summary(stderr),
             ": ERROR 1062 (23000) at line 42"
+        );
+        assert_eq!(
+            mysql_error_summary(b"ERROR 2003 (HY000): Connection refused"),
+            ": ERROR 2003 (HY000)"
         );
     }
 }
