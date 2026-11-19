@@ -17,6 +17,7 @@ expression: "(before, after)"
                 "009:project_mode_and_slug",
                 "013:retired_resource_allocations",
                 "016:pending_cleanups",
+                "019:project_proxy_port",
             ],
             tables: [
                 "jobs",
