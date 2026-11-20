@@ -8935,6 +8935,10 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn queued_foreground_reconciliation_streams_only_after_its_turn() -> anyhow::Result<()> {
+        /// Admitting the job and writing each line can take hundreds of milliseconds on a busy
+        /// runner; only a hang reaches this.
+        const LINE_TIMEOUT: Duration = Duration::from_secs(10);
+        let clock = platform::clock::install_fake_for_test();
         let gateway_listeners = test_gateway_listeners()?;
         let tempdir = tempdir()?;
         let paths = PvPaths::for_home(tempdir.path().join("home"));
@@ -8957,23 +8961,34 @@ mod tests {
             .await
         });
         let mut reader = protocol::transport(client);
-        let accepted = real::timeout(Duration::from_millis(100), reader.next())
+        let accepted = real::timeout(LINE_TIMEOUT, reader.next())
             .await?
             .ok_or_else(|| anyhow::anyhow!("missing accepted response"))??;
         let accepted = serde_json::from_str::<serde_json::Value>(&accepted)?;
 
         assert_eq!(accepted["type"], "response");
         assert_eq!(accepted["status"], "accepted");
-        assert!(
-            real::timeout(Duration::from_millis(20), reader.next())
-                .await
-                .is_err()
+        // The job waits for the slot the first job holds, so its next line is the queued
+        // heartbeat, not its start.
+        clock
+            .advance_when_waiting(&FOREGROUND_JOB_HEARTBEAT_INTERVAL)
+            .await?;
+        let heartbeat = real::timeout(LINE_TIMEOUT, reader.next())
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("missing queued heartbeat"))??;
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&heartbeat)?,
+            json!({
+                "type": "log",
+                "job_id": accepted["job_id"],
+                "message": "Waiting for the reconciliation slot",
+            })
         );
 
         running.finish();
         let mut events = Vec::new();
         loop {
-            let line = real::timeout(Duration::from_millis(500), reader.next())
+            let line = real::timeout(LINE_TIMEOUT, reader.next())
                 .await?
                 .ok_or_else(|| anyhow::anyhow!("job stream ended before completion"))??;
             let event = serde_json::from_str::<serde_json::Value>(&line)?;

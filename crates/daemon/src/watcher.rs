@@ -117,9 +117,16 @@ impl ProjectConfigWatcher {
         debouncer: ReconciliationDebouncer,
     ) -> Result<(), DaemonError> {
         while let Some(message) = messages.recv().await {
+            // One save is a dozen events. Checking them in one trip keeps their requests inside
+            // one debounce window on a busy machine, where each trip to a blocking thread costs
+            // milliseconds.
+            let mut batch = vec![message];
+            while let Ok(message) = messages.try_recv() {
+                batch.push(message);
+            }
             let watcher = self.clone();
             // Checking a config reads its modified time, which can block on a slow disk.
-            let scopes = tokio::task::spawn_blocking(move || watcher.scopes(message)).await?;
+            let scopes = tokio::task::spawn_blocking(move || watcher.scopes(batch)).await?;
             for scope in scopes {
                 debouncer.request(scope).await;
             }
@@ -217,17 +224,31 @@ impl ProjectConfigWatcher {
         let _result = state.messages.send(WatchMessage::Restarted);
     }
 
-    fn scopes(&self, message: WatchMessage) -> BTreeSet<ReconciliationScope> {
+    fn scopes(
+        &self,
+        messages: impl IntoIterator<Item = WatchMessage>,
+    ) -> BTreeSet<ReconciliationScope> {
         let mut state = lock_watch_state(&self.state);
-        match message {
-            WatchMessage::Event(Ok(event)) if !event.need_rescan() => state.event_scopes(&event),
-            WatchMessage::Event(Err(error)) => {
-                structured_log::file_watch_failed(&self.paths, "file events", &error.to_string());
-                state.changes()
-            }
-            // Events may have been missed, so everything watched is checked.
-            WatchMessage::Event(Ok(_)) | WatchMessage::Restarted => state.changes(),
+        let mut scopes = BTreeSet::new();
+        for message in messages {
+            scopes.extend(match message {
+                WatchMessage::Event(Ok(event)) if !event.need_rescan() => {
+                    state.event_scopes(&event)
+                }
+                WatchMessage::Event(Err(error)) => {
+                    structured_log::file_watch_failed(
+                        &self.paths,
+                        "file events",
+                        &error.to_string(),
+                    );
+                    state.changes()
+                }
+                // Events may have been missed, so everything watched is checked.
+                WatchMessage::Event(Ok(_)) | WatchMessage::Restarted => state.changes(),
+            });
         }
+
+        scopes
     }
 }
 
@@ -402,8 +423,8 @@ mod tests {
     use anyhow::{Result, anyhow};
     use camino::{Utf8Path, Utf8PathBuf};
     use camino_tempfile::{Utf8TempDir, tempdir};
-    use notify::Event;
     use notify::event::{AccessKind, EventKind, Flag};
+    use notify::{Event, RecursiveMode, Watcher};
     use platform::clock::real;
     use state::{Database, LinkProjectInput, PvPaths};
     use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
@@ -464,6 +485,7 @@ mod tests {
         /// the check after startup has run without requesting anything, so a test's change can
         /// only reach the watcher as an event.
         async fn run(&self) -> Result<RunningWatcher> {
+            self.wait_for_file_events_before_now().await?;
             let (watcher, messages) = self.watch()?;
             let (sender, scopes) = unbounded_channel();
             let debouncer = ReconciliationDebouncer::new(Duration::from_millis(50), move |scope| {
@@ -482,6 +504,40 @@ mod tests {
 
             Ok(running)
         }
+
+        /// Returns once FSEvents has numbered every change made so far, so a watcher started
+        /// afterwards never receives the setup's own writes as events.
+        ///
+        /// A new stream receives the events numbered after it starts, and on a busy machine
+        /// FSEvents numbers a write some milliseconds after it happens. It numbers writes in
+        /// order, so once a marker written now reaches a separate stream, every earlier write has
+        /// a lower number.
+        async fn wait_for_file_events_before_now(&self) -> Result<()> {
+            let (sender, mut events) = unbounded_channel();
+            let mut marker_watcher = notify::recommended_watcher(move |event| {
+                let _result = sender.send(event);
+            })?;
+            marker_watcher.watch(self.root.as_std_path(), RecursiveMode::NonRecursive)?;
+            let marker = self.root.join("file-events-marker");
+            write(&marker, "")?;
+
+            real::timeout(EVENT_TIMEOUT, async {
+                while let Some(event) = events.recv().await {
+                    let event = event?;
+                    if event.paths.iter().any(|path| path == marker.as_std_path()) {
+                        return Ok(());
+                    }
+                    // Under load FSEvents can fold events into one rescan of the directory, which
+                    // may replace the marker's own event.
+                    if event.need_rescan() {
+                        write(&marker, "")?;
+                    }
+                }
+
+                Err(anyhow!("marker watcher stopped"))
+            })
+            .await?
+        }
     }
 
     struct RunningWatcher {
@@ -497,11 +553,19 @@ mod tests {
                 .ok_or_else(|| anyhow!("watcher scope recorder closed"))
         }
 
-        /// The scopes requested, waiting up to [`EVENT_TIMEOUT`] for the first one and then until
-        /// nothing arrives for [`QUIET_PERIOD`].
+        /// The distinct scopes requested, in the order they first arrive, waiting up to
+        /// [`EVENT_TIMEOUT`] for the first one and then until nothing arrives for
+        /// [`QUIET_PERIOD`].
+        ///
+        /// FSEvents can deliver the last events of one save after the debounce window closes, so
+        /// a save may request its scope twice.
         async fn requested(&mut self) -> Result<Vec<String>> {
             let mut scopes = vec![self.next_scope().await?];
-            scopes.extend(self.settle().await);
+            for scope in self.settle().await {
+                if !scopes.contains(&scope) {
+                    scopes.push(scope);
+                }
+            }
 
             Ok(scopes)
         }
@@ -639,7 +703,7 @@ mod tests {
         write(&moved_path.join("pv.yml"), "php: '8.4'\n")?;
         watcher.reload();
         let scopes = watcher
-            .scopes(WatchMessage::Restarted)
+            .scopes([WatchMessage::Restarted])
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -650,7 +714,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn atomic_save_enqueues_one_reconciliation_and_ignores_other_files() -> Result<()> {
+    async fn atomic_save_enqueues_its_project_and_ignores_other_files() -> Result<()> {
         let fixture = Fixture::new()?;
         let (project_path, scope) = fixture.link("project")?;
         write(&project_path.join("pv.yml"), "php: '8.3'\n")?;
@@ -724,12 +788,12 @@ mod tests {
             "/elsewhere/feature/.git\n",
         )?;
         let changed = watcher
-            .scopes(rescan())
+            .scopes([rescan()])
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
         let unchanged = watcher
-            .scopes(WatchMessage::Restarted)
+            .scopes([WatchMessage::Restarted])
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>();
@@ -750,7 +814,7 @@ mod tests {
         let open = Event::new(EventKind::Access(AccessKind::Any))
             .add_path(project_path.join("pv.yml").into_std_path_buf());
 
-        assert!(watcher.scopes(WatchMessage::Event(Ok(open))).is_empty());
+        assert!(watcher.scopes([WatchMessage::Event(Ok(open))]).is_empty());
 
         Ok(())
     }
