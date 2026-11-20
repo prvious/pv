@@ -3965,10 +3965,24 @@ fn closing_the_last_connection_keeps_the_wal_files_and_empties_the_wal() -> Resu
             state::fs::path_entry_exists(&shared_memory)?,
         ));
     }
+    // A reader, such as a shim, can outlive a writer and close last.
+    for track in ["8.5", "8.4"] {
+        let reader = Database::open_current_read_only(&paths)?
+            .ok_or_else(|| anyhow!("pv.db disappeared after the last close"))?;
+        reader.global_php_default_track()?;
+        let mut writer = Database::open(&paths)?;
+        writer.record_global_php_default_track(track)?;
+        drop(writer);
+        drop(reader);
+        after_each_close.push((
+            file_len(&wal)?,
+            state::fs::path_entry_exists(&shared_memory)?,
+        ));
+    }
     let reader = Database::open_read_only(&paths)?
         .ok_or_else(|| anyhow!("pv.db disappeared after the last close"))?;
 
-    assert_eq!(after_each_close, [(0, true); 3]);
+    assert_eq!(after_each_close, [(0, true); 5]);
     assert_eq!(reader.global_php_default_track()?, Some("8.4".to_string()));
 
     Ok(())
