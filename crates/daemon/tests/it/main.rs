@@ -6,6 +6,7 @@ use daemon::DaemonError;
 
 mod caddy_admin;
 mod daemon_foundation;
+mod file_events;
 mod gateway_config;
 mod gateway_reconciliation;
 mod gateway_runtime_contracts;

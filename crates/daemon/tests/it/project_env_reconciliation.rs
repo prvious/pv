@@ -508,6 +508,7 @@ async fn daemon_health_tick_replaces_expiring_tls_certificate_without_explicit_r
 
     let finished_system_jobs = finished_system_job_count(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
@@ -1180,6 +1181,7 @@ async fn malformed_config_with_existing_tls_is_renewed_by_daemon_health() -> Res
 
     let finished_system_jobs = finished_system_job_count(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_new_finished_system_job(&paths, finished_system_jobs).await?;
@@ -1504,6 +1506,7 @@ async fn run_project_reconciliation(
     pv_fake::seed_dns_port(paths)?;
 
     let finished_system_jobs = finished_system_job_count(paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     let result = async {

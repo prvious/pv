@@ -100,6 +100,7 @@ impl Fixture {
 
     async fn start(&self) -> Result<daemon::RunningDaemon> {
         let host = crate::host::test_host()?;
+        crate::file_events::wait_for_file_events_before_now().await?;
         Ok(
             daemon::RunningDaemon::start_without_managed_resource_adapters(
                 self.paths.clone(),
@@ -691,6 +692,7 @@ async fn allocation_cleanup_observes_a_stopped_hook_before_dropping_its_database
             "{config}postgres:\n  version: '18'\n  allocations:\n    app-db:\n      env:\n        DATABASE_URL: '${{url}}'\n"
         ),
     )?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start(fixture.paths.clone(), crate::host::test_host()?).await?;
     shutdown_after(daemon, &fixture.paths, async {

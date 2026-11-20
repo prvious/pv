@@ -90,6 +90,14 @@ sockets, ports 80 and 443, and the privileged helper that repairs DNS belong to
 the machine's own PV. A fake's `started` event lists the sockets it
 inherited, so a test can check that only the Gateway gets the listeners.
 
+Every daemon an integration test starts is started right after
+`file_events::wait_for_file_events_before_now()`. FSEvents numbers a write
+some milliseconds after it happens, and a new stream receives the events
+numbered after it starts, so without the wait the daemon's watcher can receive
+the test's own setup writes, such as a `pv.yml`, and request a reconciliation
+the test didn't expect. The watcher's unit tests wait the same way before
+starting a watcher.
+
 A port a test hands to a fake, a runtime, or `pv.db` comes from
 `pv_fake::port()` (or `pv_fake::ports::<N>()` for several), never from binding
 port 0 and closing the listener, which lets another test take the port before it
