@@ -33,7 +33,8 @@ use serde_json::{Value, json};
 #[cfg(unix)]
 use state::MonitorReservation;
 use state::{
-    Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput, PvPaths, UpdateLock,
+    Database, ProjectEnvObservedStatus, ProjectEnvObservedWarningInput,
+    ProjectManagedResourceInput, PvPaths, UpdateLock,
 };
 #[cfg(unix)]
 use state::{JobRecord, JobStatus, LinkDiscoveredProjectInput, LinkProjectInput, ProjectMode};
@@ -130,6 +131,35 @@ fn daemon_run_is_hidden_from_top_level_help() -> Result<()> {
 
     assert_debug_snapshot!(output);
 
+    Ok(())
+}
+
+#[test]
+fn mysql_import_refuses_a_stale_applied_track() -> Result<()> {
+    let directory = tempdir()?;
+    let home = directory.path().join("home");
+    let project = directory.path().join("acme");
+    create_dir(&project)?;
+    let config = project.join("pv.yml");
+    write_file(&config, "mysql:\n  version: '8.0'\n")?;
+    let link = run_pv_in_dir_with_home(&["link"], &project, &home)?;
+    assert_eq!(link.code, Some(0), "{link:?}");
+    let mut database = Database::open(&PvPaths::for_home(&home))?;
+    let linked = database
+        .projects()?
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("missing linked Project"))?;
+    database.replace_project_managed_resources(
+        &linked.id,
+        &[ProjectManagedResourceInput {
+            resource_name: "mysql".to_owned(),
+            track: "8.0".to_owned(),
+        }],
+    )?;
+    write_file(&config, "mysql:\n  version: '8.4'\n")?;
+    let import = run_pv_in_dir_with_home(&["mysql:import", "dump.sql", "--yes"], &project, &home)?;
+    assert_debug_snapshot!(import);
     Ok(())
 }
 

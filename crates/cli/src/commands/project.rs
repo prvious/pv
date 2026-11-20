@@ -781,7 +781,7 @@ fn read_project_env_file(env_file_path: &Utf8Path) -> Result<Option<String>, Exe
     }
 }
 
-fn resolve_project(
+pub(super) fn resolve_project(
     database: &Database,
     selector: Option<&str>,
     environment: &impl Environment,

@@ -1,0 +1,11 @@
+---
+source: it/cli.rs
+expression: import
+---
+CommandOutput {
+    code: Some(
+        1,
+    ),
+    stdout: "",
+    stderr: "error: MySQL import: Project MySQL track has changed; reconcile the Project before importing\n",
+}
