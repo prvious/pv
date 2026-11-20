@@ -431,12 +431,22 @@ impl DaemonStatus {
         let socket_exists = state::fs::path_exists(&paths.daemon_socket());
         let socket = if !socket_exists {
             "missing"
-        } else if daemon::health_blocking(paths.clone()).is_ok() {
-            "healthy"
         } else {
-            "unhealthy"
+            match daemon::health_blocking(paths.clone()) {
+                Ok(()) => "healthy",
+                Err(error) if super::daemon_connection_denied(&error) => "denied",
+                Err(_) => "unhealthy",
+            }
         };
         let (state, mark) = match &registration {
+            // The operating system refused the connection, as an agent sandbox does, so PV can't
+            // tell whether the daemon runs.
+            DaemonRegistrationFileState::Missing { .. }
+            | DaemonRegistrationFileState::Current { .. }
+                if socket == "denied" =>
+            {
+                ("unknown", Mark::Warning)
+            }
             DaemonRegistrationFileState::Missing { .. } if socket == "missing" => {
                 ("disabled", Mark::Idle)
             }

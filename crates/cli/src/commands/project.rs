@@ -416,7 +416,7 @@ pub(crate) fn open(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
+    let database = super::open_database_for_reading(&paths)?;
     let (project, hostname) = match args.hostname {
         Some(selector) => {
             let project = resolve_project_selector(&database, &selector)?;
@@ -449,7 +449,7 @@ pub(crate) fn env(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
+    let database = super::open_database_for_reading(&paths)?;
     let project = resolve_project(&database, args.hostname.as_deref(), environment)?;
     let config_file = ProjectConfigFile::read_from_root(&project.path)?;
     let serves_http = project.mode == ProjectMode::Served && config_file.config.serve;
@@ -494,7 +494,7 @@ pub(crate) fn list(
     streams: &mut Streams<'_>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
+    let database = super::open_database_for_reading(&paths)?;
     let mut projects = database.projects()?;
     projects.sort_by(|left, right| {
         super::project_display_name(left)

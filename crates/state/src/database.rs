@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
+use rusqlite::config::DbConfig;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
 };
@@ -699,6 +700,20 @@ impl Database {
         configure_read_connection(&connection)?;
 
         Ok(Some(Self { connection }))
+    }
+
+    /// Opens `pv.db` read-only when it exists and has every migration applied, so a command that
+    /// only reads state writes nothing, including where `~/.pv` is read-only. `None` means the
+    /// caller must use [`Database::open`] to create or migrate it.
+    pub fn open_current_read_only(paths: &PvPaths) -> Result<Option<Self>, StateError> {
+        let Some(database) = Self::open_read_only(paths)? else {
+            return Ok(None);
+        };
+        if migrations::pending(&database.connection, migrations::DEFAULT_MIGRATIONS)? {
+            return Ok(None);
+        }
+
+        Ok(Some(database))
     }
 
     pub(crate) fn open_with_migrations(
@@ -5108,6 +5123,10 @@ fn describe_port_identity(
 fn configure_connection(connection: &Connection) -> Result<(), StateError> {
     configure_read_connection(connection)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
+    // Closing the last connection would checkpoint the WAL and delete `pv.db-wal` and `pv.db-shm`.
+    // A read-only connection that can't create them, as inside an agent sandbox, can only open the
+    // database while they exist. Commits still checkpoint automatically.
+    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
 
     Ok(())
 }

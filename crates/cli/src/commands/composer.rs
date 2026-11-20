@@ -156,7 +156,7 @@ pub(crate) fn shim(
     runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
+    let database = super::open_database_for_reading(&paths)?;
     let phar = installed_composer_phar(&database)?;
     let mut shim_args = Vec::with_capacity(args.args.len() + 1);
     shim_args.push(phar.to_string());

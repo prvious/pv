@@ -1,0 +1,26 @@
+---
+source: it/cli.rs
+expression: "(shim, list, &status_json[\"daemon\"])"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "fake php -v\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "{\"projects\":[]}\n",
+        stderr: "",
+    },
+    Object {
+        "failure": Bool(false),
+        "registration": String("missing"),
+        "socket": String("denied"),
+        "state": String("unknown"),
+    },
+)

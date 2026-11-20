@@ -134,7 +134,17 @@ impl RuntimeLifecycleLock {
     fn acquire(paths: &PvPaths, exclusive: bool) -> Result<Self, StateError> {
         require_file_locking()?;
         let path = paths.runtime_lifecycle_lock();
-        let file = open_lock_file(&path)?;
+        // A shared lock needs only a readable file, so admission works where the home directory
+        // is read-only, as inside a coding agent's sandbox.
+        let existing = if exclusive {
+            None
+        } else {
+            fs::open_read_file(&path)?
+        };
+        let file = match existing {
+            Some(file) => file,
+            None => open_lock_file(&path)?,
+        };
         fs::secure_sensitive_file(&path)?;
         lock_lifecycle_admission(&file, &path, exclusive)?;
         Ok(Self { _file: file })

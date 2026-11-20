@@ -88,7 +88,7 @@ PV respects the `NO_COLOR` environment variable and supports a global `--no-colo
 
 PV uses `rusqlite` for SQLite access to `pv.db`. Database work is local and transactional, so synchronous queries are acceptable; daemon paths can use `spawn_blocking` when needed to avoid blocking Tokio runtime tasks.
 
-PV embeds SQLite migrations into the Rust binary and runs them automatically before accessing `pv.db`. Migrations run transactionally and are tracked in a machine-owned migrations table.
+PV embeds SQLite migrations into the Rust binary and runs them automatically before writing `pv.db`. Commands that only read state may open it read-only instead (see Filesystem Layout). Migrations run transactionally and are tracked in a machine-owned migrations table.
 
 PV database migrations must remain backward-compatible with the immediately previous PV application version so self-update rollback can safely restore the previous binary without restoring `pv.db`. Destructive or incompatible schema cleanup should be delayed until a later release after the previous binary no longer needs to read the old shape.
 
@@ -774,7 +774,7 @@ If reactivating the previous release reports an error but the active symlink alr
 
 PV uses OS-level advisory filesystem locks. `~/.pv/run/update.lock` protects foreground self-update and the daemon transition. `~/.pv/run/jobs.lock` protects the daemon mutation queue. `pv update` acquires `update.lock` and then `jobs.lock` before changing the application or daemon; the daemon queue acquires only `jobs.lock` and never waits while holding `update.lock`. Ordinary mutating CLI preflight checks only `update.lock`, so an active daemon reconciliation does not reject unrelated intent recording. Direct foreground Managed Resource install, update, and PHP selection commands also hold `jobs.lock` through artifact and related selection mutations, then release it before submitting daemon reconciliation. Once startup reconciliation begins running, daemon shutdown waits for it to finish so blocking installation work retains the jobs lock through completion. Startup waiting for the jobs lock remains cancellable.
 
-The external `~/.pv-runtime-lifecycle.lock` admits foreground mutations and short daemon bootstrap with shared ownership. PHP and Composer shims hold shared admission during initialization and release it before executing PHP. `pv link` holds it except while each hook list runs, then reacquires it; if disable or uninstall owns admission at that point, link exits non-zero without recording state or contacting the daemon. Disable and uninstall hold it exclusively until shutdown and removal finish, including removal of `~/.pv` itself. Uninstall acquires it after prune confirmation and before the helper lifecycle lock. Declining confirmation or refusing a noninteractive prune creates no lifecycle lock file.
+The external `~/.pv-runtime-lifecycle.lock` admits foreground mutations and short daemon bootstrap with shared ownership. Shared admission opens an existing lock file read-only, so it works where the home directory is read-only. PHP and Composer shims hold shared admission during initialization and release it before executing PHP. `pv link` holds it except while each hook list runs, then reacquires it; if disable or uninstall owns admission at that point, link exits non-zero without recording state or contacting the daemon. Disable and uninstall hold it exclusively until shutdown and removal finish, including removal of `~/.pv` itself. Uninstall acquires it after prune confirmation and before the helper lifecycle lock. Declining confirmation or refusing a noninteractive prune creates no lifecycle lock file.
 
 Contention errors describe the active coordination lock and its backing path. Persistent lock files are not themselves evidence of contention: they may remain after the owning process exits, and unlocked stale files do not block work. Active OS locks are released automatically when their owning file handles close.
 
@@ -837,6 +837,8 @@ PV stores machine state and installed assets under `~/.pv`:
 PV enforces user-only filesystem permissions. `~/.pv` should be `0700`; sensitive files such as `pv.db`, CA private keys, and generated secret material should be `0600`.
 
 PV detects unsafe permissions on user-owned files under `~/.pv`. Foreground repair commands such as `pv setup` may repair permissions; daemon startup records repair-required status when it cannot safely repair in the background. `pv doctor` remains strictly read-only and suggests repair commands instead of mutating state.
+
+PV changes the mode of a PV-owned file or directory only when it differs from the expected mode. Commands that only read state, `pv list`, `pv project:env`, `pv open` and the PHP and Composer shims, open an existing, fully migrated `pv.db` read-only; a missing or outdated database is created or migrated as for any other command. Together these let them work where `~/.pv` and the home directory are read-only, as inside a coding agent's sandbox. `pv status`, `pv doctor`, `pv jobs` and `pv logs` already open `pv.db` read-only. Read-write connections keep `pv.db-wal` and `pv.db-shm` when they close, without the checkpoint SQLite otherwise runs on the last close, because a read-only connection that cannot create those files can open the WAL database only while they exist. Commits still checkpoint the WAL automatically.
 
 `pv setup` repairs unsafe permissions on PV-owned user-local files automatically and reports what changed.
 
@@ -1768,6 +1770,8 @@ A background reconciliation failure before a job is admitted is recorded as a sy
 `pv status` may show Managed Resource health and ports, but it must not print credentials or secrets.
 
 `pv status` distinguishes daemon states from PV-owned plist state, read-only `launchd` state, and socket health. If PV owns a LaunchAgent plist, status may use a read-only `launchctl print` inspection to distinguish loaded, running, and down states, but the lifecycle model remains `pv daemon:enable`, `pv daemon:disable`, and `pv daemon:restart`.
+
+When the operating system refuses the connection to the daemon socket with a permission error, as a coding agent's sandbox does, PV cannot tell whether the daemon runs. `pv status` reports the socket as `denied` and the daemon as `unknown` with a warning rather than `down`, and does not fail. `pv doctor` reports the socket check as a warning that names the sandbox as the likely cause.
 
 `pv logs` shows daemon logs by default. Daemon logs include the structured PV daemon log, such as `~/.pv/logs/daemon.log`, plus LaunchAgent stdout/stderr logs so startup failures are visible before structured daemon logging initializes. Flags may include `--follow`, `--gateway`, `--worker <php-track>`, and `--all` for broader log streams.
 

@@ -257,6 +257,22 @@ pv ca:status
 
 The real artifact workflow/resource matrix is opt-in for development and release validation with `PV_E2E_REAL_ARTIFACTS=1` and an artifact manifest URL. The privileged macOS RC workflow can run by manual dispatch or through Real Artifact E2E with `privileged_rc=true`, and uploads evidence.
 
+## Coding Agent Sandboxes
+
+Some coding agents run commands in a sandbox that allows writes only inside the workspace: Codex by default, and Claude Code and Cursor when their sandbox is on. PV's `php` and `composer` shims, `pv list`, `pv project:env`, `pv status`, `pv doctor` and `pv jobs` work there without extra settings, because they only read PV state.
+
+Commands that change PV state, such as `pv link` or `pv php:use`, write under `~/.pv` and reach the daemon through `~/.pv/run/pv.sock`. Run them outside the sandbox, or allow both in the agent's settings:
+
+| Agent | Allow writes to `~/.pv` | Allow the daemon socket |
+| --- | --- | --- |
+| [Codex](https://learn.chatgpt.com/docs/agent-approvals-security) | `sandbox_workspace_write.writable_roots` | Its Unix socket allowlist |
+| [Claude Code](https://code.claude.com/docs/en/sandboxing) | `sandbox.filesystem.allowWrite` | `sandbox.network.allowUnixSockets` |
+| [Cursor](https://cursor.com/docs/reference/sandbox) | `additionalReadwritePaths` in `sandbox.json` | Not documented |
+
+When a sandbox refuses the daemon socket, `pv status` reports the socket as `denied` and the daemon as `unknown` instead of down.
+
+Sandboxes also block requests to `https://<project>.test`, because the hostname resolves to your own machine. Claude Code's sandbox answers them with a `403` unless `sandbox.network.allowedDomains` lists both the hostname and `127.0.0.1` with the port, such as `"acme.test:443"` and `"127.0.0.1:443"`.
+
 ## Uninstall
 
 Safe uninstall preserves user data:
