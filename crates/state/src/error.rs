@@ -245,6 +245,27 @@ impl StateError {
             source,
         }
     }
+
+    /// Whether the operation failed because this process may not write PV's state, as inside a
+    /// coding agent's sandbox.
+    pub fn is_write_denied(&self) -> bool {
+        match self {
+            Self::Filesystem { source, .. } => {
+                source.kind() == std::io::ErrorKind::PermissionDenied
+            }
+            Self::Sqlite(rusqlite::Error::SqliteFailure(failure, _))
+            | Self::MigrationFailed {
+                source: rusqlite::Error::SqliteFailure(failure, _),
+                ..
+            } => matches!(
+                failure.code,
+                rusqlite::ErrorCode::ReadOnly
+                    | rusqlite::ErrorCode::CannotOpen
+                    | rusqlite::ErrorCode::PermissionDenied
+            ),
+            _ => false,
+        }
+    }
 }
 
 #[cfg(not(unix))]

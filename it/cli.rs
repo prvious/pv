@@ -1960,13 +1960,25 @@ fn shims_and_read_commands_work_in_a_sandbox_that_denies_writes_outside_the_work
 
     let shim = sandboxed(&["shim:php", "-v"])?;
     let list = sandboxed(&["list", "--json"])?;
+    let jobs = sandboxed(&["jobs", "--json"])?;
     let status = sandboxed(&["status", "--json"])?;
     let status_json: Value = serde_json::from_str(&status.stdout)?;
+    // An outdated `pv.db` needs a migration, which the sandbox doesn't allow.
+    let migration_removed = Command::new("/usr/bin/sqlite3")
+        .arg(paths.db().as_str())
+        .arg("DELETE FROM pv_migrations WHERE version = (SELECT MAX(version) FROM pv_migrations);")
+        .output()?;
+    assert!(migration_removed.status.success(), "{migration_removed:?}");
+    let modified_before = state::fs::modified_at(paths.db())?;
+    let outdated = sandboxed(&["list", "--json"])?;
 
+    assert_eq!(state::fs::modified_at(paths.db())?, modified_before);
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(root.as_str(), "<root>");
     settings.add_filter(&project.id, "<project-id>");
-    settings.bind(|| assert_debug_snapshot!((shim, list, &status_json["daemon"])));
+    settings.bind(|| {
+        assert_debug_snapshot!((shim, list, jobs, &status_json["daemon"], outdated));
+    });
 
     Ok(())
 }

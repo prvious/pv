@@ -1,5 +1,6 @@
 use std::io;
 
+use camino::Utf8PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -97,6 +98,11 @@ pub enum CliError {
 
     #[error("no linked Project serves HTTP, so there is nothing to open")]
     NoServedProjects,
+
+    #[error(
+        "PV must create or update its state in {path} before it can read it, and this process may not write there, as inside a coding agent's sandbox\nRun `pv list` once outside the sandbox, then try again."
+    )]
+    StateNotWritable { path: Utf8PathBuf },
 
     #[error(
         "Project selector `{selector}` matches slug `{selector}` and hostname `{hostname}` on different Projects; pass the full `{hostname}` hostname"

@@ -259,7 +259,7 @@ The real artifact workflow/resource matrix is opt-in for development and release
 
 ## Coding Agent Sandboxes
 
-Some coding agents run commands in a sandbox that allows writes only inside the workspace: Codex by default, and Claude Code and Cursor when their sandbox is on. PV's `php` and `composer` shims, `pv list`, `pv project:env`, `pv status`, `pv doctor` and `pv jobs` work there without extra settings, because they only read PV state.
+Some coding agents run commands in a sandbox that allows writes only inside the workspace: Codex by default, and Claude Code and Cursor when their sandbox is on. Once PV is set up, PV's `php` and `composer` shims, `pv list`, `pv project:env`, `pv status`, `pv doctor` and `pv jobs` work there without extra settings, because they only read PV state. If PV must first create or update that state, as right after an update installs a new version, they say so; run `pv list` once outside the sandbox.
 
 Commands that change PV state, such as `pv link` or `pv php:use`, write under `~/.pv` and reach the daemon through `~/.pv/run/pv.sock`. Run them outside the sandbox, or allow both in the agent's settings:
 
