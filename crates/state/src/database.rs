@@ -1,11 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::c_int;
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
-use rusqlite::config::DbConfig;
 use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
+    Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, ffi, params,
 };
 
 use crate::{PvPaths, StateError, fs, migrations};
@@ -5123,10 +5123,32 @@ fn describe_port_identity(
 fn configure_connection(connection: &Connection) -> Result<(), StateError> {
     configure_read_connection(connection)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
-    // Closing the last connection would checkpoint the WAL and delete `pv.db-wal` and `pv.db-shm`.
-    // A read-only connection that can't create them, as inside an agent sandbox, can only open the
-    // database while they exist. Commits still checkpoint automatically.
-    connection.set_db_config(DbConfig::SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE, true)?;
+    // With a size limit, the last close truncates the persistent WAL after its checkpoint.
+    connection.pragma_update(None, "journal_size_limit", 0)?;
+    keep_wal_files_on_close(connection)
+}
+
+/// Keeps `pv.db-wal` and `pv.db-shm` when the last connection closes. The close still
+/// checkpoints the WAL and truncates it to zero bytes, but no longer deletes the files. A
+/// read-only connection that can't create them, as inside an agent sandbox, can only open the
+/// database while they exist.
+fn keep_wal_files_on_close(connection: &Connection) -> Result<(), StateError> {
+    let mut persist: c_int = 1;
+    // SAFETY: `handle` returns the live `sqlite3` pointer of `connection`, which stays borrowed and
+    // open for this call. The schema name is a NUL-terminated literal. `SQLITE_FCNTL_PERSIST_WAL`
+    // reads and writes one `c_int` through the last argument, which points at `persist` for the
+    // whole call.
+    let code = unsafe {
+        ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            ffi::SQLITE_FCNTL_PERSIST_WAL,
+            (&raw mut persist).cast(),
+        )
+    };
+    if code != ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(ffi::Error::new(code), None).into());
+    }
 
     Ok(())
 }
