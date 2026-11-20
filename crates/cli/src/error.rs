@@ -92,7 +92,7 @@ pub enum CliError {
     ProjectNotResolved,
 
     #[error(
-        "this directory is in a Git checkout with no linked Project: {checkout}\nPV links each Git worktree of a linked Project on its own; `pv jobs` and `pv status` show its setup and any failure."
+        "this directory is in a Git checkout with no linked Project: {checkout}\nPV links each Git worktree of a linked Project on its own; `pv jobs` and `pv status` show its setup and any failure. To link this checkout yourself, run `pv link` in it."
     )]
     ProjectNotLinkedInCheckout { checkout: Utf8PathBuf },
 
