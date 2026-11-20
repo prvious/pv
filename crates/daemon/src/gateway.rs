@@ -822,14 +822,6 @@ async fn reconcile_gateway_config(
     let supervisor = ProcessSupervisor::new(paths.clone());
     let gateway_readiness = gateway_readiness_plan(plan, listeners.source());
     let gateway_spec = gateway_process_spec(paths, gateway_command);
-    let routed_proxy_ports = desired_gateway_config
-        .tree
-        .fragments
-        .iter()
-        .filter_map(|fragment| {
-            generated_proxy_port(&fragment.content).map(|port| (fragment.project_id.clone(), port))
-        })
-        .collect();
     if match reconcile_unchanged_runtime(
         &supervisor,
         &gateway_spec,
@@ -865,7 +857,6 @@ async fn reconcile_gateway_config(
         .await?;
         finish_promoted_runtime(runtime.wait().await)?;
     }
-    Database::open(paths)?.record_gateway_proxy_ports(&routed_proxy_ports)?;
     record_gateway_runtime_observed(paths)?;
 
     Ok(())
@@ -2500,11 +2491,18 @@ fn append_persisted_runtime_project(
         &paths.gateway_projects_config_dir(),
         &project_config_file_name(&project.id),
     )?;
-    // Project Apply records the new upstream before the Gateway switches to it. A failed switch
-    // leaves the previous proxy route active, and its port stays claimed for this Project.
+    // Project Apply records the new PHP runtime before the Gateway switches upstreams.
+    // A failed switch can leave the previous proxy route active.
     if let Some(port) = gateway_fragment.as_deref().and_then(generated_proxy_port) {
         if fs::path_is_directory(&project.path)? {
-            proxy_routes.push(proxy_route(paths, project.id, primary_hostname, port));
+            match database.validate_project_proxy_port(&project.id, port) {
+                Ok(()) => proxy_routes.push(proxy_route(paths, project.id, primary_hostname, port)),
+                Err(
+                    StateError::ProjectProxyPortCollision { .. }
+                    | StateError::ProjectProxyPortReserved { .. },
+                ) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
         return Ok(());
     }
