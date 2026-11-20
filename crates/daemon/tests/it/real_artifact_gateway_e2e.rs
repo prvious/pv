@@ -1,11 +1,17 @@
-use anyhow::{Result, bail, ensure};
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail, ensure};
 use camino::{Utf8Path, Utf8PathBuf};
 use camino_tempfile::tempdir;
+use platform::clock::real;
 use resources::{
     ManagedResourceCommands, TargetPlatform, TrackSelector, caddy_adapter, frankenphp_adapter,
     php_adapter,
 };
-use state::{Database, LinkProjectInput, PvPaths};
+use state::{Database, LinkProjectInput, PortOwner, PvPaths};
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::net::TcpListener;
 
 #[tokio::test]
 #[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
@@ -75,6 +81,153 @@ async fn real_artifact_gateway_e2e_serves_tiny_php_project() -> Result<()> {
 
     assert_eq!(frankenphp_install.track(), php_install.track());
 
+    Ok(())
+}
+
+#[tokio::test]
+#[ignore = "requires PV_E2E_REAL_ARTIFACTS=1 and PV_E2E_ARTIFACT_MANIFEST_URL"]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "ignored real-artifact E2E uses environment variables as an explicit opt-in gate"
+)]
+async fn real_artifact_gateway_e2e_proxies_local_project() -> Result<()> {
+    if std::env::var("PV_E2E_REAL_ARTIFACTS").as_deref() != Ok("1") {
+        return Ok(());
+    }
+    let manifest_url = std::env::var("PV_E2E_ARTIFACT_MANIFEST_URL")?;
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    pv_fake::install_monitor(&paths)?;
+    pv_fake::seed_dns_port(&paths)?;
+    let commands =
+        ManagedResourceCommands::new(paths.clone(), manifest_url, TargetPlatform::current()?);
+    commands.install(
+        &caddy_adapter()?,
+        TrackSelector::Latest,
+        &resources::UreqResourceHttpClient::new(),
+    )?;
+    seed_local_ca(&paths)?;
+
+    let upstream_port = pv_fake::port()?;
+    let project_root = tempdir.path().join("api");
+    state::fs::write_sensitive_file(
+        &project_root.join("pv.yml"),
+        &format!("proxy: {upstream_port}\n"),
+    )?;
+    let hostname = "api.laravel.test";
+    link_project(&mut Database::open(&paths)?, &project_root, hostname)?;
+    let project = Database::open(&paths)?
+        .project_by_path(&project_root)?
+        .context("proxy Project was not linked")?;
+    let scope = format!("project:{}", project.id);
+
+    let host = crate::host::test_host()?;
+    let (_, https_port) = host.gateway_listeners.ports();
+    let daemon =
+        daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
+    let request = async {
+        reconcile(&paths, "system").await?;
+        let unavailable = request_gateway_https_with_curl(
+            &paths, https_port, hostname,
+            &["--no-fail", "--write-out", "\n%{http_code}"],
+        )?;
+        ensure!(
+            unavailable == format!(
+                "PV could not reach http://127.0.0.1:{upstream_port}. Start your app and check that it listens on this address.\n502"
+            ),
+            "an offline upstream returned {unavailable:?}"
+        );
+
+        state::fs::write_sensitive_file(&project.config_path, "proxy: 0\n")?;
+        ensure!(reconcile(&paths, &scope).await.is_err(), "an invalid proxy port was applied");
+
+        let upstream = TcpListener::bind(("127.0.0.1", upstream_port)).await?;
+        let request_paths = paths.clone();
+        let request = tokio::task::spawn_blocking(move || {
+            request_gateway_https_with_curl(
+                &request_paths, https_port, hostname,
+                &[
+                    "--header", "X-Forwarded-Host: bogus.test",
+                    "--header", "X-Forwarded-Proto: http",
+                    "--header", "X-Forwarded-For: 192.0.2.10",
+                ],
+            )
+        });
+        let echo = async {
+            real::timeout(Duration::from_secs(30), echo_proxy_request(upstream))
+                .await
+                .context("the Gateway did not forward the request to the upstream")?
+        };
+        let ((), response) = tokio::try_join!(echo, async { request.await? })?;
+        let authority = format!("{hostname}:{https_port}");
+        ensure!(
+            response == format!("{authority}|{authority}|https|127.0.0.1"),
+            "the upstream received {response:?}"
+        );
+        ensure!(
+            request_gateway_https_with_curl(&paths, https_port, "x.api.laravel.test", &["--no-fail"]).is_err(),
+            "x.api.laravel.test reached the proxy Project"
+        );
+        let database = Database::open(&paths)?;
+        ensure!(database.managed_resource_tracks()?.iter().all(|track| track.resource_name == "caddy"));
+        ensure!(database.assigned_ports()?.iter().all(|port| !matches!(port.owner, PortOwner::PhpWorker { .. })));
+        drop(database);
+
+        state::fs::write_sensitive_file(&project.config_path, &format!("serve: false\nproxy: {upstream_port}\n"))?;
+        let stopped = reconcile(&paths, &scope).await?;
+        let removed = request_gateway_https_with_curl(&paths, https_port, hostname, &["--no-fail"]);
+        ensure!(removed.is_err(), "{hostname} still answered after serving was disabled: {removed:?}");
+        ensure!(!paths.gateway_projects_config_dir().join(format!("{}.Caddyfile", project.id)).exists());
+        let targeted_gateway = state::fs::read_to_string(&paths.daemon_log())?
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .any(|record| record["job_id"] == stopped.id && record["phase"] == "gateway"
+                && record["subject"] == "target_project");
+        ensure!(targeted_gateway, "proxy removal should reconcile only the target Project");
+        Ok(())
+    }.await;
+    let shutdown = daemon.shutdown().await;
+    let stop = daemon::stop_recorded_runtimes(paths.clone()).await;
+    preserve_gateway_request_result(request, shutdown.and(stop).map_err(Into::into), || {
+        real_artifact_diagnostics(&paths, &[])
+    })
+}
+
+async fn reconcile(paths: &PvPaths, scope: &str) -> Result<daemon::CompletedJob> {
+    let paths = paths.clone();
+    let scope = scope.to_owned();
+    Ok(
+        tokio::task::spawn_blocking(move || daemon::run_job_blocking(paths, "reconcile", &scope))
+            .await??,
+    )
+}
+
+async fn echo_proxy_request(upstream: TcpListener) -> Result<()> {
+    let (stream, _) = upstream.accept().await?;
+    let mut stream = BufReader::new(stream);
+    let mut headers = BTreeMap::new();
+    loop {
+        let mut line = String::new();
+        if stream.read_line(&mut line).await? == 0 || line == "\r\n" {
+            break;
+        }
+        if let Some((name, value)) = line.trim_end().split_once(':') {
+            headers.insert(name.to_ascii_lowercase(), value.trim().to_owned());
+        }
+    }
+    let body = [
+        "host",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "x-forwarded-for",
+    ]
+    .map(|name| headers.get(name).map_or("", String::as_str))
+    .join("|");
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.get_mut().write_all(response.as_bytes()).await?;
     Ok(())
 }
 

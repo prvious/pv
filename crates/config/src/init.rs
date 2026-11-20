@@ -182,8 +182,10 @@ pub fn render_project_init_config(
     selection: &ProjectInitSelection,
 ) -> Result<ProjectConfig, ConfigError> {
     let mut config = detection.config_file.config.clone();
-    config.php.get_or_insert_with(PhpConfig::default).version = Some(selection.php.clone());
-    config.root = selection.root.clone();
+    if config.active_proxy_port().is_none() {
+        config.php.get_or_insert_with(PhpConfig::default).version = Some(selection.php.clone());
+        config.root = selection.root.clone();
+    }
     if selection.include_app_url {
         config
             .env

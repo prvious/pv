@@ -142,6 +142,15 @@ pub enum StateError {
         project_id: String,
     },
 
+    #[error("proxy port {port} is already configured for Project {hostname}")]
+    ProjectProxyPortCollision { port: u16, hostname: String },
+
+    #[error("proxy port {port} is reserved by PV for {owner}")]
+    ProjectProxyPortReserved { port: u16, owner: String },
+
+    #[error("Project `{project_id}` cannot apply a proxy port and a PHP runtime together")]
+    ProjectProxyRuntimeConflict { project_id: String },
+
     #[error("could not allocate a unique Project ID after {attempts} attempts")]
     ProjectIdExhausted { attempts: usize },
 

@@ -17,6 +17,7 @@ expression: "(before, after)"
                 "009:project_mode_and_slug",
                 "013:retired_resource_allocations",
                 "016:pending_cleanups",
+                "019:project_proxy_port",
             ],
             tables: [
                 "jobs",
@@ -38,6 +39,7 @@ expression: "(before, after)"
                 id: "project_1",
                 slug: "project_1",
                 mode: Served,
+                proxy_port: None,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
                 primary_hostname: Some(
@@ -84,6 +86,7 @@ expression: "(before, after)"
                 id: "project_1",
                 slug: "project_1",
                 mode: Served,
+                proxy_port: None,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
                 primary_hostname: Some(
@@ -110,6 +113,7 @@ expression: "(before, after)"
                 id: "project_1",
                 slug: "project_1",
                 mode: Served,
+                proxy_port: None,
                 path: "<tempdir>/acme",
                 original_path: "<tempdir>/acme",
                 primary_hostname: Some(

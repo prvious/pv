@@ -67,6 +67,12 @@ pub enum ConfigError {
     #[error("unknown Project config key `{key}`")]
     UnknownTopLevelKey { key: String },
 
+    #[error("`proxy` must be an integer port from 1 to 65535")]
+    InvalidProxyPort,
+
+    #[error("`proxy` cannot be combined with `{field}` while serving")]
+    ConflictingProxySetting { field: &'static str },
+
     #[error("unknown Project config key `php.{key}`")]
     UnknownPhpKey { key: String },
 

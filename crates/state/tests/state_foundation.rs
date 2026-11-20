@@ -39,6 +39,7 @@ fn first_discovered_apply_and_setup_admission_commit_atomically() -> Result<()> 
         ProjectMode::ResourceOnly,
     ))?;
     let input = ProjectReconciliationStateInput {
+        proxy_port: None,
         setup_hook_log: Some(paths.project_hook_log(&project.id)),
         project_id: project.id.clone(),
         link: state::LinkProjectInput {
@@ -104,6 +105,7 @@ fn first_discovered_apply_and_setup_admission_commit_atomically() -> Result<()> 
     // The same flag on an ordinary Project never admits daemon setup.
     let (_source, ordinary) =
         database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+            proxy_port: None,
             setup_hook_log: Some(paths.project_hook_log(&source.id)),
             project_id: source.id.clone(),
             link: state::LinkProjectInput {
@@ -1439,6 +1441,11 @@ fn migrated_project_resource_state_round_trips_through_public_apis() -> Result<(
             "pending_cleanups",
             include_str!("../src/sql/016_pending_cleanups.sql"),
         ),
+        Migration::new(
+            19,
+            "project_proxy_port",
+            include_str!("../src/sql/019_project_proxy_port.sql"),
+        ),
     ];
     let mut old_database = state::testing::open_with_migrations(&paths, &migrations[..1])?;
     let project_id = "project_1".to_string();
@@ -2431,6 +2438,7 @@ fn held_worktrees_demand_no_php_worker_until_their_first_reconciliation() -> Res
     for _ in 0..2 {
         let (_project, setup_job) =
             database.finalize_project_reconciliation(ProjectReconciliationStateInput {
+                proxy_port: None,
                 setup_hook_log: None,
                 project_id: worktree.id.clone(),
                 link: link.clone(),
@@ -2962,6 +2970,7 @@ fn project_reconciliation_finalization_rolls_back_gateway_state_on_failure() -> 
     })?;
 
     let result = database.finalize_project_reconciliation(state::ProjectReconciliationStateInput {
+        proxy_port: None,
         setup_hook_log: None,
         project_id: project.id.clone(),
         link: state::LinkProjectInput {

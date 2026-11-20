@@ -128,6 +128,41 @@ fn project_config_rejects_invalid_shapes() -> Result<()> {
 }
 
 #[test]
+fn project_config_validates_proxy_port_and_serving_settings() -> Result<()> {
+    for source in [
+        "proxy: 0",
+        "proxy: -1",
+        "proxy: 65536",
+        "proxy: 3000.0",
+        "proxy: '3000'",
+        "proxy: true",
+    ] {
+        assert!(
+            matches!(
+                ProjectConfig::parse(source),
+                Err(ConfigError::InvalidProxyPort)
+            ),
+            "{source}"
+        );
+    }
+    for field in ["php", "root"] {
+        let source = format!("proxy: 3000\n{field}: 'public'\n");
+        assert!(matches!(
+            ProjectConfig::parse(&source),
+            Err(ConfigError::ConflictingProxySetting { field: actual }) if actual == field
+        ));
+    }
+    let config = ProjectConfig::parse("proxy: 65535")?;
+    assert_eq!(config.active_proxy_port(), Some(65535));
+    assert!(!config.serves_php());
+    let config = ProjectConfig::parse("serve: false\nproxy: 1\nroot: public")?;
+    assert_eq!(config.proxy_port, Some(1));
+    assert_eq!(config.active_proxy_port(), None);
+
+    Ok(())
+}
+
+#[test]
 fn project_config_accepts_registered_resource_aliases() -> Result<()> {
     let config = ProjectConfig::parse(
         r#"

@@ -41,6 +41,10 @@ pub(crate) fn link(
     )?;
     let mut database = Database::open(&paths)?;
     let existing = database.project_by_path(&project_path)?;
+    if let Some(port) = config_file.config.active_proxy_port() {
+        let project_id = existing.as_ref().map_or("", |project| project.id.as_str());
+        database.validate_project_proxy_port(project_id, port)?;
+    }
     let mut hooks_enabled = !args.skip_hooks && !config_file.config.hooks.is_empty();
     if hooks_enabled && let Some(project) = &existing {
         refuse_concurrent_hooks(&database, project)?;
@@ -456,6 +460,9 @@ pub(crate) fn env(
     if serves_http {
         database
             .validate_project_primary_hostname(&project.id, served_project_hostname(&project)?)?;
+        if let Some(port) = config_file.config.active_proxy_port() {
+            database.validate_project_proxy_port(&project.id, port)?;
+        }
     }
     config::validate_project_env_shape(&config_file.config)?;
 
@@ -576,7 +583,7 @@ pub(crate) fn list(
             streams.out.detail(format!(
                 "{} · PHP {} · {resources} {resource_label} · env {}",
                 project.mode.as_str(),
-                project.desired_php_track.as_deref().unwrap_or("default"),
+                project_php_label(project),
                 status.env.as_str(),
             ))?;
             streams
@@ -638,7 +645,7 @@ pub(crate) fn list(
         table.row(vec![
             Line::from(super::project_display_name(&project)),
             Line::from(project.mode.as_str()),
-            Line::from(project.desired_php_track.as_deref().unwrap_or("default")),
+            Line::from(project_php_label(&project)),
             status.project.cell(),
             Line::from(resources),
             status.env.cell(),
@@ -911,6 +918,8 @@ struct ProjectListItem {
     hostname: Option<String>,
     env_file: Option<String>,
     php: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_port: Option<u16>,
     status: &'static str,
     env: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1013,6 +1022,17 @@ fn project_list_status(
         }
     };
     let declared_resources = Some(config_file.config.resources.len());
+    if let Some(port) = config_file.config.active_proxy_port()
+        && let Err(error) = database.validate_project_proxy_port(&project.id, port)
+    {
+        return Ok(ProjectListStatus {
+            project: ProjectStatus::ConfigInvalid,
+            env: ProjectEnvStatus::Invalid,
+            declared_resources,
+            config_error: Some(error.to_string()),
+            env_detail: None,
+        });
+    }
     if project.mode == ProjectMode::Served
         && config_file.config.serve
         && let Some(primary_hostname) = project.primary_hostname.as_deref()
@@ -1067,6 +1087,7 @@ fn project_list_item(
             track: resource.track,
         })
         .collect();
+    let php = project_php_label(&project).to_owned();
 
     Ok(ProjectListItem {
         id: project.id,
@@ -1074,9 +1095,8 @@ fn project_list_item(
         slug: project.slug,
         hostname: project.primary_hostname,
         env_file,
-        php: project
-            .desired_php_track
-            .unwrap_or_else(|| "default".to_string()),
+        php,
+        proxy_port: project.proxy_port,
         status: status.project.as_str(),
         env: status.env.as_str(),
         config_error: status.config_error,
@@ -1085,6 +1105,14 @@ fn project_list_item(
         path: project.path.to_string(),
         config_path: project.config_path.to_string(),
     })
+}
+
+fn project_php_label(project: &ProjectRecord) -> &str {
+    if project.proxy_port.is_some() {
+        "none"
+    } else {
+        project.desired_php_track.as_deref().unwrap_or("default")
+    }
 }
 
 fn project_list_env_status(

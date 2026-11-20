@@ -99,7 +99,7 @@ pv hooks:trust
 
 Run it from the Project directory. It shows unapproved commands and asks once, defaulting to No, just like `pv link`. Yes remembers approval for each exact command; it does not run hooks, link the Project, or request reconciliation. Worktrees share the main checkout's approvals for the same Project folder. It needs no running daemon or existing link. Without an interactive terminal it warns and saves no new approvals; there is no `--yes` flag. Empty or already-approved hook lists need no prompt. Run `pv link` when you want to execute the hooks; trusting them alone does not retry previously skipped runs. Normal background worktree discovery can use the approvals for future hook runs.
 
-Every one-label subdomain of a served Project's hostname reaches the same Project over HTTPS, so `https://tenant.acme.test` is served by `acme.test`. Deeper names such as `v1.tenant.acme.test` are not. To send a subdomain to a different Project, link that Project with the exact hostname, such as `pv link ~/Code/api --hostname api.acme.test`. While that Project is served, its exact hostname always wins, and it gets its own subdomains. While it is resource-only (`serve: false`), the parent answers that hostname.
+PHP-served Projects also answer one-label subdomains over HTTPS, such as `https://tenant.acme.test` for `acme.test`. To send a subdomain to a different Project, link that Project with the exact hostname, such as `pv link ~/Code/api --hostname api.acme.test`. Its exact hostname wins while it is served. While it is resource-only (`serve: false`), the parent answers that hostname.
 
 Open a linked Project:
 
@@ -121,6 +121,23 @@ Unlinking removes the Project from PV desired state without deleting the Project
 pv unlink
 pv unlink acme.test
 ```
+
+## Use your own development server
+
+Add the server's loopback port to its `pv.yml` and run your usual development command. The upstream should speak HTTP on `127.0.0.1`.
+
+```yaml
+proxy: 3000
+```
+
+```shell
+pv link ~/Code/api --hostname api.acme.test
+pv open api.acme.test
+```
+
+PV serves `https://api.acme.test` with its local CA and forwards to `http://127.0.0.1:3000`. The proxy Project gets the exact hostname and can still use PV-managed databases, other resources, and environment settings. Keep the dev server in its usual terminal or IDE. If PV cannot reach it, the Gateway returns a 502 with the expected address. Choose distinct ports for Projects you run side by side.
+
+`proxy` accepts integer ports from 1 through 65535. PV reserves its own port assignments and Gateway ports 80 and 443. Remove `php` and `root` from a served proxy Project. Set `serve: false` to use resources and environment settings without a Gateway route.
 
 ## Project Config: `pv.yml`
 

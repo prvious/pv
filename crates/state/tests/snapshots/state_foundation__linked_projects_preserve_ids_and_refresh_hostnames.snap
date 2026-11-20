@@ -10,6 +10,7 @@ expression: "(created.status, updated.status, database.projects()?)"
             id: "<project_id>",
             slug: "acme",
             mode: Served,
+            proxy_port: None,
             path: "<tempdir>/acme",
             original_path: "<tempdir>/acme",
             primary_hostname: Some(

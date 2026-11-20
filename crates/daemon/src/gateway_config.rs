@@ -42,8 +42,14 @@ pub struct GatewayProjectRoute {
     pub id: String,
     pub render_config: bool,
     pub primary_hostname: String,
-    pub worker_port: u16,
+    pub upstream: GatewayUpstream,
     pub access_log_path: Utf8PathBuf,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GatewayUpstream {
+    Php(u16),
+    Proxy(u16),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -155,10 +161,12 @@ pub fn render_php_worker_config(input: &PhpWorkerConfigInput) -> Result<String, 
 pub fn render_gateway_project_config(route: &GatewayProjectRoute) -> Result<String, DaemonError> {
     let mut output = String::new();
 
-    output.push_str(&format!(
-        "{} {{\n",
-        comma_separated_hostnames(&route.primary_hostname)?
-    ));
+    let [primary, wildcard] = project_site_hostnames(&route.primary_hostname)?;
+    let (hostnames, port) = match route.upstream {
+        GatewayUpstream::Php(port) => (format!("{primary}, {wildcard}"), port),
+        GatewayUpstream::Proxy(port) => (primary, port),
+    };
+    output.push_str(&format!("{hostnames} {{\n"));
     output.push_str(&format!("    bind {GATEWAY_HTTPS_LISTENER}\n"));
     append_file_log(&mut output, "    ", route.access_log_path.as_str())?;
     output.push_str("    tls {\n");
@@ -166,15 +174,21 @@ pub fn render_gateway_project_config(route: &GatewayProjectRoute) -> Result<Stri
     output.push_str("            ca local\n");
     output.push_str("        }\n");
     output.push_str("    }\n");
-    output.push_str(&format!(
-        "    reverse_proxy 127.0.0.1:{} {{\n",
-        route.worker_port
-    ));
-    output.push_str("        header_up Host {host}\n");
-    output.push_str("        header_up X-Forwarded-Host {host}\n");
-    output.push_str("        header_up X-Forwarded-Proto {scheme}\n");
-    output.push_str("        header_up X-Forwarded-For {remote_host}\n");
-    output.push_str("    }\n");
+    match route.upstream {
+        GatewayUpstream::Php(_) => {
+            output.push_str(&format!("    reverse_proxy 127.0.0.1:{port} {{\n"));
+            output.push_str("        header_up Host {host}\n");
+            output.push_str("        header_up X-Forwarded-Host {host}\n");
+            output.push_str("        header_up X-Forwarded-Proto {scheme}\n");
+            output.push_str("        header_up X-Forwarded-For {remote_host}\n");
+            output.push_str("    }\n");
+        }
+        GatewayUpstream::Proxy(_) => {
+            output.push_str(&format!(
+                "    reverse_proxy 127.0.0.1:{port}\n    handle_errors 502 {{\n        respond \"PV could not reach http://127.0.0.1:{port}. Start your app and check that it listens on this address.\" 502\n    }}\n"
+            ));
+        }
+    }
     output.push_str("}\n");
 
     Ok(output)
@@ -411,10 +425,6 @@ pub(crate) fn promote_validated_config(
     candidate.disarm();
 
     Ok(())
-}
-
-fn comma_separated_hostnames(primary_hostname: &str) -> Result<String, DaemonError> {
-    Ok(project_site_hostnames(primary_hostname)?.join(", "))
 }
 
 fn comma_separated_worker_sites(primary_hostname: &str, port: u16) -> Result<String, DaemonError> {

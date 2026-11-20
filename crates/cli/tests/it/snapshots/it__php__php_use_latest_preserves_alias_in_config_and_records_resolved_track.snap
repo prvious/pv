@@ -15,6 +15,7 @@ expression: "(output, config_after, config_file.config,\nproject_snapshot(&proje
     "php: latest\nroot: .\n",
     ProjectConfig {
         serve: true,
+        proxy_port: None,
         env_file: ".env",
         php: Some(
             PhpConfig {

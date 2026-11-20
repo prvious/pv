@@ -29,10 +29,10 @@ use tokio::task::JoinHandle;
 
 use crate::gateway_config::{
     GATEWAY_HEALTH_HOSTNAME, GATEWAY_HEALTH_RESPONSE, GATEWAY_HTTPS_LISTENER, GatewayConfigInput,
-    GatewayProjectRoute, HEALTH_PATH, PhpWorkerConfigInput, PhpWorkerProject, PromotedConfigTree,
-    WORKER_HEALTH_HOSTNAME, promote_config_dir, promote_validated_config_tree_async,
-    render_gateway_config, render_gateway_project_config, render_php_worker_config,
-    render_php_worker_project_config, worker_health_response,
+    GatewayProjectRoute, GatewayUpstream, HEALTH_PATH, PhpWorkerConfigInput, PhpWorkerProject,
+    PromotedConfigTree, WORKER_HEALTH_HOSTNAME, promote_config_dir,
+    promote_validated_config_tree_async, render_gateway_config, render_gateway_project_config,
+    render_php_worker_config, render_php_worker_project_config, worker_health_response,
 };
 use crate::project_env::{
     ResolvedPhpRuntime, resolve_project_php_runtime, validate_project_config_for_gateway,
@@ -165,6 +165,7 @@ pub struct GatewayRuntimePlan {
     pub ca_certificate_path: Utf8PathBuf,
     pub ca_private_key_path: Utf8PathBuf,
     pub storage_path: Utf8PathBuf,
+    proxy_routes: Vec<GatewayProjectRoute>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -303,7 +304,9 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
     if failed_worker_outside_target(paths, &targeted, &target_active_impact)? {
         return Ok(ProjectGatewayReconciliationOutcome::PromoteSystem);
     }
-    if targeted.current_runtime_key.is_none()
+    let has_target_route =
+        targeted.current_runtime_key.is_some() || !targeted.plan.gateway.proxy_routes.is_empty();
+    if !has_target_route
         && !target_active_impact.served
         && target_active_impact.runtime_keys.is_empty()
     {
@@ -378,9 +381,8 @@ pub(crate) async fn reconcile_project_gateway_runtimes_with_phase_log(
         ],
     );
 
-    let gateway_required = active_impact.served
-        || targeted.current_runtime_key.is_some()
-        || !active_impact.runtime_keys.is_empty();
+    let gateway_required =
+        active_impact.served || has_target_route || !active_impact.runtime_keys.is_empty();
     let gateway_timer = phase_log.start(
         structured_log::ReconciliationPhase::Gateway,
         "target_project",
@@ -670,7 +672,10 @@ async fn reconcile_all_gateway_runtimes(
     if let Some(gateway_timer) = gateway_timer {
         gateway_timer.finish(
             structured_log::PhaseOutcome::Succeeded,
-            &[("project_count", usize_as_u64(project_count))],
+            &[(
+                "project_count",
+                usize_as_u64(project_count + plan.gateway.proxy_routes.len()),
+            )],
         );
     }
 
@@ -765,6 +770,7 @@ async fn recover_previous_gateway(
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
             storage_path: gateway_storage_path(paths)?,
+            proxy_routes: Vec::new(),
         },
         workers: Vec::new(),
     };
@@ -1836,6 +1842,7 @@ pub fn worker_process_spec(
 pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
     let mut database = Database::open(paths)?;
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
+    let mut proxy_routes = Vec::new();
     let held_project_ids = database.held_project_ids()?;
 
     for project in database.projects()? {
@@ -1843,56 +1850,41 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             continue;
         }
 
-        let config_file = match ProjectConfigFile::read_from_root(&project.path) {
-            Ok(config_file) => Some(config_file),
-            Err(error) => {
-                database.record_project_env_observed_snapshot(
-                    &project.id,
-                    ProjectEnvObservedStatus::Failed,
-                    Some(error.to_string().as_str()),
-                    &[],
-                )?;
+        let config_file = ProjectConfigFile::read_from_root(&project.path)
+            .map_err(DaemonError::from)
+            .and_then(|file| {
+                if file.config.serve {
+                    validate_project_config_for_gateway(paths, &database, &project, &file)?;
+                }
+                Ok(file)
+            });
+        let config = match config_file {
+            Ok(file) if file.config.serves_php() && project.proxy_port.is_none() => file.config,
+            Ok(file)
+                if project.proxy_port.is_some()
+                    && file.config.active_proxy_port() == project.proxy_port =>
+            {
+                proxy_routes.extend(persisted_proxy_route(paths, &project)?);
+                continue;
+            }
+            result => {
+                if let Err(error) = result {
+                    database.record_project_env_observed_snapshot(
+                        &project.id,
+                        ProjectEnvObservedStatus::Failed,
+                        Some(&error.to_string()),
+                        &[],
+                    )?;
+                }
                 append_persisted_runtime_project(
                     paths,
                     &mut database,
                     &mut projects_by_runtime_key,
+                    &mut proxy_routes,
                     project,
                 )?;
                 continue;
             }
-        };
-        let config = match config_file {
-            Some(config_file) => {
-                if config_file.config.serve != (project.mode == ProjectMode::Served) {
-                    append_persisted_runtime_project(
-                        paths,
-                        &mut database,
-                        &mut projects_by_runtime_key,
-                        project,
-                    )?;
-                    continue;
-                }
-                match validate_project_config_for_gateway(paths, &database, &project, &config_file)
-                {
-                    Ok(()) => Some(config_file.config),
-                    Err(error) => {
-                        database.record_project_env_observed_snapshot(
-                            &project.id,
-                            ProjectEnvObservedStatus::Failed,
-                            Some(error.to_string().as_str()),
-                            &[],
-                        )?;
-                        append_persisted_runtime_project(
-                            paths,
-                            &mut database,
-                            &mut projects_by_runtime_key,
-                            project,
-                        )?;
-                        continue;
-                    }
-                }
-            }
-            None => None,
         };
         let primary_hostname =
             project
@@ -1901,13 +1893,8 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
                 .ok_or_else(|| StateError::ProjectNotServed {
                     project_id: project.id.clone(),
                 })?;
-        let runtime = resolve_project_php_runtime(
-            paths,
-            &database,
-            &project,
-            config.as_ref().and_then(|config| config.php.as_ref()),
-        )?;
-        let root = resolve_project_root(&project.path, config.as_ref())?;
+        let runtime = resolve_project_php_runtime(paths, &database, &project, config.php.as_ref())?;
+        let root = resolve_project_root(&project.path, &config)?;
         let runtime_project = RuntimeProject {
             id: project.id,
             render_config: true,
@@ -1933,6 +1920,7 @@ pub fn build_runtime_plan(paths: &PvPaths) -> Result<RuntimePlan, DaemonError> {
             ca_certificate_path: paths.ca_certificate(),
             ca_private_key_path: paths.ca_private_key(),
             storage_path: gateway_storage_path(paths)?,
+            proxy_routes,
         },
         workers,
     })
@@ -1944,6 +1932,7 @@ fn build_target_runtime_plan(
 ) -> Result<Option<TargetedRuntimePlan>, DaemonError> {
     let mut database = Database::open(paths)?;
     let mut projects_by_runtime_key: BTreeMap<String, PhpWorkerRuntimePlan> = BTreeMap::new();
+    let mut proxy_routes = Vec::new();
     let mut current_runtime_key = None;
     let project =
         database
@@ -1957,45 +1946,52 @@ fn build_target_runtime_plan(
     if project.mode == ProjectMode::Served && !held {
         // Project-to-System promotion is fail-closed: unreadable or invalid Project
         // config is a typed error, never uncertainty. Only a valid config that
-        // contradicts the stored mode hands off to System reconciliation.
+        // contradicts the stored mode or target hands off to System reconciliation.
         let config_file = ProjectConfigFile::read_from_root(&project.path)?;
         if !config_file.config.serve {
             return Ok(None);
         }
         validate_project_config_for_gateway(paths, &database, &project, &config_file)?;
-        let primary_hostname =
-            project
-                .primary_hostname
-                .clone()
-                .ok_or_else(|| StateError::ProjectNotServed {
-                    project_id: project.id.clone(),
-                })?;
-        let runtime = resolve_project_php_runtime(
-            paths,
-            &database,
-            &project,
-            config_file.config.php.as_ref(),
-        )?;
-        let persisted_runtime_key = persisted_project_runtime_key(&project)?;
-        if persisted_runtime_key.as_deref() != Some(runtime.runtime_key.as_str()) {
+        if config_file.config.active_proxy_port() != project.proxy_port {
             return Ok(None);
         }
-        let root = resolve_project_root(&project.path, Some(&config_file.config))?;
-        let runtime_project = RuntimeProject {
-            id: project.id,
-            render_config: true,
-            primary_hostname,
-            project_root: project.path,
-            root,
-        };
-        current_runtime_key = Some(runtime.runtime_key.clone());
-        append_runtime_project(
-            paths,
-            &mut database,
-            &mut projects_by_runtime_key,
-            runtime,
-            runtime_project,
-        )?;
+        if let Some(route) = persisted_proxy_route(paths, &project)? {
+            proxy_routes.push(route);
+        } else {
+            let primary_hostname =
+                project
+                    .primary_hostname
+                    .clone()
+                    .ok_or_else(|| StateError::ProjectNotServed {
+                        project_id: project.id.clone(),
+                    })?;
+            let runtime = resolve_project_php_runtime(
+                paths,
+                &database,
+                &project,
+                config_file.config.php.as_ref(),
+            )?;
+            let persisted_runtime_key = persisted_project_runtime_key(&project)?;
+            if persisted_runtime_key.as_deref() != Some(runtime.runtime_key.as_str()) {
+                return Ok(None);
+            }
+            let root = resolve_project_root(&project.path, &config_file.config)?;
+            let runtime_project = RuntimeProject {
+                id: project.id,
+                render_config: true,
+                primary_hostname,
+                project_root: project.path,
+                root,
+            };
+            current_runtime_key = Some(runtime.runtime_key.clone());
+            append_runtime_project(
+                paths,
+                &mut database,
+                &mut projects_by_runtime_key,
+                runtime,
+                runtime_project,
+            )?;
+        }
     }
 
     let workers = sorted_runtime_workers(projects_by_runtime_key);
@@ -2006,6 +2002,7 @@ fn build_target_runtime_plan(
                 ca_certificate_path: paths.ca_certificate(),
                 ca_private_key_path: paths.ca_private_key(),
                 storage_path: gateway_storage_path(paths)?,
+                proxy_routes,
             },
             workers,
         },
@@ -2032,6 +2029,7 @@ fn complete_targeted_runtime_plan(
                 paths,
                 &mut database,
                 &mut projects_by_runtime_key,
+                &mut targeted.plan.gateway.proxy_routes,
                 project,
             )?
         {
@@ -2115,7 +2113,11 @@ fn verified_active_project_gateway_impact(
         }
     }
 
-    if served && runtime_keys.is_empty() {
+    if runtime_keys.is_empty()
+        && gateway_fragments
+            .get(&file_name)
+            .is_some_and(|fragment| generated_proxy_port(fragment).is_none())
+    {
         return Ok(None);
     }
 
@@ -2335,9 +2337,25 @@ fn append_targeted_persisted_runtime_project(
     paths: &PvPaths,
     database: &mut Database,
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    proxy_routes: &mut Vec<GatewayProjectRoute>,
     project: state::ProjectRecord,
 ) -> Result<bool, DaemonError> {
     if project.mode == ProjectMode::ResourceOnly {
+        return Ok(true);
+    }
+    if let Some(mut route) = persisted_proxy_route(paths, &project)? {
+        if !fs::path_is_directory(&project.path)? {
+            return Ok(false);
+        }
+        let fragment = read_preserved_project_config_fragment(
+            &paths.gateway_projects_config_dir(),
+            &project_config_file_name(&project.id),
+        )?;
+        if fragment.as_deref() != Some(render_gateway_project_config(&route)?.as_str()) {
+            return Ok(false);
+        }
+        route.render_config = false;
+        proxy_routes.push(route);
         return Ok(true);
     }
     let Some(runtime) = persisted_project_php_runtime(database, &project)? else {
@@ -2379,7 +2397,7 @@ fn append_targeted_persisted_runtime_project(
         id: runtime_project.id,
         render_config: false,
         primary_hostname: runtime_project.primary_hostname,
-        worker_port,
+        upstream: GatewayUpstream::Php(worker_port),
         access_log_path: paths.gateway_access_log(),
     })?;
 
@@ -2414,9 +2432,9 @@ fn sorted_runtime_workers(
 
 fn resolve_project_root(
     project_root: &Utf8Path,
-    config: Option<&ProjectConfig>,
+    config: &ProjectConfig,
 ) -> Result<Utf8PathBuf, DaemonError> {
-    if let Some(root) = config.and_then(|config| config.root.as_ref()) {
+    if let Some(root) = &config.root {
         return Ok(project_root.join(root));
     }
 
@@ -2453,9 +2471,13 @@ fn append_persisted_runtime_project(
     paths: &PvPaths,
     database: &mut Database,
     projects_by_runtime_key: &mut BTreeMap<String, PhpWorkerRuntimePlan>,
+    proxy_routes: &mut Vec<GatewayProjectRoute>,
     project: state::ProjectRecord,
 ) -> Result<(), DaemonError> {
     if project.mode == ProjectMode::ResourceOnly {
+        return Ok(());
+    }
+    if project.proxy_port.is_some() && !fs::path_is_directory(&project.path)? {
         return Ok(());
     }
     let primary_hostname =
@@ -2465,25 +2487,63 @@ fn append_persisted_runtime_project(
             .ok_or_else(|| StateError::ProjectNotServed {
                 project_id: project.id.clone(),
             })?;
-    let mut runtime = match persisted_project_php_runtime(database, &project) {
-        Ok(Some(runtime)) => runtime,
-        Ok(None) => return Ok(()),
-        Err(
-            error @ DaemonError::Resources(resources::ResourcesError::InvalidArtifactLayout {
-                ..
-            }),
-        ) => {
-            let message = error.to_string();
-            database.record_project_env_observed_snapshot(
-                &project.id,
-                ProjectEnvObservedStatus::Failed,
-                Some(&message),
-                &[],
-            )?;
-
-            return Err(error);
+    let gateway_fragment = read_preserved_project_config_fragment(
+        &paths.gateway_projects_config_dir(),
+        &project_config_file_name(&project.id),
+    )?;
+    // Project Apply records the new PHP runtime before the Gateway switches upstreams.
+    // A failed switch can leave the previous proxy route active.
+    if let Some(port) = gateway_fragment.as_deref().and_then(generated_proxy_port) {
+        if fs::path_is_directory(&project.path)? {
+            match database.validate_project_proxy_port(&project.id, port) {
+                Ok(()) => proxy_routes.push(proxy_route(paths, project.id, primary_hostname, port)),
+                Err(
+                    StateError::ProjectProxyPortCollision { .. }
+                    | StateError::ProjectProxyPortReserved { .. },
+                ) => {}
+                Err(error) => return Err(error.into()),
+            }
         }
-        Err(error) => return Err(error),
+        return Ok(());
+    }
+    if gateway_fragment.is_none()
+        && let Some(route) = persisted_proxy_route(paths, &project)?
+    {
+        proxy_routes.push(route);
+        return Ok(());
+    }
+    let runtime = match gateway_fragment {
+        Some(ref fragment) => active_project_runtime_for_gateway_fragment(
+            paths,
+            &project.id,
+            fragment,
+        )?
+        .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
+            reason: format!(
+                "active Gateway route for Project `{}` does not match a preserved PHP worker",
+                project.id
+            ),
+        })?,
+        None => match persisted_project_php_runtime(database, &project) {
+            Ok(Some(runtime)) => runtime,
+            Ok(None) => return Ok(()),
+            Err(
+                error @ DaemonError::Resources(resources::ResourcesError::InvalidArtifactLayout {
+                    ..
+                }),
+            ) => {
+                let message = error.to_string();
+                database.record_project_env_observed_snapshot(
+                    &project.id,
+                    ProjectEnvObservedStatus::Failed,
+                    Some(&message),
+                    &[],
+                )?;
+
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        },
     };
     let runtime_project = RuntimeProject {
         id: project.id,
@@ -2492,23 +2552,6 @@ fn append_persisted_runtime_project(
         project_root: project.path.clone(),
         root: project.path,
     };
-    if let Some(gateway_fragment) = read_preserved_project_config_fragment(
-        &paths.gateway_projects_config_dir(),
-        &project_config_file_name(&runtime_project.id),
-    )? {
-        runtime = active_project_runtime_for_gateway_fragment(
-            paths,
-            &runtime_project.id,
-            &gateway_fragment,
-        )?
-        .ok_or_else(|| DaemonError::UnexpectedProtocolResponse {
-            reason: format!(
-                "active Gateway route for Project `{}` does not match a preserved PHP worker",
-                runtime_project.id
-            ),
-        })?;
-    }
-
     append_runtime_project(
         paths,
         database,
@@ -2561,6 +2604,15 @@ fn active_project_runtime_for_gateway_fragment(
 
 fn gateway_fragment_targets_worker(gateway_fragment: &str, port: u16) -> bool {
     gateway_fragment.contains(&format!("    reverse_proxy 127.0.0.1:{port} {{\n"))
+}
+
+fn generated_proxy_port(gateway_fragment: &str) -> Option<u16> {
+    gateway_fragment.lines().find_map(|line| {
+        line.strip_prefix("    reverse_proxy 127.0.0.1:")?
+            .parse()
+            .ok()
+            .filter(|port| *port != 0)
+    })
 }
 
 fn append_runtime_project(
@@ -2769,7 +2821,7 @@ fn desired_worker_config(
     })
 }
 
-/// The previous fragments on `worker` of Projects that now run on another worker under the same
+/// The previous fragments on `worker` of Projects that now use another upstream under the same
 /// hostname, while the committed Gateway still sends that hostname here, or can't be verified. The
 /// worker keeps serving them until the Gateway switches, so a new worker that fails to start leaves
 /// the site working where it was. A renamed Project keeps nothing, so no hostname is defined twice.
@@ -2787,12 +2839,16 @@ fn moved_project_fragments(
                 .iter()
                 .filter(|other| other.runtime_key != worker.runtime_key)
                 .flat_map(|other| &other.projects)
-                .any(|project| {
-                    project_config_file_name(&project.id) == *file_name
-                        && content.starts_with(&format!(
-                            "http://{}:{}, ",
-                            project.primary_hostname, worker.port
-                        ))
+                .map(|project| (&project.id, &project.primary_hostname))
+                .chain(
+                    plan.gateway
+                        .proxy_routes
+                        .iter()
+                        .map(|route| (&route.id, &route.primary_hostname)),
+                )
+                .any(|(id, hostname)| {
+                    project_config_file_name(id) == *file_name
+                        && content.starts_with(&format!("http://{hostname}:{}, ", worker.port))
                 });
             moved_with_same_hostname
                 && previous_gateway.is_none_or(|gateway| {
@@ -3667,11 +3723,49 @@ fn gateway_project_routes(paths: &PvPaths, plan: &RuntimePlan) -> Vec<GatewayPro
                 id: project.id.clone(),
                 render_config: project.render_config,
                 primary_hostname: project.primary_hostname.clone(),
-                worker_port: worker.port,
+                upstream: GatewayUpstream::Php(worker.port),
                 access_log_path: paths.gateway_access_log(),
             })
         })
+        .chain(plan.gateway.proxy_routes.iter().cloned())
         .collect()
+}
+
+fn persisted_proxy_route(
+    paths: &PvPaths,
+    project: &state::ProjectRecord,
+) -> Result<Option<GatewayProjectRoute>, DaemonError> {
+    let Some(port) = project.proxy_port else {
+        return Ok(None);
+    };
+    let primary_hostname =
+        project
+            .primary_hostname
+            .clone()
+            .ok_or_else(|| StateError::ProjectNotServed {
+                project_id: project.id.clone(),
+            })?;
+    Ok(Some(proxy_route(
+        paths,
+        project.id.clone(),
+        primary_hostname,
+        port,
+    )))
+}
+
+fn proxy_route(
+    paths: &PvPaths,
+    id: String,
+    primary_hostname: String,
+    port: u16,
+) -> GatewayProjectRoute {
+    GatewayProjectRoute {
+        id,
+        render_config: true,
+        primary_hostname,
+        upstream: GatewayUpstream::Proxy(port),
+        access_log_path: paths.gateway_access_log(),
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
