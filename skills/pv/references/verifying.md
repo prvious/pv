@@ -33,4 +33,5 @@ These responses come from the sandbox, not from the application. Report them to 
 
 - A failed TLS handshake, such as curl's `tlsv1 alert internal error`, usually means no Project is linked at that hostname, so PV has no certificate for it. Look the hostname up with `pv list --json`.
 - An untrusted-certificate error from a client that reads the system store means setup's CA trust needs repair. `pv doctor` names the fix.
-- A `5xx` error comes from the application. Check its logs, such as `storage/logs/laravel.log`, and `pv logs --worker <php-track>`.
+- A `502` or `504` can come from PV's Gateway when the Project's PHP worker isn't running or doesn't answer in time. Check `pv status --json`, `pv logs --gateway` and `pv logs --worker <php-track>`.
+- Other `5xx` errors, such as `500`, come from the application. Check its logs, such as `storage/logs/laravel.log`.

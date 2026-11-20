@@ -54,7 +54,7 @@ postgres:
         ANALYTICS_DB_DATABASE: "${database}"
 ```
 
-PV creates it on its own; check that `pv list --json` shows `env: "rendered"`.
+PV creates it on its own. Confirm it with a `reconcile` job for the Project that started after your edit and `succeeded` in `pv jobs --json`, then read the new key.
 
 - **Renaming an allocation key** gives you a new, empty database. The old one stays on the server.
 - **Changing `version`** creates the allocations, empty, on the new track. The old data stays on the previous track, and moving back reconnects to it. PV does not copy rows between tracks.

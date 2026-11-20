@@ -16,7 +16,7 @@ A new worktree passes through these stages:
 
 1. **Discovery.** Usually within a second of Git creating the worktree. If its `pv.yml` declares approved `prepare` hooks, PV runs them first, which can take minutes for `composer install`.
 2. **Linked.** `pv list --json` lists a Project whose `path` is inside the worktree.
-3. **Data ready and served.** That entry shows `env: "rendered"`, or `"none"` when `pv.yml` maps no env. PV adds the route only after the worktree's databases and env are in place.
+3. **Data ready and served.** PV adds the route only after the worktree's databases and env are in place. So the first HTTP response from `https://<hostname>`, whatever its status code, shows both; until then the TLS handshake fails. A resource-only Project has no route, so `env: "rendered"` is the only sign, and only when `pv.yml` maps env values. `env: "none"` says nothing about readiness. If you can't make the request, as inside a sandbox, say that readiness is unconfirmed.
 4. **Setup.** If `pv.yml` declares `setup` hooks, PV runs them once after the first successful reconciliation, for example migrations or `npm run build`. The page can load before setup finishes.
 
 To follow setup, look at `pv jobs --json` for entries with `kind: "hooks"`:
@@ -27,7 +27,7 @@ To follow setup, look at `pv jobs --json` for entries with `kind: "hooks"`:
 
 Until a worktree has its own Project, don't run `pv php:use`, `pv unlink`, `pv open` or `pv project:env` inside it. Some PV versions resolve those to the main checkout's Project when the worktree sits inside it, as `.claude/worktrees/<name>` does.
 
-Before handing over a worktree URL, say what you verified: the Project exists, its env is rendered, and setup succeeded, was skipped, or isn't declared.
+Before handing over a worktree URL, say what you verified: the Project exists, its URL answers, and setup succeeded, was skipped, or isn't declared. Say which of these you couldn't check.
 
 ## Hooks
 

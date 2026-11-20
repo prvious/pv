@@ -28,7 +28,7 @@ Each entry in `projects` has `path`, `hostname`, `slug`, `mode`, `php`, `resourc
 
 1. Pick the entry whose `path` is your working directory or its nearest parent. Inside a Git worktree, use only an entry whose `path` is inside that worktree. If none exists yet, read [worktrees](references/worktrees.md) before running other `pv` commands there.
 2. The URL is `https://<hostname>`. A `resource-only` Project has `hostname: null` and serves nothing.
-3. `status: "unknown"` is normal. `missing` means the directory is gone, and `config-invalid` means `pv.yml` doesn't validate. `env: "rendered"` means PV wrote the Project's `.env` values. `pending`, `failed` or `warning` mean it hasn't, or wrote them with a problem.
+3. `status: "unknown"` is normal. `missing` means the directory is gone, and `config-invalid` means `pv.yml` doesn't validate. `env: "rendered"` means PV wrote the Project's `.env` values, and `pending`, `failed` or `warning` mean it hasn't, or wrote them with a problem. `none` means `pv.yml` maps no env values, which says nothing about readiness. `env` reflects PV's last attempt, which can predate your latest edit.
 
 To get one value, such as the database name, without printing secrets:
 
@@ -60,7 +60,9 @@ postgres:
         DB_PASSWORD: "${password}"
 ```
 
-`pv php:use 8.4` writes the PHP version into `pv.yml` for you. After any change, check `pv list --json` until `env` is `rendered`. Then read the value you need, as above, to confirm what PV created.
+`pv php:use 8.4` writes the PHP version into `pv.yml` for you.
+
+To confirm PV applied a change, look in `pv jobs --json` for a `reconcile` job with `scope` `project:<id>`, using the `id` from `pv list --json`, that started after your edit. `succeeded` means PV applied the new config, and `failed` gives the reason in `error`. Then read the value you need, as above. Until such a job appears, readiness is unknown. `config-invalid` in `pv list --json` means PV rejected the file and keeps serving the previous config.
 
 ## Git worktrees
 
