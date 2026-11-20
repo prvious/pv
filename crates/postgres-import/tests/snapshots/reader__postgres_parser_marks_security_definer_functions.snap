@@ -1,0 +1,20 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: options
+---
+[
+    (
+        "language",
+        None,
+    ),
+    (
+        "security",
+        Some(
+            true,
+        ),
+    ),
+    (
+        "as",
+        None,
+    ),
+]

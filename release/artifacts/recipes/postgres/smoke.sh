@@ -10,6 +10,7 @@ postgres="$artifact_root/bin/postgres"
 initdb="$artifact_root/bin/initdb"
 pg_ctl="$artifact_root/bin/pg_ctl"
 psql="$artifact_root/bin/psql"
+pg_restore="$artifact_root/bin/pg_restore"
 extension_catalog=${PV_POSTGRES_EXTENSION_CATALOG:-}
 admin_user=pv_root
 admin_password=pv_local_password
@@ -89,6 +90,7 @@ validate_packaged_macho_tree() {
     bin/initdb \
     bin/pg_ctl \
     bin/psql \
+    bin/pg_restore \
     lib/libcrypto.3.dylib \
     lib/libssl.3.dylib \
     lib/postgresql/pg_trgm.dylib \
@@ -138,14 +140,13 @@ cleanup() {
   printf '%s\n' "missing executable $pg_ctl" >&2
   exit 42
 }
-[ -x "$psql" ] || {
-  printf '%s\n' "missing executable $psql" >&2
-  exit 42
-}
+[ -x "$psql" ] || die "missing executable $psql"
+[ -x "$pg_restore" ] || die "missing executable $pg_restore"
 
 need diff
 need file
 need find
+need grep
 need mktemp
 need python3
 [ -n "$platform" ] || die "missing PV_POSTGRES_PLATFORM for packaged artifact validation"
@@ -188,6 +189,10 @@ case "$platform" in
     pv_recipe_validate_elf_tree "$artifact_root" "$platform"
     ;;
 esac
+
+"$pg_restore" --file="$tmpdir/restored.sql" "$ROOT/it/fixtures/postgres-import/17.11/custom.dump"
+grep -Fq 'admin and analytics are data, not routing' "$tmpdir/restored.sql" \
+  || die "pg_restore did not render the compressed table data"
 
 printf '%s\n' "$admin_password" >"$password_file"
 "$initdb" \

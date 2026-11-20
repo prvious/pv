@@ -151,14 +151,14 @@ copy_install_tree() {
     die "Postgres supplied extension catalog does not match track $PV_TRACK"
   fi
 
+  for binary in postgres initdb pg_ctl psql pg_restore; do
+    [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
+  done
   case "$PLATFORM" in
     darwin-arm64 | darwin-amd64)
       pv_recipe_cleanup_macho_rpaths_tree "$root_dir"
       rewrite_macho_install_names "$root_dir" "$install_dir" "$openssl_prefix"
       pv_recipe_ad_hoc_sign_macho_tree "$root_dir"
-      for binary in postgres initdb pg_ctl psql; do
-        [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
-      done
       for library in \
         lib/libcrypto.3.dylib \
         lib/libssl.3.dylib \
@@ -176,9 +176,6 @@ copy_install_tree() {
       done
       ;;
     linux-amd64 | linux-arm64)
-      for binary in postgres initdb pg_ctl psql; do
-        [ -x "$root_dir/bin/$binary" ] || die "Postgres artifact missing bin/$binary"
-      done
       for library in pg_trgm pgcrypto sslinfo; do
         [ -f "$root_dir/lib/postgresql/$library.so" ] || die "Postgres artifact missing lib/postgresql/$library.so"
       done
@@ -240,7 +237,15 @@ case "$PLATFORM" in
     export CFLAGS="${CFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
     export LDFLAGS="${LDFLAGS:-} -mmacosx-version-min=$DEPLOYMENT_TARGET"
     ;;
-  linux-amd64 | linux-arm64) set -- --disable-rpath ;;
+  linux-amd64 | linux-arm64)
+    # Use the builder's static zlib so the artifact has no host zlib dependency.
+    zlib_archive=$(${CC:-cc} -print-file-name=libz.a)
+    [ -f "$zlib_archive" ] || die "missing static zlib; install zlib1g-dev"
+    mkdir "$work_dir/zlib"
+    cp "$zlib_archive" "$work_dir/zlib/libz.a"
+    set -- --disable-rpath
+    export LDFLAGS="-L$work_dir/zlib ${LDFLAGS:-}"
+    ;;
 esac
 (
   cd "$source_dir"
@@ -253,7 +258,6 @@ esac
     --without-llvm \
     --without-lz4 \
     --without-readline \
-    --without-zlib \
     --without-zstd "$@"
   make -j "$BUILD_JOBS" world-bin pkglibdir="$install_dir/lib/postgresql"
   make install-world-bin pkglibdir="$install_dir/lib/postgresql"

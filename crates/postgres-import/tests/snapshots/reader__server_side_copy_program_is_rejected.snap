@@ -1,0 +1,7 @@
+---
+source: crates/postgres-import/tests/reader.rs
+expression: "inspect_plain_dump(Cursor::new(input)).err().map(|error| error.to_string())"
+---
+Some(
+    "COPY from a server file or program is unsupported on line 1",
+)

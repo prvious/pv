@@ -215,6 +215,9 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146
 
+      - name: Install native PostgreSQL build dependencies
+        run: sudo apt-get install -y clang libclang-dev patchelf zlib1g-dev
+
       - name: Run Linux workspace tests
         id: tests
         run: |

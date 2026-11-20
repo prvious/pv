@@ -1,3 +1,6 @@
 This artifact includes OpenSSL 3.5.8, distributed under the Apache License 2.0.
 
 The complete OpenSSL license is included as OPENSSL-LICENSE.
+
+Linux artifacts statically link zlib, distributed under the zlib License.
+https://zlib.net/zlib_license.html

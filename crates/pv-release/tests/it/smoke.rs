@@ -2024,10 +2024,9 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
     );
     assert_eq!(
         run.validate_log,
-        "archive=postgres-17.10-pv2-darwin-arm64.tar.gz record=postgres-17.10-pv2-darwin-arm64.json smoke=smoke.sh\n"
+        "archive=postgres-17.11-pv2-darwin-arm64.tar.gz record=postgres-17.11-pv2-darwin-arm64.json smoke=smoke.sh\n"
     );
     assert!(run.configure_log.contains("[--with-ssl=openssl]"));
-    assert!(run.configure_log.contains("[--without-zlib]"));
     assert!(run.make_log.contains("make=[-j][1][world-bin][pkglibdir="));
     assert!(run.make_log.contains("/install/lib/postgresql]"));
     assert!(run.make_log.contains("make=[install-world-bin][pkglibdir="));
@@ -2050,6 +2049,7 @@ fn postgres_build_recipe_packages_pv2_supplied_extensions() -> Result<()> {
 
     let archive_entries = run.archive_entries.join("\n");
     for relative_path in [
+        "bin/pg_restore",
         "lib/libcrypto.3.dylib",
         "lib/libssl.3.dylib",
         "lib/postgresql/pg_trgm.dylib",
@@ -3230,6 +3230,16 @@ fn run_postgres_smoke_fixture(
     write_fake_postgres_initdb(&artifact_bin.join("initdb"))?;
     write_fake_postgres_pg_ctl(&artifact_bin.join("pg_ctl"))?;
     write_fake_postgres_psql(&artifact_bin.join("psql"))?;
+    write_executable(
+        &artifact_bin.join("pg_restore"),
+        r#"#!/bin/sh
+set -eu
+[ "$#" -eq 2 ] && [ -f "$2" ] || exit 1
+output=${1#--file=}
+[ "$output" != "$1" ] || exit 1
+printf '%s\n' 'admin and analytics are data, not routing' >"$output"
+"#,
+    )?;
     let target = TargetPlatform::new(platform)?;
     for library in target.openssl_library_names() {
         write_file(
@@ -3342,7 +3352,7 @@ fn run_postgres_build_recipe_smoke_with_options(
     let record_dir = tempdir.path().join("records");
     let source_archive = tempdir.path().join("postgres-source.tar.gz");
     let openssl_source_archive = tempdir.path().join("openssl-source.tar.gz");
-    let artifact_basename = format!("postgres-17.10-pv2-{}", options.platform);
+    let artifact_basename = format!("postgres-17.11-pv2-{}", options.platform);
     let dependency_bundle = tempdir.path().join("postgres-openssl-bundle.tar.gz");
     let dependency_prefix = tempdir.path().join("openssl-dependency");
     let dependency_work_dir = tempdir.path().join("dependency-work");
@@ -3447,12 +3457,20 @@ fn run_postgres_build_recipe_smoke_with_options(
     if options.corrupt_postgres_source_cache {
         create_dir_all(&source_cache_dir)?;
         write_file(
-            &source_cache_dir.join("postgresql-17.10.tar.gz"),
+            &source_cache_dir.join("postgresql-17.11.tar.gz"),
             "corrupted source cache fixture",
         )?;
     }
 
     let build_script = workspace_root.join("release/artifacts/recipes/postgres/build.sh");
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the Linux recipe test needs to locate the installed patchelf"
+    )]
+    let path = format!(
+        "{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin:{}",
+        std::env::var("PATH").unwrap_or_default()
+    );
     let run_build = |track: &str,
                      upstream_version: &str,
                      extension_catalog: &Utf8Path,
@@ -3467,7 +3485,7 @@ fn run_postgres_build_recipe_smoke_with_options(
         let mut command = StdCommand::new(&build_script);
         command
             .env("CC", &compiler)
-            .env("PATH", format!("{fake_bin}:/usr/bin:/bin:/usr/sbin:/sbin"))
+            .env("PATH", &path)
             .env("PV_ARTIFACT_OUT_DIR", &out_dir)
             .env("PV_ARTIFACT_RECORD_DIR", &record_dir)
             .env("PV_BUILD_JOBS", "1")
@@ -3535,7 +3553,7 @@ fn run_postgres_build_recipe_smoke_with_options(
     };
     let output = run_build(
         "17",
-        "17.10",
+        "17.11",
         &extension_catalog_17,
         options.install_mismatched_catalog,
     )?;
@@ -3544,7 +3562,7 @@ fn run_postgres_build_recipe_smoke_with_options(
     let record = record_dir
         .join("postgres")
         .join("17")
-        .join("17.10-pv2")
+        .join("17.11-pv2")
         .join(options.platform)
         .join(format!("{artifact_basename}.json"));
     let archive_exists = path_exists(&archive);
@@ -5542,7 +5560,7 @@ case "${1:-}" in
       "$install_prefix/bin" \
       "$install_prefix/lib/postgresql/pgxs/src/test/regress" \
       "$install_prefix/share/extension"
-    for binary in postgres initdb pg_ctl psql pg_config; do
+    for binary in postgres initdb pg_ctl psql pg_restore pg_config; do
       printf '%s fixture\n' "$binary" >"$install_prefix/bin/$binary"
       chmod 755 "$install_prefix/bin/$binary"
     done
@@ -5561,7 +5579,7 @@ case "${1:-}" in
         ln -s libpq.so.5.17 "$install_prefix/lib/libpq.so.5"
         ln -s libpq.so.5 "$install_prefix/lib/libpq.so"
         printf '%s\n' 'int pq_fixture(void); int main(void) { return pq_fixture() != 3; }' > main.c
-        for relative in bin/postgres bin/initdb bin/pg_ctl bin/psql bin/pg_config lib/postgresql/pgxs/src/test/regress/pg_regress; do
+        for relative in bin/postgres bin/initdb bin/pg_ctl bin/psql bin/pg_restore bin/pg_config lib/postgresql/pgxs/src/test/regress/pg_regress; do
           cc main.c -L"$install_prefix/lib" -l:libpq.so.5 -L"$openssl_prefix/lib" -l:libssl.so.3 -l:libcrypto.so.3 -Wl,-rpath,/tmp/pv/build/lib -o "$install_prefix/$relative"
         done
         rm "$install_prefix/lib/postgresql/"*.dylib
@@ -5601,7 +5619,7 @@ case "${file_path##*/}" in
   openssl-3.5.8.tar.gz | openssl-3.5.8.tar.gz.tmp.*)
     checksum=a8f84a39918ec6415ce765d9b429d313ba97b8143169c172e734b9514464f5b2
     ;;
-  postgresql-17.10.tar.gz | postgresql-17.10.tar.gz.tmp.* | postgresql-18.4.tar.gz | postgresql-18.4.tar.gz.tmp.*)
+  postgresql-17.11.tar.gz | postgresql-17.11.tar.gz.tmp.* | postgresql-18.6.tar.gz | postgresql-18.6.tar.gz.tmp.*)
     if [ -n "${PV_TEST_USE_REAL_POSTGRES_SOURCE_HASH:-}" ]; then
       exec /usr/bin/shasum "$@"
     fi
