@@ -3337,6 +3337,79 @@ fn nearest_project_resolution_prefers_nested_projects() -> Result<()> {
 }
 
 #[test]
+fn nearest_project_resolution_stops_at_the_git_checkout() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let mut database = Database::open(&paths)?;
+    let main = tempdir.path().join("acme");
+    let member = main.join("apps/api");
+    let worktree = main.join(".claude/worktrees/happy-otter");
+    let submodule = main.join("vendor/sdk");
+    let nested_repository = main.join("packages/tools");
+    let unversioned = tempdir.path().join("notes");
+    state::fs::ensure_user_dir(&main.join(".git"))?;
+    state::fs::write_sensitive_file(
+        &worktree.join(".git"),
+        "gitdir: ../../../.git/worktrees/happy-otter\n",
+    )?;
+    state::fs::write_sensitive_file(&submodule.join(".git"), "gitdir: ../../.git/modules/sdk\n")?;
+    state::fs::ensure_user_dir(&nested_repository.join(".git"))?;
+    for (path, hostname) in [
+        (&main, "acme.test"),
+        (&member, "api.acme.test"),
+        (&unversioned, "notes.test"),
+    ] {
+        database.link_project(state::LinkProjectInput {
+            path: path.clone(),
+            original_path: path.clone(),
+            primary_hostname: hostname.to_string(),
+            config_path: path.join("pv.yml"),
+            desired_php_track: None,
+        })?;
+    }
+    let resolve = |database: &Database, path: &Utf8Path| -> Result<Option<String>> {
+        Ok(database
+            .nearest_project_for_path(path)?
+            .and_then(|project| project.primary_hostname))
+    };
+
+    let resolved = [
+        main.join("app/Models"),
+        member.join("src"),
+        worktree.join("apps/api/src"),
+        submodule.join("src"),
+        nested_repository.clone(),
+        unversioned.join("drafts"),
+    ]
+    .iter()
+    .map(|path| resolve(&database, path))
+    .collect::<Result<Vec<_>>>()?;
+    database.link_project(state::LinkProjectInput {
+        path: worktree.clone(),
+        original_path: worktree.clone(),
+        primary_hostname: "acme-happy-otter.test".to_string(),
+        config_path: worktree.join("pv.yml"),
+        desired_php_track: None,
+    })?;
+    let linked_worktree = resolve(&database, &worktree.join("apps/api/src"))?;
+
+    assert_eq!(
+        resolved,
+        [
+            Some("acme.test".to_string()),
+            Some("api.acme.test".to_string()),
+            None,
+            None,
+            None,
+            Some("notes.test".to_string()),
+        ]
+    );
+    assert_eq!(linked_worktree, Some("acme-happy-otter.test".to_string()));
+
+    Ok(())
+}
+
+#[test]
 fn recent_jobs_returns_the_latest_one_hundred_jobs() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));

@@ -1417,7 +1417,7 @@ The target path must exist and be a directory. `pv link` fails for missing paths
 
 PV allows linking any directory. It is Laravel-first in defaults and UX, but `pv link` does not require Laravel/PHP detection. If a linked Project cannot be served, observed status reports the failure.
 
-PV allows nested linked Projects. Current-directory resolution uses the nearest linked Project ancestor, and hostname uniqueness prevents routing ambiguity.
+PV allows nested linked Projects. Current-directory resolution uses the nearest linked Project ancestor within the same Git checkout (see Opening Projects), and hostname uniqueness prevents routing ambiguity.
 
 By default, PV serves the Project's `public/` directory when it exists, otherwise it serves the Project root.
 
@@ -1702,6 +1702,8 @@ The hostname argument accepts the same normalized forms as `pv unlink`, so `acme
 If no current Project can be resolved and the terminal is non-interactive, `pv open` exits non-zero unless a hostname argument was provided.
 
 Current-directory Project resolution walks up from the current directory to linked Project roots, stopping at the filesystem root. If linked Projects are nested, PV chooses the nearest linked Project ancestor. This applies to commands that resolve a Project from the current directory.
+
+Resolution also stops at the root of the Git checkout holding the current directory: the nearest directory with a `.git` entry, a directory for a main checkout and a file for a linked worktree or a submodule. A Project above that root never matches. A linked worktree, submodule or nested repository inside a linked Project therefore never resolves to that Project, even while PV has not linked the worktree yet, such as while its `prepare` hook runs. There, commands that need a Project fail and name the checkout, and the PHP and Composer shims use the global default PHP track, as in any directory outside a linked Project. Directories outside any Git checkout resolve as before.
 
 An explicit resource-only Project target returns a clear non-zero error and never launches a browser. Resource-only Projects are excluded from the interactive picker.
 

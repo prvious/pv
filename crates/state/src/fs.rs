@@ -671,6 +671,19 @@ pub fn path_entry_exists(path: &Utf8Path) -> Result<bool, StateError> {
     }
 }
 
+/// The root of the Git checkout holding `path`: the nearest directory, `path` included, with a
+/// `.git` entry. A main checkout's `.git` is a directory; a linked worktree's or a submodule's is a
+/// file.
+pub fn git_checkout_root(path: &Utf8Path) -> Result<Option<&Utf8Path>, StateError> {
+    for ancestor in path.ancestors() {
+        if path_entry_exists(&ancestor.join(".git"))? {
+            return Ok(Some(ancestor));
+        }
+    }
+
+    Ok(None)
+}
+
 #[expect(
     clippy::disallowed_methods,
     reason = "PV filesystem helper owns direct filesystem access"

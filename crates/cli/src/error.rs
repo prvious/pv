@@ -1,5 +1,6 @@
 use std::io;
 
+use camino::Utf8PathBuf;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -89,6 +90,11 @@ pub enum CliError {
         "this directory is not inside a linked Project\nPass a Project slug or hostname, or run `pv list` to see linked Projects."
     )]
     ProjectNotResolved,
+
+    #[error(
+        "this directory is in a Git checkout with no linked Project: {checkout}\nPV links each Git worktree of a linked Project on its own; `pv jobs` and `pv status` show its setup and any failure."
+    )]
+    ProjectNotLinkedInCheckout { checkout: Utf8PathBuf },
 
     #[error(
         "no linked Project matches `{selector}`\nRun `pv list` to see linked Projects and their hostnames."

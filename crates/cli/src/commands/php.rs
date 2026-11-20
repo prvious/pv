@@ -602,9 +602,10 @@ fn resolve_current_project(
 ) -> Result<ProjectRecord, ExecuteError> {
     let current_dir = current_dir(environment)?;
 
-    database
-        .nearest_project_for_path(&current_dir)?
-        .ok_or_else(|| CliError::ProjectNotResolved.into())
+    match database.nearest_project_for_path(&current_dir)? {
+        Some(project) => Ok(project),
+        None => Err(super::unresolved_project_error(database, &current_dir)?),
+    }
 }
 
 fn resource_commands(
