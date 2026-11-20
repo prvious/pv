@@ -357,13 +357,17 @@ fn run_database_auxiliary_hardening_test_hook(path: &Utf8Path) -> Result<(), Sta
 pub fn secure_sensitive_file(path: &Utf8Path) -> Result<(), StateError> {
     require_owner_only_filesystem()?;
     validate_owner(path)?;
-    set_file_mode(path, SENSITIVE_FILE_MODE)?;
+    if mode(path)? != SENSITIVE_FILE_MODE {
+        set_file_mode(path, SENSITIVE_FILE_MODE)?;
+    }
     validate_mode(path, SENSITIVE_FILE_MODE)
 }
 
 pub(crate) fn secure_executable_file(path: &Utf8Path) -> Result<(), StateError> {
     require_owner_only_filesystem()?;
-    set_file_mode(path, EXECUTABLE_FILE_MODE)?;
+    if mode(path)? != EXECUTABLE_FILE_MODE {
+        set_file_mode(path, EXECUTABLE_FILE_MODE)?;
+    }
     validate_mode(path, EXECUTABLE_FILE_MODE)?;
     validate_owner(path)
 }
@@ -383,11 +387,15 @@ fn database_auxiliary_files(paths: &PvPaths) -> [Utf8PathBuf; 2] {
     ]
 }
 
+/// Creates `path` if needed and makes it private to the current user. A directory that already
+/// has the right mode is left untouched, so a command over existing state writes nothing.
 pub fn ensure_user_dir(path: &Utf8Path) -> Result<(), StateError> {
     require_owner_only_filesystem()?;
     create_dir_all(path)?;
     validate_owner(path)?;
-    set_dir_mode(path, USER_ONLY_DIR_MODE)?;
+    if mode(path)? != USER_ONLY_DIR_MODE {
+        set_dir_mode(path, USER_ONLY_DIR_MODE)?;
+    }
     validate_mode(path, USER_ONLY_DIR_MODE)
 }
 

@@ -2,9 +2,10 @@ use std::io;
 use std::process::ExitCode;
 use std::time::Duration;
 
+use ::daemon::DaemonError;
 use camino::Utf8PathBuf;
 use platform::PlatformCapability;
-use state::{PvPaths, RuntimeObservedStatus, StateError};
+use state::{Database, PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
@@ -431,6 +432,36 @@ async fn request_project_reconciliation_async(
     }
 
     Ok(job)
+}
+
+/// Whether the operating system refused to connect to the daemon socket, as an agent sandbox does,
+/// rather than finding no daemon behind it.
+fn daemon_connection_denied(error: &DaemonError) -> bool {
+    matches!(error, DaemonError::Io(source) if source.kind() == io::ErrorKind::PermissionDenied)
+}
+
+/// Opens `pv.db` for a command that only reads it. Current state opens read-only, so the command
+/// writes nothing and works where `~/.pv` is read-only, as inside a coding agent's sandbox. A
+/// missing or outdated database is created or migrated as for any other command.
+fn open_database_for_reading(paths: &PvPaths) -> Result<Database, ExecuteError> {
+    match Database::open_current_read_only(paths) {
+        Ok(Some(database)) => return Ok(database),
+        Ok(None) => {}
+        // `pv.db-wal` and `pv.db-shm` are missing and can't be created here.
+        Err(error) if error.is_write_denied() => {}
+        Err(error) => return Err(error.into()),
+    }
+
+    Database::open(paths).map_err(|error| {
+        if error.is_write_denied() {
+            CliError::StateNotWritable {
+                path: paths.root().to_path_buf(),
+            }
+            .into()
+        } else {
+            error.into()
+        }
+    })
 }
 
 /// The name users know a Project by: its slug when resource-only, otherwise

@@ -130,6 +130,19 @@ pub(crate) fn run(
     Ok(())
 }
 
+/// Whether `connection` still lacks any of `migrations`.
+pub(crate) fn pending(
+    connection: &Connection,
+    migrations: &[Migration],
+) -> Result<bool, StateError> {
+    let applied_migrations = applied_migrations(connection)?;
+    validate_applied_migration_names(&applied_migrations, migrations)?;
+
+    Ok(migrations
+        .iter()
+        .any(|migration| !applied_migrations.contains_key(&migration.version)))
+}
+
 fn validate_applied_migration_names(
     applied_migrations: &BTreeMap<i64, String>,
     migrations: &[Migration],

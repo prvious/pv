@@ -160,6 +160,7 @@ async fn real_artifact_resource_matrix_smokes_backing_services_and_composer() ->
     )?;
     seed_local_ca(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let result = real::timeout(TEST_TIMEOUT, async {
         run_reconciliation_job(&paths, &format!("project:{}", project.id)).await?;

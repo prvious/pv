@@ -453,6 +453,15 @@ fn daemon_socket_check(paths: &PvPaths, registration: &DaemonRegistrationFileSta
     match daemon::health_blocking(paths.clone()) {
         Ok(()) => DoctorCheck::pass("Daemon socket", "daemon answered health check")
             .with_detail(format!("path: {}", paths.daemon_socket())),
+        Err(error) if super::daemon_connection_denied(&error) => DoctorCheck::warn(
+            "Daemon socket",
+            "permission to connect to the daemon socket was denied, as inside an agent sandbox",
+            None,
+        )
+        .with_detail(format!(
+            "path: {}; run `pv doctor` outside the sandbox, or allow this socket in its settings",
+            paths.daemon_socket()
+        )),
         Err(error) => DoctorCheck::fail(
             "Daemon socket",
             "daemon socket is present but daemon did not answer health check",

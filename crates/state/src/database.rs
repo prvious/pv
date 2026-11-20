@@ -1,10 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::c_int;
 use std::time::Duration;
 
 use camino::{Utf8Component, Utf8Path, Utf8PathBuf};
 
 use rusqlite::{
-    Connection, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, params,
+    Connection, MAIN_DB, OpenFlags, OptionalExtension, Row, Transaction, TransactionBehavior, ffi,
+    params,
 };
 
 use crate::{PvPaths, StateError, fs, migrations};
@@ -31,6 +33,23 @@ pub type EnvContextValues = BTreeMap<String, String>;
 #[derive(Debug)]
 pub struct Database {
     connection: Connection,
+}
+
+impl Drop for Database {
+    /// Empties the WAL when a read-write connection closes, whichever connection closes last.
+    /// SQLite checkpoints only on the last close, and a read-only connection can't. The next
+    /// opener would rebuild the WAL index with nothing marked as copied back, so writes would
+    /// keep appending to the WAL. While another connection is inside a read transaction, the
+    /// checkpoint gives up at once instead of waiting, and a later close empties the WAL.
+    fn drop(&mut self) {
+        if matches!(self.connection.is_readonly(MAIN_DB), Ok(false))
+            && self.connection.busy_timeout(Duration::ZERO).is_ok()
+        {
+            let _result =
+                self.connection
+                    .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_row| Ok(()));
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -699,6 +718,20 @@ impl Database {
         configure_read_connection(&connection)?;
 
         Ok(Some(Self { connection }))
+    }
+
+    /// Opens `pv.db` read-only when it exists and has every migration applied, so a command that
+    /// only reads state writes nothing, including where `~/.pv` is read-only. `None` means the
+    /// caller must use [`Database::open`] to create or migrate it.
+    pub fn open_current_read_only(paths: &PvPaths) -> Result<Option<Self>, StateError> {
+        let Some(database) = Self::open_read_only(paths)? else {
+            return Ok(None);
+        };
+        if migrations::pending(&database.connection, migrations::DEFAULT_MIGRATIONS)? {
+            return Ok(None);
+        }
+
+        Ok(Some(database))
     }
 
     pub(crate) fn open_with_migrations(
@@ -5108,6 +5141,29 @@ fn describe_port_identity(
 fn configure_connection(connection: &Connection) -> Result<(), StateError> {
     configure_read_connection(connection)?;
     connection.pragma_update(None, "journal_mode", "WAL")?;
+    keep_wal_files_on_close(connection)
+}
+
+/// Keeps `pv.db-wal` and `pv.db-shm` when the last connection closes, instead of letting SQLite
+/// delete them. A read-only connection that can't create them, as inside an agent sandbox, can
+/// only open the database while they exist. Dropping a read-write [`Database`] empties the WAL.
+fn keep_wal_files_on_close(connection: &Connection) -> Result<(), StateError> {
+    let mut persist: c_int = 1;
+    // SAFETY: `handle` returns the live `sqlite3` pointer of `connection`, which stays borrowed and
+    // open for this call. The schema name is a NUL-terminated literal. `SQLITE_FCNTL_PERSIST_WAL`
+    // reads and writes one `c_int` through the last argument, which points at `persist` for the
+    // whole call.
+    let code = unsafe {
+        ffi::sqlite3_file_control(
+            connection.handle(),
+            c"main".as_ptr(),
+            ffi::SQLITE_FCNTL_PERSIST_WAL,
+            (&raw mut persist).cast(),
+        )
+    };
+    if code != ffi::SQLITE_OK {
+        return Err(rusqlite::Error::SqliteFailure(ffi::Error::new(code), None).into());
+    }
 
     Ok(())
 }

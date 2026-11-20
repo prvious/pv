@@ -314,7 +314,7 @@ pub(crate) fn shim_with_args_and_env(
     runtime_lifecycle_lock: Option<RuntimeLifecycleLock>,
 ) -> Result<ExitCode, ExecuteError> {
     let paths = pv_paths(environment)?;
-    let database = Database::open(&paths)?;
+    let database = super::open_database_for_reading(&paths)?;
     let runtime = resolve_php_runtime_for_shim(&paths, &database, environment)?;
     let installed = installed_php(&database, &runtime.track)?;
     resources::ensure_php_track_defaults(&paths, &runtime.track)?;

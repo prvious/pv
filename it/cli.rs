@@ -2,6 +2,8 @@
 use std::collections::BTreeMap;
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
+#[cfg(target_os = "macos")]
+use std::os::unix::fs::PermissionsExt as _;
 #[cfg(unix)]
 use std::os::unix::net::UnixListener;
 use std::process::ExitStatus;
@@ -1878,6 +1880,119 @@ fn path_exists(path: &Utf8Path) -> Result<bool> {
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(source) => Err(source.into()),
     }
+}
+
+/// A coding agent's sandbox lets commands write only inside the workspace and can refuse Unix
+/// sockets. PV's shims and read commands must still work there, and a refused daemon socket must
+/// not read as a stopped daemon.
+#[cfg(target_os = "macos")]
+#[test]
+fn shims_and_read_commands_work_in_a_sandbox_that_denies_writes_outside_the_workspace() -> Result<()>
+{
+    let tempdir = tempdir()?;
+    let root = state::fs::canonicalize(tempdir.path())?;
+    let home = root.join("home");
+    let workspace = root.join("workspace");
+    create_dir(&workspace)?;
+    let paths = PvPaths::for_home(&home);
+    let release = paths.resources().join("php/8.4/releases/8.4.0-pv1");
+    create_dir(&release.join("bin"))?;
+    create_dir(&release.join("lib/php/extensions"))?;
+    create_dir(&release.join("share/pv"))?;
+    write_executable(
+        &release.join("bin/php"),
+        "#!/bin/sh\necho \"fake php $* with $PHP_INI_SCAN_DIR\"\n",
+    )?;
+    write_file(&release.join("lib/php/extensions/redis.so"), "")?;
+    write_file(
+        &release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    // The workspace is a Project that loads an optional extension, so the shim uses an overlay.
+    write_file(
+        &workspace.join("pv.yml"),
+        "php:\n  version: \"8.4\"\n  extensions: [redis]\n",
+    )?;
+    let mut database = Database::open(&paths)?;
+    database.record_managed_resource_track_installed("php", "8.4", "8.4.0-pv1", &release)?;
+    database.record_global_php_default_track("8.4")?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: workspace.clone(),
+            original_path: workspace.clone(),
+            primary_hostname: "workspace.test".to_string(),
+            config_path: workspace.join("pv.yml"),
+            desired_php_track: Some("8.4".to_string()),
+        })?
+        .project;
+    database.replace_project_php_runtime(
+        &project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_string(),
+            requested_extensions: vec!["redis".to_string()],
+            loaded_extensions: vec!["redis".to_string()],
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
+    drop(database);
+    // As on an installed machine, the track's ini defaults, the Project's extension overlay and
+    // the lifecycle lock already exist.
+    let unsandboxed = run_pv_in(&["shim:php", "-v"], &workspace, &home)?;
+    assert!(unsandboxed.status.success(), "{unsandboxed:?}");
+    let _daemon_socket = UnixListener::bind(paths.daemon_socket())?;
+    let profile = format!(
+        "(version 1)(allow default)(deny file-write* (subpath \"{root}\"))(allow file-write* (subpath \"{workspace}\"))(deny network-outbound (remote unix-socket))"
+    );
+    let sandboxed = |args: &[&str]| -> Result<CommandOutput> {
+        let output = Command::new("/usr/bin/sandbox-exec")
+            .env_remove("NO_COLOR")
+            .env("HOME", home.as_str())
+            .current_dir(&workspace)
+            .args(["-p", &profile, env!("CARGO_BIN_EXE_pv")])
+            .args(args)
+            .output()?;
+        Ok(CommandOutput {
+            code: output.status.code(),
+            stdout: String::from_utf8(output.stdout)?,
+            stderr: String::from_utf8(output.stderr)?,
+        })
+    };
+
+    let shim = sandboxed(&["shim:php", "-v"])?;
+    let list = sandboxed(&["list", "--json"])?;
+    let jobs = sandboxed(&["jobs", "--json"])?;
+    let status = sandboxed(&["status", "--json"])?;
+    let status_json: Value = serde_json::from_str(&status.stdout)?;
+    // An outdated `pv.db` needs a migration, which the sandbox doesn't allow.
+    let migration_removed = Command::new("/usr/bin/sqlite3")
+        .arg(paths.db().as_str())
+        .arg("DELETE FROM pv_migrations WHERE version = (SELECT MAX(version) FROM pv_migrations);")
+        .output()?;
+    assert!(migration_removed.status.success(), "{migration_removed:?}");
+    let modified_before = state::fs::modified_at(paths.db())?;
+    let outdated = sandboxed(&["list", "--json"])?;
+
+    assert_eq!(state::fs::modified_at(paths.db())?, modified_before);
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(root.as_str(), "<root>");
+    settings.add_filter(&project.id, "<project-id>");
+    settings.bind(|| {
+        assert_debug_snapshot!((shim, list, jobs, &status_json["daemon"], outdated));
+    });
+
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "CLI integration tests write an executable fixture"
+)]
+fn write_executable(path: &Utf8Path, contents: &str) -> Result<()> {
+    std::fs::write(path, contents)?;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+
+    Ok(())
 }
 
 /// The daemon's host for a test: two test ports for the Gateway instead of ports 80 and 443.

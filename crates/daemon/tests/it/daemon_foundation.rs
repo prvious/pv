@@ -86,6 +86,7 @@ async fn socket_protocol_streams_job_progress_and_persists_final_status() -> Res
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -159,6 +160,7 @@ async fn gateway_lookup_failure_streams_and_records_failed_gateway_phase() -> Re
         &paths.resources().join("caddy/2/releases/missing"),
     )?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_job_scope_status(&paths, "system", JobStatus::Failed).await?;
@@ -243,6 +245,7 @@ async fn unsupported_job_streams_failure_event_and_persists_failed_status() -> R
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     let lines = request_lines(
@@ -290,6 +293,7 @@ async fn update_locks_delay_startup_reconciliation_but_keep_health_available() -
     let update_lock = UpdateLock::acquire(&paths)?;
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -359,6 +363,7 @@ async fn exclusive_lifecycle_admission_blocks_daemon_before_layout_creation() ->
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let _admission = state::RuntimeLifecycleLock::acquire_exclusive(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     assert!(
         matches!(daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await,
         Err(daemon::DaemonError::State(state::StateError::CoordinationLockHeld { path }))
@@ -375,6 +380,7 @@ async fn daemon_shutdown_cancels_startup_reconciliation_waiting_for_jobs_lock() 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
 
@@ -398,6 +404,7 @@ async fn daemon_shutdown_drains_active_startup_reconciliation() -> Result<()> {
 
     let result = async {
         pv_fake::seed_dns_port(&paths)?;
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -463,6 +470,7 @@ async fn seeded_gateway_drop_current_thread_inner() -> Result<()> {
     )?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -566,6 +574,7 @@ async fn runtime_health_scanning_waits_for_startup_completion() -> Result<()> {
     let jobs_lock = JobsLock::acquire(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -649,6 +658,7 @@ async fn daemon_shutdown_joins_health_triggered_worker_recovery() -> Result<()> 
         seed_foundation_php_project(&paths, &project_path, "php: \"8.4\"\n")?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -745,6 +755,7 @@ async fn daemon_shutdown_keeps_jobs_lock_until_blocking_install_finishes() -> Re
         release: Mutex::new(blocked),
     };
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -801,6 +812,7 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -812,6 +824,7 @@ async fn startup_reconciliation_starts_then_adopts_gateway_across_daemon_restart
 
         gateway_guard.shutdown_daemon().await?;
 
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -859,6 +872,7 @@ async fn only_the_gateway_inherits_the_listeners_and_serves_them_through_reloads
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -877,6 +891,7 @@ async fn only_the_gateway_inherits_the_listeners_and_serves_them_through_reloads
                 desired_php_track: None,
             })?
             .project;
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -884,6 +899,7 @@ async fn only_the_gateway_inherits_the_listeners_and_serves_them_through_reloads
         wait_for_succeeded_job_id(&paths, "job_000002").await?;
         gateway_guard.shutdown_daemon().await?;
         Database::open(&paths)?.unlink_project(&second.id)?;
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -951,6 +967,7 @@ async fn startup_replaces_a_gateway_started_without_inherited_listeners() -> Res
         daemon::ProcessSupervisor::new(paths.clone())
             .start(old_spec)
             .await?;
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -982,6 +999,7 @@ async fn a_held_gateway_port_fails_the_gateway_and_still_starts_the_worker() -> 
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -1090,6 +1108,7 @@ async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_dae
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     let result = async {
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -1100,6 +1119,7 @@ async fn startup_reconciliation_logs_and_replaces_a_gateway_killed_while_the_dae
         // The Gateway's monitor outlives the daemon and holds the exit for the next one.
         kill_process_group(killed_pid, Signal::KILL)?;
 
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -1138,6 +1158,7 @@ async fn repeated_system_requests_during_startup_create_one_trailing_job() -> Re
 
     let result = async {
         pv_fake::seed_dns_port(&paths)?;
+        crate::file_events::wait_for_file_events_before_now().await?;
         let daemon =
             daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host)
                 .await?;
@@ -1251,6 +1272,7 @@ async fn daemon_start_writes_migration_failed_startup_marker() -> Result<()> {
         params!["wrong_name", 1_i64],
     )?;
 
+    crate::file_events::wait_for_file_events_before_now().await?;
     let result =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await;
 
@@ -1273,6 +1295,7 @@ async fn daemon_start_removes_stale_startup_marker_before_health() -> Result<()>
     )?;
 
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     let health_lines = request_lines(
@@ -1305,6 +1328,7 @@ async fn daemon_start_marks_abandoned_running_jobs_failed() -> Result<()> {
     let jobs_lock = JobsLock::acquire(&paths)?;
 
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     daemon.shutdown().await?;
@@ -1331,6 +1355,7 @@ async fn duplicate_daemon_start_does_not_fail_live_running_jobs() -> Result<()> 
 
     let _listener = UnixListener::bind(paths.daemon_socket())?;
 
+    crate::file_events::wait_for_file_events_before_now().await?;
     let result =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await;
 
@@ -1359,6 +1384,7 @@ async fn managed_resource_update_check_returns_success_response() -> Result<()> 
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -1417,6 +1443,7 @@ async fn update_job_refreshes_manifest_without_installed_tracks_and_persists_suc
     let manifest_client = ScriptedManifestClient::new(CADDY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -1476,6 +1503,7 @@ async fn jobs_lock_rejects_update_jobs_before_manifest_refresh() -> Result<()> {
     let manifest_client = ScriptedManifestClient::new(EMPTY_ARTIFACT_MANIFEST);
     let manifest_requests = manifest_client.request_count();
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters_with_manifest_client(
             paths.clone(),
@@ -1931,6 +1959,7 @@ async fn system_reconciliation_reconciles_linked_project_env() -> Result<()> {
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -2104,6 +2133,7 @@ async fn run_targeted_gateway_phase_scenario() -> Result<(JobStatus, Vec<Value>)
 
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -2185,6 +2215,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     pv_fake::seed_dns_port(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
 
+    crate::file_events::wait_for_file_events_before_now().await?;
     let initial_daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     wait_for_succeeded_job_scope(&paths, "system").await?;
@@ -2196,6 +2227,7 @@ async fn daemon_health_automatically_recovers_killed_worker_with_invalid_project
     let initial_worker_pid = initial_worker.pid();
     state::fs::write_sensitive_file(&config_path, "php: [\n")?;
 
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -2337,6 +2369,7 @@ async fn invalid_reconciliation_scope_reports_scope_parse_failure() -> Result<()
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     let lines = request_lines(
@@ -2369,6 +2402,7 @@ async fn protocol_mismatch_returns_restart_guidance_without_creating_a_job() -> 
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let _jobs_lock = JobsLock::acquire(&paths)?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     let lines = request_lines(
@@ -2397,6 +2431,7 @@ async fn malformed_request_does_not_stop_accepting_connections() -> Result<()> {
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     send_raw_request(&paths, "not-json\n").await?;
@@ -2421,6 +2456,7 @@ async fn idle_client_without_newline_does_not_block_health_requests() -> Result<
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let mut idle_stream = UnixStream::connect(paths.daemon_socket()).await?;
 
@@ -2498,6 +2534,7 @@ async fn daemon_process_identity_is_scoped_to_the_current_boot() -> Result<()> {
             }) if recorded_pid == pid => false,
             Err(error) => return Err(error.into()),
         };
+        crate::file_events::wait_for_file_events_before_now().await?;
         let admitted = match daemon::RunningDaemon::start_without_managed_resource_adapters(
             paths.clone(),
             host,
@@ -2549,6 +2586,7 @@ async fn start_removes_stale_socket_before_binding() -> Result<()> {
     drop(stale_listener);
 
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let lines = request_lines(
         &paths,
@@ -2574,6 +2612,7 @@ async fn disconnected_job_stream_still_persists_final_status() -> Result<()> {
     seed_foundation_caddy(&paths)?;
     let mut gateway_guard = SeededGatewayGuard::new(paths.clone())?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     gateway_guard.attach_daemon(daemon);
@@ -2652,6 +2691,7 @@ async fn project_config_watcher_enqueues_project_reconciliation() -> Result<()> 
         Ok(())
     })?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
 
     write_file_after_modified_time_tick(
@@ -2685,6 +2725,7 @@ async fn project_config_watcher_follows_a_project_linked_after_startup() -> Resu
     let config_path = project_path.join("pv.yml");
     state::fs::write_sensitive_file(&config_path, "php: '8.3'\n")?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
 
@@ -2746,6 +2787,7 @@ async fn worktree_discovery_follows_git_worktree_events() -> Result<()> {
         desired_php_track: None,
     })?;
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon =
         daemon::RunningDaemon::start_without_managed_resource_adapters(paths.clone(), host).await?;
     // Startup reconciliation can't install the Gateway without an artifact manifest, so it fails
@@ -2790,6 +2832,7 @@ async fn dns_resolver_answers_udp_and_tcp_queries_and_survives_malformed_udp() -
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     pv_fake::seed_dns_port(&paths)?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let port = dns_port(&paths)?;
     let socket = UdpSocket::bind((Ipv4Addr::LOCALHOST, 0)).await?;
@@ -2847,6 +2890,7 @@ async fn dns_resolver_falls_back_when_preferred_port_is_unavailable() -> Result<
     let tempdir = tempdir()?;
     let paths = PvPaths::for_home(tempdir.path().join("home"));
     let preferred_dns_port_blockers = bind_preferred_dns_port_pair().await?;
+    crate::file_events::wait_for_file_events_before_now().await?;
     let daemon = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await?;
     let port = dns_port(&paths)?;
 
@@ -2875,6 +2919,7 @@ async fn dns_resolver_start_does_not_reassign_persisted_port_on_bind_conflict() 
     )?;
     drop(database);
 
+    crate::file_events::wait_for_file_events_before_now().await?;
     let result = daemon::RunningDaemon::start(paths.clone(), crate::host::test_host()?).await;
     if let Ok(daemon) = result {
         daemon.shutdown().await?;

@@ -3947,3 +3947,51 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool> {
 fn applied_migration_count(connection: &Connection) -> Result<i64> {
     Ok(connection.query_row("SELECT COUNT(*) FROM pv_migrations", [], |row| row.get(0))?)
 }
+
+#[test]
+fn closing_the_last_connection_keeps_the_wal_files_and_empties_the_wal() -> Result<()> {
+    let tempdir = tempdir()?;
+    let paths = PvPaths::for_home(tempdir.path().join("home"));
+    let wal = paths.root().join("pv.db-wal");
+    let shared_memory = paths.root().join("pv.db-shm");
+
+    let mut after_each_close = Vec::new();
+    for track in ["8.4", "8.5", "8.4"] {
+        let mut database = Database::open(&paths)?;
+        database.record_global_php_default_track(track)?;
+        drop(database);
+        after_each_close.push((
+            file_len(&wal)?,
+            state::fs::path_entry_exists(&shared_memory)?,
+        ));
+    }
+    // A reader, such as a shim, can outlive a writer and close last.
+    for track in ["8.5", "8.4"] {
+        let reader = Database::open_current_read_only(&paths)?
+            .ok_or_else(|| anyhow!("pv.db disappeared after the last close"))?;
+        reader.global_php_default_track()?;
+        let mut writer = Database::open(&paths)?;
+        writer.record_global_php_default_track(track)?;
+        drop(writer);
+        drop(reader);
+        after_each_close.push((
+            file_len(&wal)?,
+            state::fs::path_entry_exists(&shared_memory)?,
+        ));
+    }
+    let reader = Database::open_read_only(&paths)?
+        .ok_or_else(|| anyhow!("pv.db disappeared after the last close"))?;
+
+    assert_eq!(after_each_close, [(0, true); 5]);
+    assert_eq!(reader.global_php_default_track()?, Some("8.4".to_string()));
+
+    Ok(())
+}
+
+#[expect(
+    clippy::disallowed_methods,
+    reason = "state foundation tests inspect fixture file sizes"
+)]
+fn file_len(path: &Utf8Path) -> Result<u64> {
+    Ok(std::fs::metadata(path)?.len())
+}

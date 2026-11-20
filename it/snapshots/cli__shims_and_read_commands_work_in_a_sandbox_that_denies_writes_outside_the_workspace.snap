@@ -1,0 +1,40 @@
+---
+source: it/cli.rs
+expression: "(shim, list, jobs, &status_json[\"daemon\"], outdated)"
+---
+(
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "fake php -v with <root>/home/.pv/resources/php/8.4/etc/conf.d:<root>/home/.pv/config/php-runtimes/8.4+redis/conf.d\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "{\"projects\":[{\"id\":\"<project-id>\",\"mode\":\"served\",\"slug\":\"workspace\",\"hostname\":\"workspace.test\",\"env_file\":\".env\",\"php\":\"8.4\",\"status\":\"unknown\",\"env\":\"none\",\"resources\":[],\"path\":\"<root>/workspace\",\"config_path\":\"<root>/workspace/pv.yml\"}]}\n",
+        stderr: "",
+    },
+    CommandOutput {
+        code: Some(
+            0,
+        ),
+        stdout: "{\"jobs\":[]}\n",
+        stderr: "",
+    },
+    Object {
+        "failure": Bool(false),
+        "registration": String("missing"),
+        "socket": String("denied"),
+        "state": String("unknown"),
+    },
+    CommandOutput {
+        code: Some(
+            1,
+        ),
+        stdout: "",
+        stderr: "error: PV must create or update its state in <root>/home/.pv before it can read it, and this process may not write there, as inside a coding agent's sandbox\n  Run `pv list` once outside the sandbox, then try again.\n",
+    },
+)
