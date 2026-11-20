@@ -1897,15 +1897,46 @@ fn shims_and_read_commands_work_in_a_sandbox_that_denies_writes_outside_the_work
     let paths = PvPaths::for_home(&home);
     let release = paths.resources().join("php/8.4/releases/8.4.0-pv1");
     create_dir(&release.join("bin"))?;
+    create_dir(&release.join("lib/php/extensions"))?;
+    create_dir(&release.join("share/pv"))?;
     write_executable(
         &release.join("bin/php"),
-        "#!/bin/sh\necho \"fake php $*\"\n",
+        "#!/bin/sh\necho \"fake php $* with $PHP_INI_SCAN_DIR\"\n",
+    )?;
+    write_file(&release.join("lib/php/extensions/redis.so"), "")?;
+    write_file(
+        &release.join("share/pv/php-extensions.json"),
+        r#"[{"name":"redis","load_kind":"extension","path":"lib/php/extensions/redis.so"}]"#,
+    )?;
+    // The workspace is a Project that loads an optional extension, so the shim uses an overlay.
+    write_file(
+        &workspace.join("pv.yml"),
+        "php:\n  version: \"8.4\"\n  extensions: [redis]\n",
     )?;
     let mut database = Database::open(&paths)?;
     database.record_managed_resource_track_installed("php", "8.4", "8.4.0-pv1", &release)?;
     database.record_global_php_default_track("8.4")?;
+    let project = database
+        .link_project(LinkProjectInput {
+            path: workspace.clone(),
+            original_path: workspace.clone(),
+            primary_hostname: "workspace.test".to_string(),
+            config_path: workspace.join("pv.yml"),
+            desired_php_track: Some("8.4".to_string()),
+        })?
+        .project;
+    database.replace_project_php_runtime(
+        &project.id,
+        Some(&state::ProjectPhpRuntimeInput {
+            track: "8.4".to_string(),
+            requested_extensions: vec!["redis".to_string()],
+            loaded_extensions: vec!["redis".to_string()],
+            ignored_extensions: Vec::new(),
+        }),
+    )?;
     drop(database);
-    // As on an installed machine, the track's ini defaults and the lifecycle lock already exist.
+    // As on an installed machine, the track's ini defaults, the Project's extension overlay and
+    // the lifecycle lock already exist.
     let unsandboxed = run_pv_in(&["shim:php", "-v"], &workspace, &home)?;
     assert!(unsandboxed.status.success(), "{unsandboxed:?}");
     let _daemon_socket = UnixListener::bind(paths.daemon_socket())?;
@@ -1932,7 +1963,10 @@ fn shims_and_read_commands_work_in_a_sandbox_that_denies_writes_outside_the_work
     let status = sandboxed(&["status", "--json"])?;
     let status_json: Value = serde_json::from_str(&status.stdout)?;
 
-    assert_debug_snapshot!((shim, list, &status_json["daemon"]));
+    let mut settings = insta::Settings::clone_current();
+    settings.add_filter(root.as_str(), "<root>");
+    settings.add_filter(&project.id, "<project-id>");
+    settings.bind(|| assert_debug_snapshot!((shim, list, &status_json["daemon"])));
 
     Ok(())
 }

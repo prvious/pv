@@ -7,14 +7,14 @@ expression: "(shim, list, &status_json[\"daemon\"])"
         code: Some(
             0,
         ),
-        stdout: "fake php -v\n",
+        stdout: "fake php -v with <root>/home/.pv/resources/php/8.4/etc/conf.d:<root>/home/.pv/config/php-runtimes/8.4+redis/conf.d\n",
         stderr: "",
     },
     CommandOutput {
         code: Some(
             0,
         ),
-        stdout: "{\"projects\":[]}\n",
+        stdout: "{\"projects\":[{\"id\":\"<project-id>\",\"mode\":\"served\",\"slug\":\"workspace\",\"hostname\":\"workspace.test\",\"env_file\":\".env\",\"php\":\"8.4\",\"status\":\"unknown\",\"env\":\"none\",\"resources\":[],\"path\":\"<root>/workspace\",\"config_path\":\"<root>/workspace/pv.yml\"}]}\n",
         stderr: "",
     },
     Object {

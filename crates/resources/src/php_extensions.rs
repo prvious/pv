@@ -190,6 +190,28 @@ pub fn ensure_php_runtime_overlay(
         .join("php-runtimes")
         .join(runtime_key)
         .join("conf.d");
+    let files = modules
+        .iter()
+        .enumerate()
+        .map(|(index, module)| {
+            let prefix = 10 + (index * 10);
+            let directive = match module.load_kind {
+                PhpExtensionLoadKind::Extension => "extension",
+                PhpExtensionLoadKind::ZendExtension => "zend_extension",
+            };
+            let module_path = artifact_root.join(&module.relative_path);
+            (
+                conf_dir.join(format!("{prefix}-{}.ini", module.name)),
+                format!("{directive}={module_path}\n"),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    // An overlay that already holds exactly these files stays as it is, so a shim writes nothing
+    // where `~/.pv` is read-only, as inside an agent sandbox.
+    if overlay_matches(&conf_dir, &files)? {
+        fs::ensure_user_dir(&conf_dir).map_err(resources_error_from_state)?;
+        return Ok(conf_dir);
+    }
     match fs::delete_dir_all(&conf_dir) {
         Ok(()) => {}
         Err(StateError::Filesystem { source, .. }) if source.kind() == io::ErrorKind::NotFound => {}
@@ -197,22 +219,29 @@ pub fn ensure_php_runtime_overlay(
     }
     fs::ensure_user_dir(&conf_dir).map_err(resources_error_from_state)?;
 
-    for (index, module) in modules.iter().enumerate() {
-        let prefix = 10 + (index * 10);
-        let directive = match module.load_kind {
-            PhpExtensionLoadKind::Extension => "extension",
-            PhpExtensionLoadKind::ZendExtension => "zend_extension",
-        };
-        let module_path = artifact_root.join(&module.relative_path);
-        let ini = format!("{directive}={module_path}\n");
-        fs::write_sensitive_file(
-            &conf_dir.join(format!("{prefix}-{}.ini", module.name)),
-            &ini,
-        )
-        .map_err(resources_error_from_state)?;
+    for (path, ini) in &files {
+        fs::write_sensitive_file(path, ini).map_err(resources_error_from_state)?;
     }
 
     Ok(conf_dir)
+}
+
+/// Whether `conf_dir` holds exactly `files`, each with its content.
+fn overlay_matches(conf_dir: &Utf8Path, files: &BTreeMap<Utf8PathBuf, String>) -> Result<bool> {
+    if !fs::path_is_directory(conf_dir).map_err(resources_error_from_state)? {
+        return Ok(false);
+    }
+    let existing = fs::read_dir_paths(conf_dir)
+        .map_err(resources_error_from_state)?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    if !existing.iter().eq(files.keys()) {
+        return Ok(false);
+    }
+
+    Ok(files
+        .iter()
+        .all(|(path, ini)| fs::read_to_string(path).ok().as_deref() == Some(ini.as_str())))
 }
 
 pub fn php_runtime_environment(
