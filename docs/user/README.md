@@ -216,6 +216,38 @@ pv mysql:uninstall 8.4 --prune --force
 
 If a Project still declares a forced-uninstalled track, reconciliation fails until you remove that declaration or explicitly reinstall the track.
 
+## Coding Agents
+
+Coding agents such as Claude Code, Codex, Cursor and OpenCode don't know about PV unless the project tells them. Two pieces help: a skill that explains how to work with PV, and a short note in the project's agent instructions.
+
+### Install the `pv` skill
+
+The [`pv` skill](../../skills/pv/SKILL.md) covers finding a Project's URL and databases, waiting for a new Git worktree, changing PHP or services through `pv.yml`, verifying over HTTPS, and troubleshooting. Install it into a project with [`skills`](https://github.com/vercel-labs/skills):
+
+```shell
+npx skills add prvious/pv --skill pv
+```
+
+Or copy `skills/pv/` from this repository yourself. Codex, Cursor, OpenCode, Gemini CLI and Zed read `.agents/skills/pv/`. Claude Code reads `.claude/skills/pv/`.
+
+### Point agents at PV
+
+Add this to the project's `AGENTS.md`. It names no hostnames or credentials, so it is safe to commit:
+
+```markdown
+## Local environment
+
+This project is served locally by PV (https://github.com/prvious/pv). PV serves it over HTTPS at a `.test` hostname and runs its PHP version, databases and other services. Run `pv list --json` to find the URL, databases and readiness for the directory you are in, and use the `pv` skill for details. If `php` on `PATH` is not `~/.pv/bin/php`, use `~/.pv/bin/php`.
+```
+
+Claude Code reads `AGENTS.md` only when the project has no `CLAUDE.md`, and new Laravel applications ship both. Add `@AGENTS.md` on its own line in `CLAUDE.md`, or put the same section there.
+
+### Laravel Boost
+
+Laravel Boost includes every file under `.ai/guidelines/` in the instructions it generates. To include PV, save the section above as `.ai/guidelines/pv.md` and run `php artisan boost:update`.
+
+Boost adds its own Herd guideline when `APP_URL` contains `.test` and Laravel Herd is installed on the machine. That guideline tells agents the site is served by Herd. If you have Herd installed but use PV, add `'herd'` to `guidelines.exclude` in `config/boost.php` and run `php artisan boost:update` again.
+
 ## Update
 
 Preview app, privileged-helper, and installed Managed Resource updates:
