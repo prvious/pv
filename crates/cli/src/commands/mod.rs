@@ -2,9 +2,9 @@ use std::io;
 use std::process::ExitCode;
 use std::time::Duration;
 
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use platform::PlatformCapability;
-use state::{PvPaths, RuntimeObservedStatus, StateError};
+use state::{Database, PvPaths, RuntimeObservedStatus, StateError};
 
 use crate::args::{Cli, Command};
 use crate::environment::Environment;
@@ -444,6 +444,25 @@ fn project_display_name(project: &state::ProjectRecord) -> &str {
         .primary_hostname
         .as_deref()
         .unwrap_or(project.slug.as_str())
+}
+
+/// The error for a current directory that resolves to no Project. Inside a Git checkout nested in
+/// a linked Project, such as a worktree PV hasn't linked yet, it names that checkout.
+fn unresolved_project_error(
+    database: &Database,
+    current_dir: &Utf8Path,
+) -> Result<ExecuteError, ExecuteError> {
+    if let Some(checkout) = state::fs::git_checkout_root(current_dir)?
+        && let Some(parent) = checkout.parent()
+        && database.nearest_project_for_path(parent)?.is_some()
+    {
+        return Ok(CliError::ProjectNotLinkedInCheckout {
+            checkout: checkout.to_path_buf(),
+        }
+        .into());
+    }
+
+    Ok(CliError::ProjectNotResolved.into())
 }
 
 /// Reports a system file PV must not touch because it is not PV-owned or

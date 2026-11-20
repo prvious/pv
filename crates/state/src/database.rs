@@ -1724,14 +1724,20 @@ impl Database {
         }
     }
 
+    /// The nearest linked Project at or above `path`, within the Git checkout holding `path`. A
+    /// linked worktree, submodule or nested repository inside a linked Project never resolves to
+    /// that Project.
     pub fn nearest_project_for_path(
         &self,
         path: &Utf8Path,
     ) -> Result<Option<ProjectRecord>, StateError> {
+        let checkout_root = fs::git_checkout_root(path)?;
+
         Ok(self
             .projects()?
             .into_iter()
             .filter(|project| path.starts_with(&project.path))
+            .filter(|project| checkout_root.is_none_or(|root| project.path.starts_with(root)))
             .max_by_key(|project| project.path.as_str().len()))
     }
 

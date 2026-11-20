@@ -179,6 +179,44 @@ fn unlink_names_an_unknown_selector_instead_of_the_directory() -> anyhow::Result
     Ok(())
 }
 
+#[test]
+fn commands_in_an_unlinked_worktree_inside_a_project_do_not_resolve_that_project()
+-> anyhow::Result<()> {
+    let tempdir = tempdir()?;
+    let home = tempdir.path().join("home");
+    let project_path = tempdir.path().join("acme");
+    let worktree_path = project_path.join(".claude/worktrees/happy-otter");
+    let paths = PvPaths::for_home(home.clone());
+    seed_project(&paths, &project_path)?;
+    state::fs::ensure_user_dir(&project_path.join(".git"))?;
+    state::fs::write_sensitive_file(
+        &worktree_path.join(".git"),
+        "gitdir: ../../../.git/worktrees/happy-otter\n",
+    )?;
+    let environment = TestEnvironment::new(&home, &worktree_path.join("app"));
+
+    let outputs = [
+        run_pv(&["unlink"], &environment)?,
+        run_pv(&["project:env"], &environment)?,
+        run_pv(&["open"], &environment)?,
+    ];
+
+    assert!(
+        outputs
+            .iter()
+            .all(|output| output.exit_code == ExitCode::FAILURE)
+    );
+    assert_eq!(Database::open(&paths)?.projects()?.len(), 1);
+    let mut settings = Settings::clone_current();
+    settings.add_filter(tempdir.path().as_str(), "<tempdir>");
+    settings.add_filter("/private<tempdir>", "<tempdir>");
+    settings.bind(|| {
+        assert_debug_snapshot!(outputs.map(|output| output.stderr));
+    });
+
+    Ok(())
+}
+
 fn seed_project(paths: &PvPaths, project_path: &Utf8Path) -> anyhow::Result<ProjectRecord> {
     state::fs::write_sensitive_file(&project_path.join("pv.yml"), "php: 8.4\n")?;
 
